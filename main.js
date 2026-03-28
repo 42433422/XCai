@@ -352,6 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
           img.src = item.image;
           img.alt = item.title || '企业活动图片';
           img.loading = 'lazy';
+          img.classList.add('loaded');
           imgBox.appendChild(img);
 
           const content = document.createElement('div');
