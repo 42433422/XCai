@@ -176,6 +176,27 @@ body::before {
   width: 100%;
 }
 
+/* New Version Button - AI Style */
+.new-version-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 16px;
+  margin-left: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  text-decoration: none;
+  background: linear-gradient(135deg, #0066ff 0%, #00d4ff 100%);
+  border-radius: 20px;
+  transition: all 0.3s ease;
+}
+
+.new-version-btn:hover {
+  box-shadow: 0 4px 15px rgba(0, 102, 255, 0.5);
+  color: #ffffff;
+}
+
 /* Mobile Menu Toggle */
 .mobile-menu-toggle {
   display: none;
