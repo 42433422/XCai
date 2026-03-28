@@ -100,6 +100,15 @@ body::before {
   color: #ffffff;
 }
 
+.logo-calligraphy {
+  font-family: 'KaiTi', 'STKaiti', '楷体', 'SimKai', serif;
+  font-size: 28px;
+  font-weight: 700;
+  color: #ffffff;
+  margin-right: 8px;
+  letter-spacing: 0.1em;
+}
+
 /* 顶栏/页脚统一文字商标；图形商标仅在首页首屏 hero 展示 */
 .logo--wordmark {
   gap: 0;
