@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+
+Disallow: /assets/
+Disallow: /uploads/
+Disallow: /.trae/
+Disallow: /test_image.jpg
+
+Sitemap: https://xiu-ci.com/sitemap.xml
