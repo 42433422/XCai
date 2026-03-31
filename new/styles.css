@@ -250,7 +250,7 @@ canvas#particles-canvas {
   font-size: 18px;
 }
 
-/* Hero Visual - Orb */
+/* Hero Visual - Video */
 .hero-visual {
   flex: 1;
   display: flex;
@@ -258,6 +258,16 @@ canvas#particles-canvas {
   justify-content: center;
 }
 
+.hero-video {
+  width: 100%;
+  max-width: 500px;
+  height: auto;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 102, 255, 0.3);
+}
+
+/* Hero Visual - Orb */
 .orb {
   position: relative;
   width: 400px;
