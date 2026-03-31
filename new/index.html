@@ -55,9 +55,15 @@
           </div>
         </div>
         <div class="hero-visual">
-          <video class="hero-video" autoplay muted loop playsinline>
+          <video id="hero-video" class="hero-video" autoplay muted playsinline onended="handleVideoEnd()">
             <source src="assets/hero-video.mp4" type="video/mp4">
           </video>
+          <div class="orb">
+            <div class="orb-inner"></div>
+            <div class="orb-ring orb-ring-1"></div>
+            <div class="orb-ring orb-ring-2"></div>
+            <div class="orb-ring orb-ring-3"></div>
+          </div>
         </div>
       </div>
     </section>

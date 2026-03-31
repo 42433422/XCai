@@ -127,3 +127,13 @@
     observer.observe(card);
   });
 })();
+
+function handleVideoEnd() {
+  const video = document.getElementById('hero-video');
+  const heroVisual = document.querySelector('.hero-visual');
+  
+  if (video && heroVisual) {
+    heroVisual.classList.add('video-ended');
+    heroVisual.style.display = 'none';
+  }
+}
