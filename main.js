@@ -7,6 +7,28 @@ function handleIntroVideoEnd() {
   }
 }
 
+// 视频加载状态处理
+function onVideoCanPlay() {
+  const loading = document.getElementById('video-loading');
+  if (loading) {
+    loading.classList.add('hidden');
+  }
+}
+
+function onVideoWaiting() {
+  const loading = document.getElementById('video-loading');
+  if (loading) {
+    loading.textContent = '缓冲中...';
+  }
+}
+
+function onVideoPlaying() {
+  const loading = document.getElementById('video-loading');
+  if (loading) {
+    loading.classList.add('hidden');
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // 设置页脚年份
   const yearSpan = document.getElementById('year');

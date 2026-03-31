@@ -80,6 +80,23 @@ body::before {
   object-fit: cover;
 }
 
+.video-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-size: 18px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 20px 40px;
+  border-radius: 8px;
+  z-index: 10;
+}
+
+.video-loading.hidden {
+  display: none;
+}
+
 /* Main Content Fade In */
 body.video-ended .site-header,
 body.video-ended main,
