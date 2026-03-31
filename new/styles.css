@@ -267,14 +267,6 @@ canvas#particles-canvas {
   box-shadow: 0 20px 60px rgba(0, 102, 255, 0.3);
 }
 
-.hero-visual.video-ended {
-  display: none;
-}
-
-.hero-visual.video-ended .orb {
-  display: block;
-}
-
 /* Hero Visual - Orb */
 .orb {
   position: relative;
