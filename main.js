@@ -29,7 +29,48 @@ function onVideoPlaying() {
   }
 }
 
+// 视频错误处理
+function onVideoError() {
+  const loading = document.getElementById('video-loading');
+  if (loading) {
+    loading.textContent = '视频加载失败，正在进入网站...';
+  }
+  
+  // 3秒后自动隐藏视频层
+  setTimeout(() => {
+    const videoOverlay = document.getElementById('video-overlay');
+    if (videoOverlay) {
+      videoOverlay.classList.add('fade-out');
+      document.body.classList.add('video-ended');
+    }
+  }, 3000);
+}
+
+// 超时检测
+function checkVideoTimeout() {
+  const loading = document.getElementById('video-loading');
+  const video = document.getElementById('intro-video');
+  
+  setTimeout(() => {
+    if (loading && !loading.classList.contains('hidden')) {
+      loading.textContent = '视频加载超时，正在进入网站...';
+      
+      // 2秒后自动隐藏
+      setTimeout(() => {
+        const videoOverlay = document.getElementById('video-overlay');
+        if (videoOverlay) {
+          videoOverlay.classList.add('fade-out');
+          document.body.classList.add('video-ended');
+        }
+      }, 2000);
+    }
+  }, 5000); // 5秒超时
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  // 启动视频超时检测
+  checkVideoTimeout();
+  
   // 设置页脚年份
   const yearSpan = document.getElementById('year');
   if (yearSpan) {

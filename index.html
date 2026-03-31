@@ -65,7 +65,7 @@
   </head>
   <body>
     <div id="video-overlay" class="video-overlay">
-      <video id="intro-video" class="intro-video" autoplay muted playsinline preload="auto" poster="assets/brand-logo.jpg" onended="handleIntroVideoEnd()" oncanplay="onVideoCanPlay()" onwaiting="onVideoWaiting()" onplaying="onVideoPlaying()" webkit-playsinline>
+      <video id="intro-video" class="intro-video" autoplay muted playsinline preload="auto" poster="assets/brand-logo.jpg" onended="handleIntroVideoEnd()" oncanplay="onVideoCanPlay()" onwaiting="onVideoWaiting()" onplaying="onVideoPlaying()" onerror="onVideoError()" webkit-playsinline>
         <source src="assets/intro-video.mp4" type="video/mp4">
       </video>
       <div id="video-loading" class="video-loading">视频加载中...</div>
