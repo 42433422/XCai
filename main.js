@@ -1,4 +1,13 @@
 document.addEventListener('DOMContentLoaded', () => {
+  // 处理开场视频结束
+  function handleIntroVideoEnd() {
+    const videoOverlay = document.getElementById('video-overlay');
+    if (videoOverlay) {
+      videoOverlay.classList.add('fade-out');
+      document.body.classList.add('video-ended');
+    }
+  }
+
   // 设置页脚年份
   const yearSpan = document.getElementById('year');
   if (yearSpan) {

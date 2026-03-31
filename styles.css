@@ -48,10 +48,64 @@ body::before {
   position: fixed;
   inset: 0;
   /* 去掉纹理，改为很柔和的顶部光感 */
-  background: radial-gradient(circle at top, rgba(255, 255, 255, 0.9), transparent 55%);
+  background: radial-gradient(circle at top, rgba(255,255,255, 0.9), transparent 55%);
   opacity: 1;
   pointer-events: none;
   z-index: -1;
+}
+
+/* Video Overlay */
+.video-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.8s ease, visibility 0.8s ease;
+}
+
+.video-overlay.fade-out {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.intro-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Main Content Fade In */
+body.video-ended .site-header,
+body.video-ended main,
+body.video-ended footer {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.8s ease, transform 0.8s ease;
+}
+
+body.video-ended .site-header,
+body.video-ended main,
+body.video-ended footer {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+body.video-ended .site-header {
+  transition-delay: 0.2s;
+}
+
+body.video-ended main {
+  transition-delay: 0.4s;
+}
+
+body.video-ended footer {
+  transition-delay: 0.6s;
 }
 
 .container {
