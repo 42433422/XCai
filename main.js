@@ -451,7 +451,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       })
       .catch(() => {
-        activitiesContainer.textContent = '企业活动信息加载失败，请稍后重试。';
+        console.log('企业活动加载失败，使用占位内容');
+        activitiesContainer.innerHTML = '<p>企业活动展示功能开发中...</p>';
       });
   }
 
