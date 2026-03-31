@@ -1,5 +1,6 @@
 // 处理开场视频结束
 function handleIntroVideoEnd() {
+  console.log('视频播放结束');
   const videoOverlay = document.getElementById('video-overlay');
   if (videoOverlay) {
     videoOverlay.classList.add('fade-out');
@@ -9,6 +10,7 @@ function handleIntroVideoEnd() {
 
 // 视频加载状态处理
 function onVideoCanPlay() {
+  console.log('视频可以播放');
   const loading = document.getElementById('video-loading');
   if (loading) {
     loading.classList.add('hidden');
@@ -16,6 +18,7 @@ function onVideoCanPlay() {
 }
 
 function onVideoWaiting() {
+  console.log('视频缓冲中');
   const loading = document.getElementById('video-loading');
   if (loading) {
     loading.textContent = '缓冲中...';
@@ -23,6 +26,7 @@ function onVideoWaiting() {
 }
 
 function onVideoPlaying() {
+  console.log('视频开始播放');
   const loading = document.getElementById('video-loading');
   if (loading) {
     loading.classList.add('hidden');
