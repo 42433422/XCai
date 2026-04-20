@@ -34,14 +34,24 @@ async function req(path, opts = {}) {
 }
 
 export const api = {
-  register: (username, password, email) =>
-    req('/api/auth/register', { method: 'POST', body: JSON.stringify({ username, password, email }) }),
+  register: (username, password, email, verificationCode = '') =>
+    req('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        email,
+        verification_code: verificationCode,
+      }),
+    }),
   login: (username, password) =>
     req('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   me: () => req('/api/auth/me'),
 
   sendVerificationCode: (email) =>
     req('/api/auth/send-code', { method: 'POST', body: JSON.stringify({ email }) }),
+  sendRegisterVerificationCode: (email) =>
+    req('/api/auth/send-register-code', { method: 'POST', body: JSON.stringify({ email }) }),
   loginWithCode: (email, code) =>
     req('/api/auth/login-with-code', { method: 'POST', body: JSON.stringify({ email, code }) }),
 

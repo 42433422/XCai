@@ -7,7 +7,7 @@
           <router-link to="/" class="landing-logo">XC AGI</router-link>
           <nav class="landing-nav-links">
             <router-link to="/login" class="nav-ghost">进入工作台</router-link>
-            <router-link to="/register" class="nav-primary">免费注册</router-link>
+            <router-link v-if="!isLoggedIn" to="/register" class="nav-primary">免费注册</router-link>
           </nav>
         </div>
       </div>
@@ -71,7 +71,7 @@
 
         <div class="video-wrapper">
           <video class="demo-video" autoplay muted loop playsinline>
-            <source src="/hero-video.mp4" type="video/mp4">
+            <source :src="heroVideoUrl" type="video/mp4" />
           </video>
         </div>
 
@@ -164,8 +164,8 @@
       </div>
     </section>
 
-    <!-- Market -->
-    <section class="section section--border-top">
+    <!-- Market（顶栏「AI 员工」锚点） -->
+    <section id="ai-market" class="section section--border-top">
       <div class="container">
         <div class="section-header">
           <h2 class="section-title">AI 员工市场</h2>
@@ -249,24 +249,53 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
+
+const router = useRouter()
+
+/** ``public/hero-video.mp4``，随 Vite ``base``（如 ``/market/``）解析 */
+const heroVideoUrl = `${import.meta.env.BASE_URL}hero-video.mp4`
 
 const loading = ref(false)
 const items = ref([])
+const isLoggedIn = ref(false)
 
 function truncate(str, len) {
   if (!str) return ''
   return str.length > len ? str.slice(0, len) + '...' : str
 }
 
+async function refreshLandingAuth() {
+  const token = localStorage.getItem('modstore_token')
+  if (!token) {
+    isLoggedIn.value = false
+    return
+  }
+  try {
+    await api.me()
+    isLoggedIn.value = true
+  } catch {
+    isLoggedIn.value = false
+  }
+}
+
 onMounted(async () => {
+  await refreshLandingAuth()
   try {
     const res = await api.catalog('', '', 4, 0)
     items.value = res.items
   } catch {
     items.value = []
   }
+})
+
+const stopAfterEach = router.afterEach((to) => {
+  if (to.name === 'home') refreshLandingAuth()
+})
+onUnmounted(() => {
+  stopAfterEach()
 })
 </script>
 
@@ -277,6 +306,11 @@ onMounted(async () => {
   color: #ffffff;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 顶栏 / 落地页锚点跳转时避免标题被 sticky 导航挡住 */
+#ai-market {
+  scroll-margin-top: 72px;
 }
 
 .container {

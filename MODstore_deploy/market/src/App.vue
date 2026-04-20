@@ -1,5 +1,5 @@
 <template>
-  <div id="app">
+  <div class="app-shell">
     <nav v-if="!isHome" class="navbar">
       <div class="nav-inner">
         <router-link to="/" class="nav-brand" @click="switchMode('client')">XC AGI</router-link>
@@ -17,7 +17,7 @@
           <template v-else>
             <router-link to="/" class="nav-link">首页</router-link>
             <router-link to="/repository" class="nav-link">仓库</router-link>
-            <span class="nav-gradient">AI 员工</span>
+            <router-link :to="{ path: '/', hash: '#ai-market' }" class="nav-link nav-gradient">AI 员工</router-link>
             <router-link to="/plans" class="nav-link">套餐</router-link>
             <template v-if="isLoggedIn">
               <router-link to="/my-store" class="nav-link">我的商店</router-link>
@@ -36,7 +36,7 @@
         </div>
       </div>
     </nav>
-    <main class="main-content">
+    <main class="main-content" :class="{ 'main-content--home': isHome }">
       <router-view />
     </main>
   </div>
@@ -98,19 +98,23 @@ async function loadBalance() {
   }
 }
 
-function doLogout() {
+async function doLogout() {
   localStorage.removeItem('modstore_token')
   isLoggedIn.value = false
   isAdmin.value = false
   balance.value = null
   currentMode.value = 'client'
-  window.location.href = '/'
+  await router.push('/')
 }
 </script>
 
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0a; color: #ffffff; }
+/* 挂载点 #app 在 index.html；随内容增高，至少一屏高 */
+#app { min-height: 100%; display: flex; flex-direction: column; }
+.app-shell { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 100%; width: 100%; }
 a { text-decoration: none; color: inherit; }
 
 .navbar { background: #111111; border-bottom: 0.5px solid rgba(255,255,255,0.1); position: sticky; top: 0; z-index: 100; }
@@ -132,16 +136,22 @@ a { text-decoration: none; color: inherit; }
 .nav-gradient {
   font-size: 13px;
   font-weight: 700;
+  color: transparent;
   background: linear-gradient(135deg, #60a5fa, #818cf8);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+.nav-link.nav-gradient:hover {
+  opacity: 0.92;
+}
 .btn-primary { background: #ffffff; color: #0a0a0a !important; }
 .btn-primary:hover { opacity: 0.9; }
 .btn-logout { border: none; background-color: #1f1f1f; }
 
-.main-content { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
+.main-content { flex: 1 1 auto; max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px 20px; }
+/* 首页落地页自带全宽布局，外层不再限 1200px */
+.main-content--home { max-width: none; padding: 0; }
 
 .flash { padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
 .flash-ok { background: rgba(74,222,128,0.1); color: #4ade80; }
