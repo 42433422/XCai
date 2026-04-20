@@ -33,17 +33,24 @@ def create(
     total_amount: str,
     user_id: int = 0,
     item_id: int = 0,
+    plan_id: str = "",
+    order_kind: str = "",
+    qr_code: str | None = None,
+    pay_type: str | None = None,
 ) -> dict[str, Any]:
-    """创建订单记录。"""
+    """创建订单记录。``order_kind``: ``plan`` | ``item`` | ``wallet``。"""
     p = _path(out_trade_no)
     if p.is_file():
         return {"ok": False, "message": f"订单 {out_trade_no} 已存在"}
-    doc = {
+    kind = order_kind or ("item" if item_id else "plan" if plan_id else "wallet")
+    doc: dict[str, Any] = {
         "out_trade_no": out_trade_no,
         "subject": subject,
         "total_amount": total_amount,
         "user_id": user_id,
         "item_id": item_id,
+        "plan_id": plan_id or "",
+        "order_kind": kind,
         "status": "pending",
         "trade_no": None,
         "buyer_id": None,
@@ -51,9 +58,29 @@ def create(
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
         "notify_count": 0,
+        "fulfilled": False,
+        "qr_code": qr_code,
+        "pay_type": pay_type,
     }
     p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True, "order": doc}
+
+
+def merge_fields(out_trade_no: str, **kwargs: Any) -> bool:
+    """合并更新订单 JSON（用于写入二维码、支付类型、fulfilled 等）。"""
+    doc = find(out_trade_no)
+    if not doc:
+        return False
+    for k, v in kwargs.items():
+        if v is not None:
+            doc[k] = v
+    doc["updated_at"] = _now_iso()
+    p = _path(out_trade_no)
+    try:
+        p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
 
 def find(out_trade_no: str) -> Optional[dict[str, Any]]:

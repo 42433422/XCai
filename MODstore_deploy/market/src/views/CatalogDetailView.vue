@@ -6,7 +6,9 @@
       <div class="detail-header">
         <div>
           <h1>{{ item.name }}</h1>
-          <p class="meta">{{ item.pkg_id }} · v{{ item.version }} · {{ item.artifact }}</p>
+          <p class="meta">
+            {{ item.pkg_id }} · v{{ item.version }} · {{ item.industry || '通用' }} · {{ item.artifact }}
+          </p>
           <p v-if="item.description" class="desc">{{ item.description }}</p>
         </div>
         <div class="detail-actions">

@@ -35,7 +35,14 @@
         <div v-if="qrCode && order.status === 'pending'" class="qr-section">
           <p class="qr-hint">打开支付宝扫码支付</p>
           <div class="qr-wrapper">
-            <canvas ref="qrCanvas" width="256" height="256"></canvas>
+            <img
+              v-if="qrImageUrl"
+              class="qr-img"
+              :src="qrImageUrl"
+              width="280"
+              height="280"
+              alt="支付宝支付二维码"
+            />
           </div>
           <p v-if="isExpired" class="qr-expired-hint">
             订单已超时未支付，<router-link to="/plans">重新下单</router-link>
@@ -76,7 +83,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api.js'
 
@@ -84,8 +91,12 @@ const route = useRoute()
 const order = ref(null)
 const loading = ref(true)
 const qrCode = ref('')
-const qrCanvas = ref(null)
 const pollingTimer = ref(null)
+
+const qrImageUrl = computed(() => {
+  if (!qrCode.value) return ''
+  return `https://api.qrserver.com/v1/create-qr-code/?size=280x280&margin=8&data=${encodeURIComponent(qrCode.value)}`
+})
 
 const isExpired = computed(() => {
   if (!order.value || order.value.status !== 'pending') return false
@@ -96,7 +107,6 @@ const isExpired = computed(() => {
 
 onMounted(async () => {
   await fetchOrder()
-  renderQR()
   if (order.value && order.value.status === 'pending' && !isExpired.value) {
     pollingTimer.value = setInterval(pollOrder, 3000)
   }
@@ -114,7 +124,7 @@ async function fetchOrder() {
     order.value = res
 
     if (res.qr_code) {
-      qrCode.value = res.qr_code
+      qrCode.value = String(res.qr_code)
     }
 
     if (res.status === 'paid' && pollingTimer.value) {
@@ -132,97 +142,15 @@ async function pollOrder() {
   try {
     const res = await api.paymentQuery(route.params.orderId)
     order.value = res
+    if (res.qr_code) qrCode.value = String(res.qr_code)
 
     if (res.status === 'paid' && pollingTimer.value) {
       clearInterval(pollingTimer.value)
       pollingTimer.value = null
-      await nextTick()
     }
   } catch {
     // ignore polling errors
   }
-}
-
-function renderQR() {
-  if (!qrCode.value || !qrCanvas.value) return
-
-  nextTick(() => {
-    const canvas = qrCanvas.value
-    if (!canvas) return
-
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const size = 256
-    const modules = encodeQR(qrCode.value)
-
-    const cellSize = size / (modules.length + 8)
-    const offset = cellSize * 4
-
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, size, size)
-
-    ctx.fillStyle = '#000000'
-    for (let row = 0; row < modules.length; row++) {
-      for (let col = 0; col < modules[row].length; col++) {
-        if (modules[row][col]) {
-          ctx.fillRect(
-            offset + col * cellSize,
-            offset + row * cellSize,
-            cellSize,
-            cellSize
-          )
-        }
-      }
-    }
-  })
-}
-
-function encodeQR(text) {
-  const size = 25
-  const matrix = []
-  for (let i = 0; i < size; i++) {
-    matrix[i] = []
-    for (let j = 0; j < size; j++) {
-      matrix[i][j] = 0
-    }
-  }
-
-  function setFinderPattern(startRow, startCol) {
-    for (let r = 0; r < 7; r++) {
-      for (let c = 0; c < 7; c++) {
-        if (r === 0 || r === 6 || c === 0 || c === 6 ||
-            (r >= 2 && r <= 4 && c >= 2 && c <= 4)) {
-          matrix[startRow + r][startCol + c] = 1
-        }
-      }
-    }
-  }
-
-  setFinderPattern(0, 0)
-  setFinderPattern(0, size - 7)
-  setFinderPattern(size - 7, 0)
-
-  for (let r = 8; r < size - 8; r++) {
-    for (let c = 8; c < size - 8; c++) {
-      const hash = hashCode(text + r + c)
-      if (Math.abs(hash) % 3 === 0) {
-        matrix[r][c] = 1
-      }
-    }
-  }
-
-  return matrix
-}
-
-function hashCode(str) {
-  let hash = 0
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i)
-    hash = ((hash << 5) - hash) + char
-    hash |= 0
-  }
-  return hash
 }
 
 function statusText(status) {
@@ -339,11 +267,11 @@ function statusText(status) {
   border-radius: 12px;
 }
 
-.qr-wrapper canvas {
+.qr-img {
   display: block;
-  width: 256px;
-  height: 256px;
-  image-rendering: pixelated;
+  width: 280px;
+  height: 280px;
+  max-width: 100%;
 }
 
 .qr-expired-hint {

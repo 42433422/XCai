@@ -61,12 +61,14 @@ export const api = {
   transactions: (limit = 50, offset = 0) =>
     req(`/api/wallet/transactions?limit=${limit}&offset=${offset}`),
 
-  catalog: (q = '', artifact = '', limit = 50, offset = 0) => {
+  catalog: (q = '', artifact = '', limit = 50, offset = 0, industry = '') => {
     let url = `/api/market/catalog?limit=${limit}&offset=${offset}`
     if (q) url += `&q=${encodeURIComponent(q)}`
     if (artifact) url += `&artifact=${encodeURIComponent(artifact)}`
+    if (industry) url += `&industry=${encodeURIComponent(industry)}`
     return req(url)
   },
+  catalogFacets: () => req('/api/market/facets'),
   catalogDetail: (id) => req(`/api/market/catalog/${id}`),
   buyItem: (id) => req(`/api/market/catalog/${id}/buy`, { method: 'POST' }),
   downloadItem: (id) => {
@@ -138,4 +140,24 @@ export const api = {
     req('/api/sync/push', { method: 'POST', body: JSON.stringify({ mod_ids: mod_ids || null }) }),
   pull: (mod_ids) =>
     req('/api/sync/pull', { method: 'POST', body: JSON.stringify({ mod_ids: mod_ids || null }) }),
+
+  getMod: (modId) => req(`/api/mods/${encodeURIComponent(modId)}`),
+  putModManifest: (modId, manifest) =>
+    req(`/api/mods/${encodeURIComponent(modId)}/manifest`, {
+      method: 'PUT',
+      body: JSON.stringify({ manifest }),
+    }),
+  getModFile: (modId, path) =>
+    req(`/api/mods/${encodeURIComponent(modId)}/file?path=${encodeURIComponent(path)}`),
+  putModFile: (modId, path, content) =>
+    req(`/api/mods/${encodeURIComponent(modId)}/file`, {
+      method: 'PUT',
+      body: JSON.stringify({ path, content }),
+    }),
+  getModAuthoringSummary: (modId) =>
+    req(`/api/mods/${encodeURIComponent(modId)}/authoring-summary`),
+  getModBlueprintRoutes: (modId) =>
+    req(`/api/mods/${encodeURIComponent(modId)}/blueprint-routes`),
+  getAuthoringExtensionSurface: (mergeHost = false) =>
+    req(`/api/authoring/extension-surface?merge_host=${mergeHost ? 'true' : 'false'}`),
 }

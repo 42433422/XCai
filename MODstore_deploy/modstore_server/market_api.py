@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from modstore_server.auth_service import (
@@ -90,6 +90,7 @@ class LoginWithCodeDTO(BaseModel):
 class RechargeDTO(BaseModel):
     amount: float = Field(..., gt=0)
     description: str = ""
+    recharge_token: str = ""
 
 
 class BuyDTO(BaseModel):
@@ -348,10 +349,21 @@ def api_wallet_balance(user: User = Depends(_get_current_user)):
 
 
 @router.post("/wallet/recharge")
-def api_wallet_recharge(body: RechargeDTO, user: User = Depends(_get_current_user)):
+def api_wallet_recharge(
+    body: RechargeDTO,
+    request: Request,
+    user: User = Depends(_get_current_user),
+):
+    """管理员线下直充（需密钥）。用户日常充值请使用「支付宝」在钱包页发起。"""
     admin_token = (os.environ.get("MODSTORE_ADMIN_RECHARGE_TOKEN") or "").strip()
     if not admin_token:
-        raise HTTPException(503, "未配置 MODSTORE_ADMIN_RECHARGE_TOKEN，无法充值")
+        raise HTTPException(503, "未配置 MODSTORE_ADMIN_RECHARGE_TOKEN，无法直充")
+    client_token = (
+        (request.headers.get("X-Modstore-Recharge-Token") or "").strip()
+        or (body.recharge_token or "").strip()
+    )
+    if client_token != admin_token:
+        raise HTTPException(403, "无效的充值授权")
 
     sf = get_session_factory()
     with sf() as session:
@@ -409,10 +421,34 @@ def api_wallet_transactions(
 # ── Market catalog ───────────────────────────────────────────
 
 
+@router.get("/market/facets")
+def api_market_facets():
+    """公开：返回市场中出现的行业、类型（artifact）取值，供商店页筛选。"""
+    sf = get_session_factory()
+    with sf() as session:
+        pub = CatalogItem.is_public == True
+        industries = sorted(
+            {
+                t[0]
+                for t in session.query(CatalogItem.industry).filter(pub).distinct().all()
+                if t[0]
+            },
+        )
+        artifacts = sorted(
+            {
+                t[0]
+                for t in session.query(CatalogItem.artifact).filter(pub).distinct().all()
+                if t[0]
+            },
+        )
+        return {"industries": industries, "artifacts": artifacts}
+
+
 @router.get("/market/catalog")
 def api_market_catalog(
     q: Optional[str] = Query(None),
     artifact: Optional[str] = Query(None),
+    industry: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: Optional[User] = Depends(lambda authorization=None: _get_current_user(authorization) if authorization else None),
@@ -429,6 +465,8 @@ def api_market_catalog(
             )
         if artifact:
             query = query.filter(CatalogItem.artifact == artifact)
+        if industry:
+            query = query.filter(CatalogItem.industry == industry)
         total = query.count()
         rows = query.order_by(CatalogItem.created_at.desc()).offset(offset).limit(limit).all()
 
@@ -447,6 +485,7 @@ def api_market_catalog(
                     "description": r.description,
                     "price": r.price,
                     "artifact": r.artifact,
+                    "industry": getattr(r, "industry", None) or "通用",
                     "author_id": r.author_id,
                     "purchased": r.id in purchased_ids,
                     "created_at": r.created_at.isoformat() if r.created_at else "",
@@ -483,6 +522,7 @@ def api_market_catalog_detail(
             "description": item.description,
             "price": item.price,
             "artifact": item.artifact,
+            "industry": getattr(item, "industry", None) or "通用",
             "author_id": item.author_id,
             "purchased": purchased,
             "created_at": item.created_at.isoformat() if item.created_at else "",
@@ -631,6 +671,7 @@ async def api_admin_upload_catalog(
     description: str = Form(""),
     price: float = Form(0, ge=0),
     artifact: str = Form("mod"),
+    industry: str = Form("通用"),
     file: UploadFile = File(None),
     user: User = Depends(_require_admin),
 ):
@@ -662,6 +703,7 @@ async def api_admin_upload_catalog(
             stored_filename = dest_name
             sha256 = _compute_sha256(dest_path)
 
+        ind = (industry or "").strip() or "通用"
         item = CatalogItem(
             pkg_id=pkg_id,
             version=version,
@@ -670,6 +712,7 @@ async def api_admin_upload_catalog(
             price=price,
             author_id=user.id,
             artifact=artifact,
+            industry=ind,
             stored_filename=stored_filename,
             sha256=sha256,
         )
@@ -704,6 +747,7 @@ def api_admin_list_catalog(
                     "description": r.description,
                     "price": r.price,
                     "artifact": r.artifact,
+                    "industry": getattr(r, "industry", None) or "通用",
                     "stored_filename": r.stored_filename,
                     "sha256": r.sha256,
                     "is_public": r.is_public,

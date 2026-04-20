@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -78,6 +79,7 @@ class CatalogItem(Base):
     price = Column(Float, default=0.0)
     author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     artifact = Column(String(32), default="mod")
+    industry = Column(String(64), default="通用")
     stored_filename = Column(String(256), default="")
     sha256 = Column(String(64), default="")
     is_public = Column(Boolean, default=True)
@@ -133,9 +135,22 @@ def get_session_factory(db_path: Optional[Path] = None):
     return _SessionFactory
 
 
+def _sqlite_add_column_if_missing(engine, table: str, column: str, ddl_type: str) -> None:
+    """SQLite 表结构演进：缺列时 ALTER ADD（幂等）。"""
+    with engine.begin() as conn:
+        rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        if any(row[1] == column for row in rows):
+            return
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+
+
 def init_db(db_path: Optional[Path] = None):
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
+    try:
+        _sqlite_add_column_if_missing(engine, "catalog_items", "industry", "TEXT DEFAULT '通用'")
+    except Exception:
+        pass
 
 
 def add_user_mod(user_id: int, mod_id: str) -> UserMod:

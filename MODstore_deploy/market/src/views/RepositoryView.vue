@@ -2,7 +2,7 @@
   <div class="repo-page">
     <div class="page-header">
       <h1 class="page-title">仓库</h1>
-      <p class="page-desc">管理所有 Mod 源码，新建、导入、推送、拉取</p>
+      <p class="page-desc">管理所有 Mod 源码，新建、导入、推送、拉取；Mod 制作请在卡片上点「制作 / 编辑」</p>
       <div class="header-actions">
         <button class="btn btn-primary" @click="showCreate = true">新建 Mod</button>
         <label class="btn">
@@ -29,7 +29,7 @@
         <div v-if="m.warnings?.length" class="mod-card-warn">{{ m.warnings[0] }}{{ m.warnings.length > 1 ? ' …' : '' }}</div>
         <div v-if="m.error" class="mod-card-warn">{{ m.error }}</div>
         <div class="mod-card-actions">
-          <button class="btn btn-sm" @click="viewMod(m.id)">查看详情</button>
+          <button class="btn btn-sm" @click="viewMod(m.id)">制作 / 编辑</button>
         </div>
       </div>
     </div>
@@ -91,7 +91,7 @@ function getBlurb(m) {
 }
 
 function viewMod(id) {
-  router.push(`/mod/${encodeURIComponent(id)}`)
+  router.push({ name: 'mod-authoring', params: { modId: id } })
 }
 
 async function load() {
@@ -110,11 +110,13 @@ async function load() {
 async function submitCreate() {
   try {
     const res = await api.createMod(createId.value, createName.value)
+    const newId = res.id
     showCreate.value = false
     createId.value = ''
     createName.value = ''
-    flash(`已创建 ${res.id}`)
+    flash(`已创建 ${newId}`)
     await load()
+    router.push({ name: 'mod-authoring', params: { modId: newId } })
   } catch (e) {
     flash(e.message || String(e), false)
   }

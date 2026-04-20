@@ -23,7 +23,7 @@ echo [OK] Python 已安装
 
 echo.
 echo [2/4] 安装依赖...
-pip install fastapi "uvicorn[standard]" python-multipart httpx sqlalchemy PyJWT bcrypt python-dotenv -q
+pip install fastapi "uvicorn[standard]" python-multipart httpx sqlalchemy PyJWT bcrypt python-dotenv python-alipay-sdk -q
 if errorlevel 1 (
     echo [错误] 依赖安装失败
     pause

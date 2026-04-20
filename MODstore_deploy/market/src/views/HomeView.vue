@@ -6,7 +6,8 @@
         <div class="landing-nav-inner">
           <router-link to="/" class="landing-logo">XC AGI</router-link>
           <nav class="landing-nav-links">
-            <router-link to="/login" class="nav-ghost">进入工作台</router-link>
+            <router-link :to="{ name: 'ai-store' }" class="nav-ghost">AI 员工商店</router-link>
+            <router-link :to="workbenchLink" class="nav-ghost">进入工作台</router-link>
             <router-link v-if="!isLoggedIn" to="/register" class="nav-primary">免费注册</router-link>
           </nav>
         </div>
@@ -29,7 +30,7 @@
           </p>
           <div class="hero-actions">
             <router-link to="/register" class="btn btn-white">开始使用</router-link>
-            <router-link to="/login" class="btn btn-ghost">进入工作台</router-link>
+            <router-link :to="workbenchLink" class="btn btn-ghost">进入工作台</router-link>
           </div>
         </div>
       </div>
@@ -168,9 +169,12 @@
     <section id="ai-market" class="section section--border-top">
       <div class="container">
         <div class="section-header">
-          <h2 class="section-title">AI 员工市场</h2>
+          <h2 class="section-title">
+            <router-link class="section-title-link" :to="{ name: 'ai-store' }">AI 员工市场</router-link>
+          </h2>
           <p class="section-description">
-            浏览和购买现成的 MOD 扩展，快速为你的业务系统添加能力
+            浏览和购买现成的 MOD 扩展，快速为你的业务系统添加能力。
+            <router-link :to="{ name: 'ai-store' }" class="section-more-link">进入专属商店页（按行业 / 类型筛选）</router-link>
           </p>
         </div>
 
@@ -216,12 +220,13 @@
             <div class="footer-col">
               <h4 class="footer-heading">产品</h4>
               <router-link to="/" class="footer-link">首页</router-link>
+              <router-link :to="{ name: 'ai-store' }" class="footer-link">AI 员工商店</router-link>
               <router-link to="/plans" class="footer-link">套餐</router-link>
             </div>
             <div class="footer-col">
               <h4 class="footer-heading">支持</h4>
-              <router-link to="/login" class="footer-link">登录</router-link>
-              <router-link to="/register" class="footer-link">注册</router-link>
+              <router-link :to="workbenchLink" class="footer-link">{{ isLoggedIn ? '工作台' : '登录' }}</router-link>
+              <router-link v-if="!isLoggedIn" to="/register" class="footer-link">注册</router-link>
             </div>
           </div>
         </div>
@@ -249,7 +254,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 
@@ -261,6 +266,13 @@ const heroVideoUrl = `${import.meta.env.BASE_URL}hero-video.mp4`
 const loading = ref(false)
 const items = ref([])
 const isLoggedIn = ref(false)
+
+/** 已登录直接去仓库工作台；未登录去登录页并带回跳，避免已登录点 /login 被守卫立即打回首页像「点不动」 */
+const workbenchLink = computed(() =>
+  isLoggedIn.value
+    ? '/workbench/repository'
+    : { path: '/login', query: { redirect: '/workbench/repository' } },
+)
 
 function truncate(str, len) {
   if (!str) return ''
@@ -325,10 +337,11 @@ onUnmounted(() => {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 100;
+  z-index: 2000;
   background: rgba(10, 10, 10, 0.8);
   backdrop-filter: blur(12px);
   border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+  pointer-events: auto;
 }
 
 .landing-nav-inner {
@@ -515,11 +528,33 @@ onUnmounted(() => {
   margin: 0 0 8px;
 }
 
+.section-title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.section-title-link:hover {
+  color: #93c5fd;
+}
+
 .section-description {
   font-size: 16px;
   color: rgba(255, 255, 255, 0.5);
   margin: 0;
   max-width: 640px;
+}
+
+.section-more-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 14px;
+  color: #93c5fd;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.section-more-link:hover {
+  text-decoration: underline;
 }
 
 /* Features */

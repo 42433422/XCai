@@ -16,8 +16,8 @@
 
           <template v-else>
             <router-link to="/" class="nav-link">首页</router-link>
-            <router-link to="/repository" class="nav-link">仓库</router-link>
-            <router-link :to="{ path: '/', hash: '#ai-market' }" class="nav-link nav-gradient">AI 员工</router-link>
+            <router-link to="/workbench/repository" class="nav-link">工作台</router-link>
+            <router-link :to="{ name: 'ai-store' }" class="nav-link nav-gradient">AI 员工</router-link>
             <router-link to="/plans" class="nav-link">套餐</router-link>
             <template v-if="isLoggedIn">
               <router-link to="/my-store" class="nav-link">我的商店</router-link>

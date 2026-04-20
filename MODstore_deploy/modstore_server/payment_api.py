@@ -8,12 +8,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from modstore_server import alipay_service
 from modstore_server import payment_orders
-from modstore_server.auth_service import decode_access_token, get_user_by_id
 from modstore_server.models import CatalogItem, Purchase, Transaction, User, Wallet, get_session_factory, init_db
 from modstore_server.market_api import _get_current_user
 
@@ -58,21 +57,79 @@ class CheckoutDTO(BaseModel):
     item_id: int = 0
     total_amount: float = 0
     subject: str = ""
+    wallet_recharge: bool = False
 
 
-# ── 获取当前用户（可选） ─────────────────────────────────────
+def _checkout_return_url(request: Request, out_trade_no: str) -> str | None:
+    """收银台回跳地址（page/wap pay 的 return_url / quit_url）。"""
+    origin = (os.environ.get("MODSTORE_PUBLIC_ORIGIN") or "").strip().rstrip("/")
+    if not origin:
+        origin = str(request.base_url).rstrip("/")
+    prefix = (os.environ.get("MODSTORE_MARKET_PREFIX") or "/market").strip()
+    if prefix and not prefix.startswith("/"):
+        prefix = "/" + prefix
+    prefix = prefix.rstrip("/")
+    path = f"{prefix}/checkout/{out_trade_no}" if prefix else f"/checkout/{out_trade_no}"
+    return f"{origin}{path}"
 
 
-def _get_optional_user(authorization: Optional[str] = Header(None)) -> Optional[User]:
-    raw = (authorization or "").strip()
-    if not raw.startswith("Bearer "):
-        return None
-    token = raw[7:]
-    payload = decode_access_token(token)
-    if not payload:
-        return None
-    user_id = int(payload["sub"])
-    return get_user_by_id(user_id)
+def _fulfill_paid_order(out_trade_no: str) -> None:
+    """支付成功后幂等入账（钱包 / 套餐 / 市场商品）。"""
+    order = payment_orders.find(out_trade_no)
+    if not order or order.get("status") != "paid":
+        return
+    if order.get("fulfilled"):
+        return
+
+    user_id = int(order.get("user_id") or 0)
+    if not user_id:
+        payment_orders.merge_fields(out_trade_no, fulfilled=True)
+        return
+
+    try:
+        total_amount = float(order.get("total_amount") or 0)
+    except (TypeError, ValueError):
+        logger.warning("订单金额异常: %s", out_trade_no)
+        return
+
+    item_id = int(order.get("item_id") or 0)
+    plan_id = (order.get("plan_id") or "").strip()
+    kind = (order.get("order_kind") or "").strip()
+
+    if item_id:
+        desc = f"支付宝充值 (订单 {out_trade_no})"
+        txn_type = "alipay_recharge"
+    elif kind == "wallet":
+        desc = f"钱包充值 (订单 {out_trade_no})"
+        txn_type = "alipay_wallet"
+    elif plan_id or kind == "plan":
+        desc = f"套餐「{order.get('subject', '')}」({out_trade_no})"
+        txn_type = "plan_purchase"
+    else:
+        desc = f"支付宝入账 ({out_trade_no})"
+        txn_type = "alipay_recharge"
+
+    sf = get_session_factory()
+    with sf() as session:
+        wallet = session.query(Wallet).filter(Wallet.user_id == user_id).first()
+        if not wallet:
+            wallet = Wallet(user_id=user_id, balance=0.0)
+            session.add(wallet)
+        wallet.balance += total_amount
+        wallet.updated_at = datetime.now(timezone.utc)
+        session.add(
+            Transaction(
+                user_id=user_id,
+                amount=total_amount,
+                txn_type=txn_type,
+                status="completed",
+                description=desc,
+            )
+        )
+        session.commit()
+
+    payment_orders.merge_fields(out_trade_no, fulfilled=True)
+    logger.info("订单权益已发放: %s user=%s amount=%s", out_trade_no, user_id, total_amount)
 
 
 # ── 套餐列表 ─────────────────────────────────────────────────
@@ -93,29 +150,37 @@ def api_payment_plans():
 async def api_payment_checkout(
     body: CheckoutDTO,
     request: Request,
-    user: Optional[User] = Depends(_get_optional_user),
+    user: User = Depends(_get_current_user),
 ):
     """
-    创建支付宝订单。
-    支持三种模式：
-      - plan_id: 购买预设套餐
-      - item_id: 购买市场中的 MOD/AI 员工
-      - 直接指定 total_amount + subject（充值模式）
-    返回: {"ok", "order_id", "type": "page"|"wap"|"precreate", "redirect_url"|"qr_code"}
+    创建支付宝订单（需登录）。
+    模式：
+      - ``wallet_recharge=true`` + ``total_amount``：钱包充值
+      - ``plan_id``：购买预设套餐
+      - ``item_id``：购买市场中的 MOD
+    返回: ``type`` 为 ``page`` / ``wap`` / ``precreate``，对应跳转 URL 或扫码内容。
     """
-    user_id = user.id if user else 0
+    user_id = user.id
 
-    # 1. 确定金额和标题
     subject = body.subject or "XC AGI 订单"
-    total_amount = body.total_amount
+    total_amount = float(body.total_amount or 0)
+    plan_id = ""
+    item_id = 0
+    order_kind = ""
 
-    if body.plan_id:
+    if body.wallet_recharge:
+        if not total_amount or total_amount <= 0:
+            raise HTTPException(400, "请填写大于 0 的充值金额")
+        subject = (body.subject or "").strip() or "XC AGI 钱包充值"
+        order_kind = "wallet"
+    elif body.plan_id:
         plan = next((p for p in DEFAULT_PLANS if p["id"] == body.plan_id), None)
         if not plan:
             raise HTTPException(404, f"套餐 {body.plan_id} 不存在")
-        total_amount = plan["price"]
-        subject = plan["name"]
-
+        total_amount = float(plan["price"])
+        subject = str(plan["name"])
+        plan_id = body.plan_id
+        order_kind = "plan"
     elif body.item_id:
         sf = get_session_factory()
         with sf() as session:
@@ -124,42 +189,53 @@ async def api_payment_checkout(
                 raise HTTPException(404, "商品不存在")
             if item.price <= 0:
                 return {"ok": True, "message": "免费商品，无需支付"}
-            total_amount = item.price
-            subject = item.name
+            total_amount = float(item.price)
+            subject = str(item.name)
+        item_id = int(body.item_id)
+        order_kind = "item"
+    else:
+        raise HTTPException(400, "请使用 wallet_recharge、plan_id 或 item_id 之一下单")
 
-    if not total_amount or total_amount <= 0:
+    if total_amount <= 0:
         raise HTTPException(400, "金额必须大于 0")
 
-    # 2. 检查支付宝是否就绪
     if not alipay_service.alipay_ui_ready():
         raise HTTPException(503, "支付宝支付未配置，请联系管理员")
 
-    # 3. 创建订单记录
     out_trade_no = f"MOD{int(time.time())}{user_id:06d}"
     order_result = payment_orders.create(
         out_trade_no=out_trade_no,
         subject=subject,
-        total_amount=str(total_amount),
+        total_amount=f"{total_amount:.2f}",
         user_id=user_id,
-        item_id=body.item_id,
+        item_id=item_id,
+        plan_id=plan_id,
+        order_kind=order_kind,
     )
     if not order_result["ok"]:
         raise HTTPException(500, f"创建订单失败: {order_result.get('message')}")
 
-    # 4. 调用支付宝下单（自动根据 UA 选择 page/wap/precreate）
     ua = request.headers.get("user-agent", "")
+    return_url = _checkout_return_url(request, out_trade_no)
+    notify_url = (os.environ.get("ALIPAY_NOTIFY_URL") or "").strip() or alipay_service.notify_url_default()
     pay_result = alipay_service.create_pay_order(
         out_trade_no=out_trade_no,
         subject=subject,
         total_amount=f"{total_amount:.2f}",
         user_agent=ua,
-        notify_url=os.environ.get("ALIPAY_NOTIFY_URL"),
+        return_url=return_url,
+        quit_url=return_url,
+        notify_url=notify_url,
     )
 
     if not pay_result["ok"]:
-        # 更新订单为失败状态
         payment_orders.update_status(out_trade_no=out_trade_no, status="failed")
         raise HTTPException(502, f"支付下单失败: {pay_result.get('message')}")
+
+    extras: dict[str, Any] = {"pay_type": pay_result.get("type")}
+    if pay_result.get("qr_code"):
+        extras["qr_code"] = pay_result["qr_code"]
+    payment_orders.merge_fields(out_trade_no, **extras)
 
     return {
         "ok": True,
@@ -233,31 +309,8 @@ async def api_payment_notify_alipay(request: Request):
         paid_at=paid_at,
     )
 
-    # 发放权益
-    user_id = order.get("user_id", 0)
-    item_id = order.get("item_id", 0)
-
-    if item_id:
-        # 购买商品：创建 Purchase 记录 + 充值到钱包
-        sf = get_session_factory()
-        with sf() as session:
-            wallet = session.query(Wallet).filter(Wallet.user_id == user_id).first()
-            if not wallet:
-                wallet = Wallet(user_id=user_id, balance=0.0)
-                session.add(wallet)
-            wallet.balance += float(total_amount)
-            wallet.updated_at = datetime.now(timezone.utc)
-            txn = Transaction(
-                user_id=user_id,
-                amount=float(total_amount),
-                txn_type="alipay_recharge",
-                status="completed",
-                description=f"支付宝充值 (订单 {out_trade_no})",
-            )
-            session.add(txn)
-            session.commit()
-
-    logger.info("订单支付成功并已发放权益: %s, 用户 %d, 金额 %s", out_trade_no, user_id, total_amount)
+    _fulfill_paid_order(out_trade_no)
+    logger.info("订单支付成功并已发放权益: %s, 金额 %s", out_trade_no, total_amount)
     return "success"
 
 
@@ -279,7 +332,6 @@ def api_payment_query(out_trade_no: str):
                 raw = alipay_result.get("raw", {})
                 trade_status = raw.get("trade_status", "")
                 if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED"):
-                    # 同步本地状态
                     payment_orders.update_status(
                         out_trade_no=out_trade_no,
                         status="paid",
@@ -287,9 +339,14 @@ def api_payment_query(out_trade_no: str):
                         buyer_id=raw.get("buyer_id"),
                         paid_at=datetime.now(timezone.utc).isoformat(),
                     )
-                    order["status"] = "paid"
+                    _fulfill_paid_order(out_trade_no)
+                    order = payment_orders.find(out_trade_no) or order
         except Exception:
             pass
+
+    if order.get("status") == "paid" and not order.get("fulfilled"):
+        _fulfill_paid_order(out_trade_no)
+        order = payment_orders.find(out_trade_no) or order
 
     return order
 
