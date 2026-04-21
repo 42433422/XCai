@@ -1,4 +1,4 @@
-const BASE = ''
+const BASE = 'http://127.0.0.1:8765'
 
 function getToken() {
   return localStorage.getItem('modstore_token') || ''
