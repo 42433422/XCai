@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from uuid import uuid4
 
+import requests
 from flask import (
     Flask,
+    Response,
     jsonify,
     redirect,
     render_template_string,
     request,
     send_from_directory,
+    stream_with_context,
     url_for,
 )
 from werkzeug.utils import secure_filename
@@ -176,6 +180,82 @@ def api_news():
   items = load_news()
   items_sorted = sorted(items, key=lambda x: x.get("date", ""), reverse=True)
   return jsonify(items_sorted)
+
+
+# ---------------------------------------------------------------------------
+# ModStore（FastAPI，见 MODstore_deploy/modstore_server）反向代理
+# 线上需同时运行 Uvicorn，例如：uvicorn modstore_server.app:app --host 127.0.0.1 --port 8000
+# 可通过环境变量 MODSTORE_BACKEND_URL 覆盖默认后端地址。
+# ---------------------------------------------------------------------------
+MODSTORE_BACKEND = os.environ.get("MODSTORE_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
+
+_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "content-encoding",
+    }
+)
+
+
+def _modstore_target_url(subpath: str) -> str:
+  base = f"{MODSTORE_BACKEND}/api/{subpath}"
+  qs = request.query_string.decode("utf-8")
+  return f"{base}?{qs}" if qs else base
+
+
+def _headers_to_upstream() -> dict[str, str]:
+  out: dict[str, str] = {}
+  for key, value in request.headers:
+    lk = key.lower()
+    if lk in _HOP_BY_HOP or lk == "host":
+      continue
+    out[key] = value
+  return out
+
+
+@app.route(
+    "/api/<path:subpath>",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+def proxy_modstore_api(subpath: str):
+  url = _modstore_target_url(subpath)
+  method = request.method
+  headers = _headers_to_upstream()
+  data = None if method in ("GET", "HEAD", "OPTIONS") else request.get_data()
+  try:
+    upstream = requests.request(
+        method,
+        url,
+        headers=headers,
+        data=data,
+        stream=True,
+        timeout=120,
+        allow_redirects=False,
+    )
+  except requests.RequestException as exc:
+    return jsonify({"detail": f"ModStore 后端不可用（请检查 Uvicorn 与 MODSTORE_BACKEND_URL）: {exc}"}), 502
+
+  excluded_resp = _HOP_BY_HOP | {"content-length"}
+
+  def generate():
+    for chunk in upstream.iter_content(chunk_size=65536):
+      if chunk:
+        yield chunk
+
+  resp = Response(stream_with_context(generate()), status=upstream.status_code)
+  for key, value in upstream.headers.items():
+    lk = key.lower()
+    if lk in excluded_resp:
+      continue
+    resp.headers[key] = value
+  return resp
 
 
 ADMIN_SHARED_CSS = """

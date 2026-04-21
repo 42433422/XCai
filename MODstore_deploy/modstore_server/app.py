@@ -101,11 +101,26 @@ def _get_allowed_origins() -> list[str]:
         "http://127.0.0.1:4173",
         "http://localhost:4173",
         "https://xiu-ci.com",
+        "https://www.xiu-ci.com",
     ]
+
+
+def _get_cors_origin_regex() -> str | None:
+    """可选：用正则匹配一批预览域名（如腾讯云 EdgeOne *.edgeone.cool）。"""
+    raw = os.environ.get("CORS_ORIGIN_REGEX", "").strip()
+    if raw:
+        low = raw.lower()
+        if low in ("0", "false", "none", "-"):
+            return None
+        return raw
+    # 默认允许 EdgeOne 预览站（子域随实例变化，不宜写死在 allow_origins）
+    return r"^https://[a-zA-Z0-9.-]+\.edgeone\.cool$"
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_allowed_origins(),
+    allow_origin_regex=_get_cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
