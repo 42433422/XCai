@@ -833,31 +833,33 @@ _maybe_mount_ui()
 @app.middleware("http")
 async def _market_history_spa_middleware(request: Request, call_next):
     """
-    在路由匹配之前处理 ``/market`` 前缀：真实文件直接返回，否则回退 ``index.html``。
-    避免其它宽泛路由或注册顺序导致 ``/market/register`` 等返回 404。
+    在路由匹配之前处理 ``/market`` 和 ``/new`` 前缀：真实文件直接返回，否则回退 ``index.html``。
+    避免其它宽泛路由或注册顺序导致 ``/market/register``、``/new/register`` 等返回 404。
     """
     if request.scope["type"] != "http":
         return await call_next(request)
     if request.method not in ("GET", "HEAD"):
         return await call_next(request)
     path = request.url.path
-    if path != "/market" and path != "/market/" and not path.startswith("/market/"):
-        return await call_next(request)
 
-    idx = _MARKET_DIST / "index.html"
-    if not _MARKET_DIST.is_dir() or not idx.is_file():
-        return await call_next(request)
+    for prefix in ("/market", "/new"):
+        if path == prefix or path == prefix + "/" or path.startswith(prefix + "/"):
+            idx = _MARKET_DIST / "index.html"
+            if not _MARKET_DIST.is_dir() or not idx.is_file():
+                return await call_next(request)
 
-    dist_root = _MARKET_DIST.resolve()
-    rel = path[len("/market") :].lstrip("/")
-    if rel:
-        if ".." in rel.split("/"):
-            return JSONResponse({"detail": "非法路径"}, status_code=400)
-        candidate = (_MARKET_DIST / rel).resolve()
-        try:
-            candidate.relative_to(dist_root)
-        except ValueError:
-            return await call_next(request)
-        if candidate.is_file():
-            return FileResponse(candidate)
-    return FileResponse(idx)
+            dist_root = _MARKET_DIST.resolve()
+            rel = path[len(prefix):].lstrip("/")
+            if rel:
+                if ".." in rel.split("/"):
+                    return JSONResponse({"detail": "非法路径"}, status_code=400)
+                candidate = (_MARKET_DIST / rel).resolve()
+                try:
+                    candidate.relative_to(dist_root)
+                except ValueError:
+                    return await call_next(request)
+                if candidate.is_file():
+                    return FileResponse(candidate)
+            return FileResponse(idx)
+
+    return await call_next(request)
