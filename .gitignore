@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 *.mp4
 !new/hero-video.mp4
+!public/hero-video.mp4
 
 MODstore_deploy.zip
 MODstore_deploy/market/node_modules/
