@@ -1,4 +1,4 @@
-const BASE = 'https://xiu-ci.com/'
+const BASE = 'https://xiu-ci.com'
 
 function getToken() {
   return localStorage.getItem('modstore_token') || ''
