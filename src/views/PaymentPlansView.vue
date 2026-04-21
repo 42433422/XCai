@@ -48,8 +48,95 @@ onMounted(async () => {
   try {
     const res = await api.paymentPlans()
     plans.value = res.plans || []
+    
+    // 如果API没有返回套餐数据，使用默认套餐
+    if (plans.value.length === 0) {
+      plans.value = [
+        {
+          id: 1,
+          name: '体验版',
+          price: 10,
+          description: '适合个人用户体验',
+          features: [
+            '基础AI单据识别',
+            '每月100次识别次数',
+            '基本标签生成',
+            '邮件支持'
+          ]
+        },
+        {
+          id: 2,
+          name: '普通版',
+          price: 99,
+          description: '适合小型企业',
+          features: [
+            '高级AI单据识别',
+            '每月1000次识别次数',
+            '高级标签生成',
+            '优先邮件支持',
+            '数据导出功能'
+          ]
+        },
+        {
+          id: 3,
+          name: '高级版',
+          price: 199,
+          description: '适合中型企业',
+          features: [
+            '专业AI单据识别',
+            '无限识别次数',
+            '专业标签生成',
+            '24小时在线支持',
+            '高级数据导出',
+            'API接口访问'
+          ]
+        }
+      ]
+    }
   } catch (e) {
     errorMsg.value = '加载套餐失败: ' + e.message
+    // 出错时使用默认套餐
+    plans.value = [
+      {
+        id: 1,
+        name: '体验版',
+        price: 10,
+        description: '适合个人用户体验',
+        features: [
+          '基础AI单据识别',
+          '每月100次识别次数',
+          '基本标签生成',
+          '邮件支持'
+        ]
+      },
+      {
+        id: 2,
+        name: '普通版',
+        price: 99,
+        description: '适合小型企业',
+        features: [
+          '高级AI单据识别',
+          '每月1000次识别次数',
+          '高级标签生成',
+          '优先邮件支持',
+          '数据导出功能'
+        ]
+      },
+      {
+        id: 3,
+        name: '高级版',
+        price: 199,
+        description: '适合中型企业',
+        features: [
+          '专业AI单据识别',
+          '无限识别次数',
+          '专业标签生成',
+          '24小时在线支持',
+          '高级数据导出',
+          'API接口访问'
+        ]
+      }
+    ]
   } finally {
     loading.value = false
   }
