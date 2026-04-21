@@ -100,6 +100,7 @@ def _get_allowed_origins() -> list[str]:
         "http://localhost:5176",
         "http://127.0.0.1:4173",
         "http://localhost:4173",
+        "https://xiu-ci.com",
     ]
 
 app.add_middleware(
