@@ -1,8 +1,8 @@
 <template>
   <div class="plans-page">
     <div class="page-header">
-      <h1 class="page-title">XC AGI 套餐</h1>
-      <p class="page-desc">选择适合你的 MOD 套餐，免费创建，AI 能力随用随买</p>
+      <h1 class="page-title">AI 员工套餐</h1>
+      <p class="page-desc">选择适合你的 AI 员工套餐，让智能员工为你工作</p>
     </div>
 
     <div v-if="loading" class="loading">加载中...</div>
@@ -56,11 +56,11 @@ onMounted(async () => {
           id: 1,
           name: '体验版',
           price: 10,
-          description: '适合个人用户体验',
+          description: '适合个人用户体验AI员工',
           features: [
-            '基础AI单据识别',
-            '每月100次识别次数',
-            '基本标签生成',
+            '基础AI员工能力',
+            '每月100次AI任务执行',
+            '基本工作流程',
             '邮件支持'
           ]
         },
@@ -68,11 +68,11 @@ onMounted(async () => {
           id: 2,
           name: '普通版',
           price: 99,
-          description: '适合小型企业',
+          description: '适合小型企业日常运营',
           features: [
-            '高级AI单据识别',
-            '每月1000次识别次数',
-            '高级标签生成',
+            '高级AI员工能力',
+            '每月1000次AI任务执行',
+            '复杂工作流程',
             '优先邮件支持',
             '数据导出功能'
           ]
@@ -81,11 +81,11 @@ onMounted(async () => {
           id: 3,
           name: '高级版',
           price: 199,
-          description: '适合中型企业',
+          description: '适合中型企业智能转型',
           features: [
-            '专业AI单据识别',
-            '无限识别次数',
-            '专业标签生成',
+            '专业AI员工能力',
+            '无限AI任务执行',
+            '高级工作流程',
             '24小时在线支持',
             '高级数据导出',
             'API接口访问'
@@ -101,11 +101,11 @@ onMounted(async () => {
         id: 1,
         name: '体验版',
         price: 10,
-        description: '适合个人用户体验',
+        description: '适合个人用户体验AI员工',
         features: [
-          '基础AI单据识别',
-          '每月100次识别次数',
-          '基本标签生成',
+          '基础AI员工能力',
+          '每月100次AI任务执行',
+          '基本工作流程',
           '邮件支持'
         ]
       },
@@ -113,11 +113,11 @@ onMounted(async () => {
         id: 2,
         name: '普通版',
         price: 99,
-        description: '适合小型企业',
+        description: '适合小型企业日常运营',
         features: [
-          '高级AI单据识别',
-          '每月1000次识别次数',
-          '高级标签生成',
+          '高级AI员工能力',
+          '每月1000次AI任务执行',
+          '复杂工作流程',
           '优先邮件支持',
           '数据导出功能'
         ]
@@ -126,11 +126,11 @@ onMounted(async () => {
         id: 3,
         name: '高级版',
         price: 199,
-        description: '适合中型企业',
+        description: '适合中型企业智能转型',
         features: [
-          '专业AI单据识别',
-          '无限识别次数',
-          '专业标签生成',
+          '专业AI员工能力',
+          '无限AI任务执行',
+          '高级工作流程',
           '24小时在线支持',
           '高级数据导出',
           'API接口访问'
