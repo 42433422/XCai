@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// 生产 base：默认 ``/market/``（与 FastAPI 挂载一致）；站点子路径如 ``/new/`` 可设环境变量 ``VITE_PUBLIC_BASE=/new/`` 后执行 build
+// 生产 base：默认 ``/``（作为整个首页）；站点子路径如 ``/new/`` 可设环境变量 ``VITE_PUBLIC_BASE=/new/`` 后执行 build
 const productionBase = () => {
-  const raw = (process.env.VITE_PUBLIC_BASE || '/market/').trim()
+  const raw = (process.env.VITE_PUBLIC_BASE || '').trim()
   const withSlash = raw.endsWith('/') ? raw : `${raw}/`
   return withSlash.startsWith('/') ? withSlash : `/${withSlash}`
 }
