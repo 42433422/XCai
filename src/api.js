@@ -1,4 +1,11 @@
-const BASE = 'https://xiu-ci.com'
+/** 生产可设 VITE_API_BASE（勿尾斜杠），例如同源反代或独立 API 域 */
+function apiBase() {
+  const raw = (import.meta.env?.VITE_API_BASE ?? '').toString().trim()
+  if (raw) return raw.replace(/\/$/, '')
+  return 'https://xiu-ci.com'
+}
+
+const BASE = apiBase()
 
 function getToken() {
   return localStorage.getItem('modstore_token') || ''
