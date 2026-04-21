@@ -297,7 +297,7 @@ onMounted(async () => {
   await refreshLandingAuth()
   try {
     const res = await api.catalog('', '', 4, 0)
-    items.value = res.items
+    items.value = res?.items || []
   } catch {
     items.value = []
   }
