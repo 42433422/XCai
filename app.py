@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -189,6 +190,50 @@ def api_news():
 # ---------------------------------------------------------------------------
 MODSTORE_BACKEND = os.environ.get("MODSTORE_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 
+# 浏览器跨域访问 /api/*（反代 ModStore）时由 Flask 补齐 CORS，避免 Nginx/上游未带预检头。
+_MODSTORE_CORS_ORIGINS_RAW = os.environ.get("MODSTORE_CORS_ORIGINS", "").strip()
+if _MODSTORE_CORS_ORIGINS_RAW:
+  _MODSTORE_CORS_ORIGINS = frozenset(
+      o.strip() for o in _MODSTORE_CORS_ORIGINS_RAW.split(",") if o.strip()
+  )
+else:
+  _MODSTORE_CORS_ORIGINS = frozenset(
+      {
+          "https://xiu-ci.com",
+          "https://www.xiu-ci.com",
+          "http://127.0.0.1:5173",
+          "http://localhost:5173",
+          "http://127.0.0.1:4173",
+          "http://localhost:4173",
+      }
+  )
+_cors_regex_raw = os.environ.get("MODSTORE_CORS_ORIGIN_REGEX", "").strip()
+if _cors_regex_raw.lower() in ("0", "false", "none", "-"):
+  _MODSTORE_CORS_ORIGIN_RE = None
+elif _cors_regex_raw:
+  _MODSTORE_CORS_ORIGIN_RE = re.compile(_cors_regex_raw)
+else:
+  _MODSTORE_CORS_ORIGIN_RE = re.compile(r"^https://[a-zA-Z0-9.-]+\.edgeone\.cool$")
+
+
+def _reflect_cors_origin(origin: str | None) -> str | None:
+  if not origin:
+    return None
+  if origin in _MODSTORE_CORS_ORIGINS:
+    return origin
+  if _MODSTORE_CORS_ORIGIN_RE and _MODSTORE_CORS_ORIGIN_RE.match(origin):
+    return origin
+  return None
+
+
+def _apply_cors_headers(resp: Response) -> None:
+  allowed = _reflect_cors_origin(request.headers.get("Origin"))
+  if not allowed:
+    return
+  resp.headers["Access-Control-Allow-Origin"] = allowed
+  resp.headers["Access-Control-Allow-Credentials"] = "true"
+
+
 _HOP_BY_HOP = frozenset(
     {
         "connection",
@@ -225,10 +270,29 @@ def _headers_to_upstream() -> dict[str, str]:
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
 )
 def proxy_modstore_api(subpath: str):
+  reflected = _reflect_cors_origin(request.headers.get("Origin"))
+
+  if request.method == "OPTIONS":
+    if not reflected:
+      return Response("", status=403)
+    req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
+    allow_headers = req_hdrs or "authorization, content-type"
+    return Response(
+        "",
+        status=204,
+        headers={
+            "Access-Control-Allow-Origin": reflected,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD",
+            "Access-Control-Allow-Headers": allow_headers,
+            "Access-Control-Max-Age": "600",
+        },
+    )
+
   url = _modstore_target_url(subpath)
   method = request.method
   headers = _headers_to_upstream()
-  data = None if method in ("GET", "HEAD", "OPTIONS") else request.get_data()
+  data = None if method in ("GET", "HEAD") else request.get_data()
   try:
     upstream = requests.request(
         method,
@@ -240,7 +304,10 @@ def proxy_modstore_api(subpath: str):
         allow_redirects=False,
     )
   except requests.RequestException as exc:
-    return jsonify({"detail": f"ModStore 后端不可用（请检查 Uvicorn 与 MODSTORE_BACKEND_URL）: {exc}"}), 502
+    err = jsonify({"detail": f"ModStore 后端不可用（请检查 Uvicorn 与 MODSTORE_BACKEND_URL）: {exc}"})
+    err.status_code = 502
+    _apply_cors_headers(err)
+    return err
 
   excluded_resp = _HOP_BY_HOP | {"content-length"}
 
@@ -252,9 +319,10 @@ def proxy_modstore_api(subpath: str):
   resp = Response(stream_with_context(generate()), status=upstream.status_code)
   for key, value in upstream.headers.items():
     lk = key.lower()
-    if lk in excluded_resp:
+    if lk in excluded_resp or lk.startswith("access-control-"):
       continue
     resp.headers[key] = value
+  _apply_cors_headers(resp)
   return resp
 
 
