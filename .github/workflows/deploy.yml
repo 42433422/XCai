@@ -1,0 +1,35 @@
+name: Deploy to Production
+
+on:
+  repository_dispatch:
+    types: [deploy]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.branch || 'main' }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Deploy to server
+        run: |
+          # 这里可以添加部署到服务器的命令
+          # 例如使用 scp 上传文件到服务器
+          echo "Deploying to production..."
+
+      - name: Notify deployment
+        run: |
+          echo "Deployment completed successfully!"
