@@ -232,6 +232,28 @@ def _apply_cors_headers(resp: Response) -> None:
     return
   resp.headers["Access-Control-Allow-Origin"] = allowed
   resp.headers["Access-Control-Allow-Credentials"] = "true"
+  vary = resp.headers.get("Vary")
+  if vary:
+    parts = [p.strip() for p in vary.split(",") if p.strip()]
+    if "Origin" not in parts:
+      resp.headers["Vary"] = f"{vary}, Origin"
+  else:
+    resp.headers["Vary"] = "Origin"
+
+
+@app.after_request
+def _cors_after_all_api_paths(response: Response):
+  """凡经 Flask 的 /api/* 响应若尚无 CORS 头则补齐（含 /api/activities、/api/news）。"""
+  try:
+    path = request.path or ""
+  except RuntimeError:
+    return response
+  if not path.startswith("/api"):
+    return response
+  if response.headers.get("Access-Control-Allow-Origin"):
+    return response
+  _apply_cors_headers(response)
+  return response
 
 
 _HOP_BY_HOP = frozenset(
@@ -286,6 +308,8 @@ def proxy_modstore_api(subpath: str):
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD",
             "Access-Control-Allow-Headers": allow_headers,
             "Access-Control-Max-Age": "600",
+            "Vary": "Origin",
+            "Cache-Control": "private, max-age=0, no-store",
         },
     )
 

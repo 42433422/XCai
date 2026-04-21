@@ -24,6 +24,7 @@ uvicorn modstore_server.app:app --host 127.0.0.1 --port 8000
 
 ### 跨域（CORS）
 
+- **公网若经 Nginx**：请确认 **`/api/` 请求先到 Flask**（仓库根目录 `app.py` 反代 + CORS），而不是 Nginx 直接把 `/api/` `proxy_pass` 到 Uvicorn；否则浏览器预检永远收不到 Flask 写入的 CORS 头。参考仓库内 **`deploy/nginx-api-via-flask.conf.example`**。
 - 前端与 API **不同源**（例如页面在 `https://*.edgeone.cool`、API 在 `https://xiu-ci.com`）时，必须在 API 进程配置允许的来源。
 - 环境变量 **`CORS_ORIGINS`**：逗号分隔的完整 Origin 列表；设置后**仅**使用列表中的地址（不再使用代码里的默认开发域名列表，需自行包含生产前端域名）。
 - 环境变量 **`CORS_ORIGIN_REGEX`**：单个正则，与 `CORS_ORIGINS` 叠加匹配；设为 `0` / `false` / `none` / `-` 可关闭。未设置时默认允许 `https://*.edgeone.cool`（腾讯云 EdgeOne 预览域名）。
