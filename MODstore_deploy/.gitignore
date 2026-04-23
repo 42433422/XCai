@@ -16,3 +16,4 @@ web/dist/
 htmlcov/
 catalog_data/
 modstore_server/*.db
+hero-video.mp4
