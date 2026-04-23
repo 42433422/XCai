@@ -5,6 +5,17 @@ __pycache__/
 !new/hero-video.mp4
 !public/hero-video.mp4
 
+# 敏感配置文件
+.env
+.env.local
+.env.*.local
+
+# 构建产物
 MODstore_deploy.zip
 MODstore_deploy/market/node_modules/
 MODstore_deploy/market/dist/
+
+# 日志和数据库
+*.log
+*.db
+*.sqlite3
