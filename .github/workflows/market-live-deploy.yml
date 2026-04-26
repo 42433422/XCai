@@ -13,7 +13,6 @@ on:
     branches: [main]
     paths:
       - "MODstore_deploy/market/**"
-      - ".github/workflows/market-live-deploy.yml"
   workflow_dispatch:
 
 concurrency:
