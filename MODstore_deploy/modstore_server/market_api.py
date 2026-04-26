@@ -16,9 +16,13 @@ from pydantic import BaseModel, Field
 from modstore_server.auth_service import (
     authenticate_user,
     create_access_token,
+    create_refresh_token,
     decode_access_token,
+    decode_refresh_token,
     get_user_by_id,
+    hash_password,
     register_user,
+    verify_password,
 )
 from modstore_server.email_service import (
     assert_email_outbound_configured,
@@ -26,9 +30,13 @@ from modstore_server.email_service import (
     generate_verification_code,
     send_verification_email,
 )
+from modstore_server import catalog_sync
 from modstore_server.models import (
     CatalogItem,
+    Entitlement,
+    Favorite,
     Purchase,
+    Review,
     Transaction,
     User,
     VerificationCode,
@@ -85,6 +93,16 @@ class SendCodeDTO(BaseModel):
 class LoginWithCodeDTO(BaseModel):
     email: str
     code: str
+
+
+class RefreshTokenDTO(BaseModel):
+    refresh_token: str
+
+
+class ResetPasswordDTO(BaseModel):
+    email: str
+    code: str = Field(..., min_length=4, max_length=16)
+    new_password: str = Field(..., min_length=6, max_length=128)
 
 
 class RechargeDTO(BaseModel):
@@ -179,10 +197,12 @@ def api_register(body: RegisterDTO):
         user = register_user(body.username, body.password, email_norm)
     except ValueError as e:
         raise HTTPException(409, str(e))
-    token = create_access_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username)
+    refresh_token = create_refresh_token(user.id, user.username)
     return {
         "ok": True,
-        "token": token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
         "user": {"id": user.id, "username": user.username, "email": user.email},
     }
 
@@ -192,10 +212,12 @@ def api_login(body: LoginDTO):
     user = authenticate_user(body.username, body.password)
     if not user:
         raise HTTPException(401, "用户名或密码错误")
-    token = create_access_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username)
+    refresh_token = create_refresh_token(user.id, user.username)
     return {
         "ok": True,
-        "token": token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
         "user": {"id": user.id, "username": user.username, "email": user.email},
     }
 
@@ -310,10 +332,139 @@ def api_login_with_code(body: LoginWithCodeDTO):
         vc.used = True
         session.commit()
 
-    token = create_access_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username)
+    refresh_token = create_refresh_token(user.id, user.username)
     return {
         "ok": True,
-        "token": token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": {"id": user.id, "username": user.username, "email": user.email},
+    }
+
+
+@router.post("/auth/send-reset-password-code", status_code=202)
+def api_send_reset_password_code(body: SendCodeDTO, background_tasks: BackgroundTasks):
+    """忘记密码：向已注册邮箱发送验证码（未注册邮箱返回相同提示，不泄露是否存在）。"""
+    email_norm = _normalize_email(body.email)
+    if not email_norm:
+        raise HTTPException(400, "请填写邮箱")
+    user = find_user_by_email(email_norm)
+    if not user:
+        return {
+            "ok": True,
+            "message": "如果该邮箱已注册，将收到验证码邮件",
+            "queued": True,
+        }
+    try:
+        assert_email_outbound_configured()
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+    code = generate_verification_code()
+    sf = get_session_factory()
+    with sf() as session:
+        vc = VerificationCode(
+            email=email_norm,
+            code=code,
+            expires_at=datetime.utcnow() + timedelta(minutes=10),
+        )
+        session.add(vc)
+        session.commit()
+
+    background_tasks.add_task(_background_send_verification_email, email_norm, code, "reset")
+
+    return {
+        "ok": True,
+        "message": "如果该邮箱已注册，将收到验证码邮件",
+        "queued": True,
+    }
+
+
+@router.post("/auth/reset-password")
+def api_reset_password(body: ResetPasswordDTO):
+    email_norm = _normalize_email(body.email)
+    if not email_norm:
+        raise HTTPException(400, "请填写邮箱")
+    _verify_and_consume_verification_code(email_norm, body.code)
+    u = find_user_by_email(email_norm)
+    if not u:
+        raise HTTPException(404, "用户不存在")
+    sf = get_session_factory()
+    with sf() as session:
+        row = session.query(User).filter(User.id == u.id).first()
+        if not row:
+            raise HTTPException(404, "用户不存在")
+        row.password_hash = hash_password(body.new_password)
+        session.commit()
+    return {"ok": True}
+
+
+class ProfileUpdateDTO(BaseModel):
+    username: str = Field(..., min_length=2, max_length=64)
+
+
+class PasswordChangeDTO(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
+@router.put("/auth/profile")
+def api_update_profile(body: ProfileUpdateDTO, user: User = Depends(_get_current_user)):
+    un = (body.username or "").strip()
+    sf = get_session_factory()
+    with sf() as session:
+        taken = session.query(User).filter(User.username == un, User.id != user.id).first()
+        if taken:
+            raise HTTPException(409, "用户名已被占用")
+        row = session.query(User).filter(User.id == user.id).first()
+        if not row:
+            raise HTTPException(404, "用户不存在")
+        row.username = un
+        session.commit()
+    return {"ok": True, "username": un}
+
+
+@router.post("/auth/change-password")
+def api_change_password(body: PasswordChangeDTO, user: User = Depends(_get_current_user)):
+    sf = get_session_factory()
+    with sf() as session:
+        row = session.query(User).filter(User.id == user.id).first()
+        if not row:
+            raise HTTPException(404, "用户不存在")
+        if not verify_password(body.current_password, row.password_hash):
+            raise HTTPException(400, "当前密码不正确")
+        row.password_hash = hash_password(body.new_password)
+        session.commit()
+    return {"ok": True}
+
+
+@router.post("/auth/refresh")
+def api_refresh_token(body: RefreshTokenDTO):
+    """使用刷新令牌获取新的访问令牌"""
+    refresh_token = body.refresh_token
+    if not refresh_token:
+        raise HTTPException(400, "缺少刷新令牌")
+    
+    payload = decode_refresh_token(refresh_token)
+    if not payload:
+        raise HTTPException(401, "刷新令牌无效或已过期")
+    
+    user_id = int(payload["sub"])
+    username = payload["username"]
+    
+    # 验证用户是否存在
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(401, "用户不存在")
+    
+    # 生成新的访问令牌和刷新令牌
+    new_access_token = create_access_token(user_id, username)
+    new_refresh_token = create_refresh_token(user_id, username)
+    
+    return {
+        "ok": True,
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
         "user": {"id": user.id, "username": user.username, "email": user.email},
     }
 
@@ -367,10 +518,16 @@ def api_wallet_recharge(
 
     sf = get_session_factory()
     with sf() as session:
-        wallet = session.query(Wallet).filter(Wallet.user_id == user.id).first()
+        wallet = (
+            session.query(Wallet)
+            .filter(Wallet.user_id == user.id)
+            .with_for_update()
+            .first()
+        )
         if not wallet:
             wallet = Wallet(user_id=user.id, balance=0.0)
             session.add(wallet)
+            session.flush()
         wallet.balance += body.amount
         wallet.updated_at = datetime.now(timezone.utc)
         txn = Transaction(
@@ -423,7 +580,7 @@ def api_wallet_transactions(
 
 @router.get("/market/facets")
 def api_market_facets():
-    """公开：返回市场中出现的行业、类型（artifact）取值，供商店页筛选。"""
+    """公开：返回市场中出现的行业、类型（artifact）、保密级取值，供商店页筛选。"""
     sf = get_session_factory()
     with sf() as session:
         pub = CatalogItem.is_public == True
@@ -441,7 +598,14 @@ def api_market_facets():
                 if t[0]
             },
         )
-        return {"industries": industries, "artifacts": artifacts}
+        security_levels = sorted(
+            {
+                t[0]
+                for t in session.query(CatalogItem.security_level).filter(pub).distinct().all()
+                if t[0]
+            },
+        )
+        return {"industries": industries, "artifacts": artifacts, "security_levels": security_levels}
 
 
 @router.get("/market/catalog")
@@ -449,6 +613,7 @@ def api_market_catalog(
     q: Optional[str] = Query(None),
     artifact: Optional[str] = Query(None),
     industry: Optional[str] = Query(None),
+    security_level: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     user: Optional[User] = Depends(lambda authorization=None: _get_current_user(authorization) if authorization else None),
@@ -467,6 +632,8 @@ def api_market_catalog(
             query = query.filter(CatalogItem.artifact == artifact)
         if industry:
             query = query.filter(CatalogItem.industry == industry)
+        if security_level:
+            query = query.filter(CatalogItem.security_level == security_level)
         total = query.count()
         rows = query.order_by(CatalogItem.created_at.desc()).offset(offset).limit(limit).all()
 
@@ -486,6 +653,7 @@ def api_market_catalog(
                     "price": r.price,
                     "artifact": r.artifact,
                     "industry": getattr(r, "industry", None) or "通用",
+                    "security_level": getattr(r, "security_level", None) or "personal",
                     "author_id": r.author_id,
                     "purchased": r.id in purchased_ids,
                     "created_at": r.created_at.isoformat() if r.created_at else "",
@@ -507,10 +675,24 @@ def api_market_catalog_detail(
         if not item:
             raise HTTPException(404, "商品不存在")
         purchased = False
+        favorited = False
+        user_has_review = False
         if user:
             purchased = (
                 session.query(Purchase)
                 .filter(Purchase.user_id == user.id, Purchase.catalog_id == item.id)
+                .first()
+                is not None
+            )
+            favorited = (
+                session.query(Favorite)
+                .filter(Favorite.user_id == user.id, Favorite.catalog_id == item.id)
+                .first()
+                is not None
+            )
+            user_has_review = (
+                session.query(Review)
+                .filter(Review.user_id == user.id, Review.catalog_id == item.id)
                 .first()
                 is not None
             )
@@ -525,8 +707,98 @@ def api_market_catalog_detail(
             "industry": getattr(item, "industry", None) or "通用",
             "author_id": item.author_id,
             "purchased": purchased,
+            "favorited": favorited,
+            "user_has_review": user_has_review,
             "created_at": item.created_at.isoformat() if item.created_at else "",
         }
+
+
+class ReviewSubmitDTO(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    content: str = Field(default="", max_length=4000)
+
+
+@router.post("/market/catalog/{item_id}/review")
+def api_submit_review(
+    item_id: int,
+    body: ReviewSubmitDTO,
+    user: User = Depends(_get_current_user),
+):
+    sf = get_session_factory()
+    with sf() as session:
+        item = session.query(CatalogItem).filter(CatalogItem.id == item_id).first()
+        if not item:
+            raise HTTPException(404, "商品不存在")
+        ent = (
+            session.query(Entitlement)
+            .filter(
+                Entitlement.user_id == user.id,
+                Entitlement.catalog_id == item_id,
+                Entitlement.is_active == True,
+            )
+            .first()
+        )
+        purchase = (
+            session.query(Purchase).filter(Purchase.user_id == user.id, Purchase.catalog_id == item_id).first()
+        )
+        if not ent and not purchase:
+            raise HTTPException(403, "购买后方可评价")
+        exists = session.query(Review).filter(Review.user_id == user.id, Review.catalog_id == item_id).first()
+        if exists:
+            raise HTTPException(400, "已评价过")
+        session.add(
+            Review(
+                user_id=user.id,
+                catalog_id=item_id,
+                rating=int(body.rating),
+                content=(body.content or "").strip(),
+            )
+        )
+        session.commit()
+    return {"ok": True}
+
+
+@router.get("/market/catalog/{item_id}/reviews")
+def api_catalog_reviews(item_id: int):
+    sf = get_session_factory()
+    with sf() as session:
+        rows = (
+            session.query(Review, User)
+            .join(User, Review.user_id == User.id)
+            .filter(Review.catalog_id == item_id)
+            .order_by(Review.created_at.desc())
+            .limit(50)
+            .all()
+        )
+        revs = [
+            {
+                "id": r.id,
+                "user_name": u.username,
+                "rating": r.rating,
+                "content": r.content or "",
+                "created_at": r.created_at.isoformat() if r.created_at else "",
+            }
+            for r, u in rows
+        ]
+        avg = sum(x[0].rating for x in rows) / len(rows) if rows else 0.0
+        return {"reviews": revs, "average_rating": round(avg, 2), "total": len(revs)}
+
+
+@router.post("/market/catalog/{item_id}/favorite")
+def api_toggle_favorite(item_id: int, user: User = Depends(_get_current_user)):
+    sf = get_session_factory()
+    with sf() as session:
+        item = session.query(CatalogItem).filter(CatalogItem.id == item_id).first()
+        if not item:
+            raise HTTPException(404, "商品不存在")
+        existing = session.query(Favorite).filter(Favorite.user_id == user.id, Favorite.catalog_id == item_id).first()
+        if existing:
+            session.delete(existing)
+            session.commit()
+            return {"ok": True, "favorited": False}
+        session.add(Favorite(user_id=user.id, catalog_id=item_id))
+        session.commit()
+        return {"ok": True, "favorited": True}
 
 
 # ── Purchase ─────────────────────────────────────────────────
@@ -560,7 +832,21 @@ def api_buy_item(item_id: int, user: User = Depends(_get_current_user)):
         if existing:
             return {"ok": True, "message": "已拥有"}
 
-        wallet = session.query(Wallet).filter(Wallet.user_id == user.id).first()
+        wallet = (
+            session.query(Wallet)
+            .filter(Wallet.user_id == user.id)
+            .with_for_update()
+            .first()
+        )
+        if not wallet:
+            session.add(Wallet(user_id=user.id, balance=0.0))
+            session.flush()
+            wallet = (
+                session.query(Wallet)
+                .filter(Wallet.user_id == user.id)
+                .with_for_update()
+                .first()
+            )
         if not wallet or wallet.balance < item.price:
             raise HTTPException(402, f"余额不足，需要 ¥{item.price}，当前 ¥{wallet.balance if wallet else 0}")
 
@@ -598,12 +884,26 @@ def api_download_item(item_id: int, user: User = Depends(_get_current_user)):
         if not item.stored_filename:
             raise HTTPException(404, "该商品无文件可下载")
         from modstore_server.catalog_store import files_dir
-        from fastapi.responses import FileResponse
+        from fastapi.responses import StreamingResponse
 
         path = files_dir() / item.stored_filename
         if not path.is_file():
             raise HTTPException(404, "文件缺失")
-        return FileResponse(path, filename=item.pkg_id + ".zip", media_type="application/zip")
+        
+        # 流式下载大文件
+        def generate():
+            with open(path, "rb") as f:
+                while chunk := f.read(8192):
+                    yield chunk
+        
+        return StreamingResponse(
+            generate(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={item.pkg_id}.zip",
+                "Content-Length": str(path.stat().st_size)
+            }
+        )
 
 
 # ── My store ─────────────────────────────────────────────────
@@ -637,6 +937,7 @@ def api_my_store(
                         "pkg_id": item.pkg_id,
                         "version": item.version,
                         "name": item.name,
+                        "artifact": item.artifact or "mod",
                         "price_paid": p.amount,
                         "purchased_at": p.created_at.isoformat() if p.created_at else "",
                     }
@@ -654,6 +955,13 @@ def _catalog_files_dir() -> Path:
     return d
 
 
+def _upload_chunks_dir() -> Path:
+    """分块上传临时目录。"""
+    d = Path(__file__).resolve().parent / "upload_chunks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _compute_sha256(file_path: Path) -> str:
     """计算文件 SHA256。"""
     h = hashlib.sha256()
@@ -661,6 +969,34 @@ def _compute_sha256(file_path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+class UploadSession(BaseModel):
+    """上传会话信息"""
+    session_id: str
+    file_name: str
+    total_size: int
+    chunk_size: int
+    total_chunks: int
+
+
+class UploadChunk(BaseModel):
+    """文件块信息"""
+    session_id: str
+    chunk_index: int
+    chunk_data: bytes
+
+
+class CompleteUpload(BaseModel):
+    """完成上传请求"""
+    session_id: str
+    pkg_id: str
+    version: str
+    name: str
+    description: str = ""
+    price: float = 0.0
+    artifact: str = "mod"
+    industry: str = "通用"
 
 
 @router.post("/admin/catalog", summary="管理员上传 MOD 到市场（支持文件上传）")
@@ -727,6 +1063,16 @@ async def api_admin_upload_catalog(
         }
 
 
+@router.post("/admin/catalog/sync-from-xc-packages", summary="从 XC catalog_store 同步缺失条目到市场库")
+def api_admin_sync_xc_catalog_packages(user: User = Depends(_require_admin)):
+    """将 ``packages.json`` 中尚未出现在 ``catalog_items`` 的包插入数据库（可选复制文件）。"""
+    sf = get_session_factory()
+    with sf() as session:
+        out = catalog_sync.sync_packages_json_to_catalog_items(session, admin_user_id=user.id)
+        session.commit()
+    return {"ok": True, **out}
+
+
 @router.get("/admin/catalog")
 def api_admin_list_catalog(
     limit: int = Query(50, ge=1, le=200),
@@ -756,6 +1102,160 @@ def api_admin_list_catalog(
                 for r in rows
             ],
             "total": total,
+        }
+
+
+@router.post("/admin/upload/initiate", summary="初始化分块上传")
+def api_initiate_upload(
+    file_name: str = Form(...),
+    total_size: int = Form(...),
+    chunk_size: int = Form(...),
+    user: User = Depends(_require_admin),
+):
+    """初始化分块上传会话"""
+    import uuid
+    session_id = str(uuid.uuid4())
+    total_chunks = (total_size + chunk_size - 1) // chunk_size
+    
+    # 创建上传会话目录
+    session_dir = _upload_chunks_dir() / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 存储会话信息
+    session_info = {
+        "session_id": session_id,
+        "file_name": file_name,
+        "total_size": total_size,
+        "chunk_size": chunk_size,
+        "total_chunks": total_chunks,
+        "created_at": datetime.utcnow().isoformat()
+    }
+    
+    with open(session_dir / "session.json", "w", encoding="utf-8") as f:
+        json.dump(session_info, f)
+    
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "total_chunks": total_chunks
+    }
+
+
+@router.post("/admin/upload/chunk", summary="上传文件块")
+async def api_upload_chunk(
+    session_id: str = Form(...),
+    chunk_index: int = Form(...),
+    file: UploadFile = File(...),
+    user: User = Depends(_require_admin),
+):
+    """上传单个文件块"""
+    session_dir = _upload_chunks_dir() / session_id
+    if not session_dir.exists():
+        raise HTTPException(404, "上传会话不存在")
+    
+    # 读取会话信息
+    with open(session_dir / "session.json", "r", encoding="utf-8") as f:
+        session_info = json.load(f)
+    
+    if chunk_index >= session_info["total_chunks"]:
+        raise HTTPException(400, "无效的块索引")
+    
+    # 保存文件块
+    chunk_path = session_dir / f"chunk_{chunk_index}"
+    content = await file.read()
+    
+    with open(chunk_path, "wb") as f:
+        f.write(content)
+    
+    return {"ok": True, "chunk_index": chunk_index}
+
+
+@router.post("/admin/upload/complete", summary="完成分块上传")
+def api_complete_upload(
+    session_id: str = Form(...),
+    pkg_id: str = Form(...),
+    version: str = Form(...),
+    name: str = Form(...),
+    description: str = Form(""),
+    price: float = Form(0.0),
+    artifact: str = Form("mod"),
+    industry: str = Form("通用"),
+    user: User = Depends(_require_admin),
+):
+    """完成分块上传并合并文件"""
+    session_dir = _upload_chunks_dir() / session_id
+    if not session_dir.exists():
+        raise HTTPException(404, "上传会话不存在")
+    
+    # 读取会话信息
+    with open(session_dir / "session.json", "r", encoding="utf-8") as f:
+        session_info = json.load(f)
+    
+    # 检查所有块是否上传完成
+    missing_chunks = []
+    for i in range(session_info["total_chunks"]):
+        chunk_path = session_dir / f"chunk_{i}"
+        if not chunk_path.exists():
+            missing_chunks.append(i)
+    
+    if missing_chunks:
+        raise HTTPException(400, f"缺少文件块: {missing_chunks}")
+    
+    # 合并文件
+    suffix = Path(session_info["file_name"]).suffix.lower()
+    if suffix not in {".zip", ".xcmod", ".xcemp"}:
+        raise HTTPException(400, "仅支持 .zip / .xcmod / .xcemp 格式")
+    
+    dest_dir = _catalog_files_dir()
+    dest_name = f"{pkg_id}-{version}{suffix}"
+    dest_path = dest_dir / dest_name
+    
+    # 合并所有块
+    with open(dest_path, "wb") as out_file:
+        for i in range(session_info["total_chunks"]):
+            chunk_path = session_dir / f"chunk_{i}"
+            with open(chunk_path, "rb") as in_file:
+                out_file.write(in_file.read())
+    
+    # 计算文件哈希
+    sha256 = _compute_sha256(dest_path)
+    
+    # 清理临时文件
+    import shutil
+    shutil.rmtree(session_dir)
+    
+    # 保存到数据库
+    sf = get_session_factory()
+    with sf() as session:
+        existing = session.query(CatalogItem).filter(
+            CatalogItem.pkg_id == pkg_id, CatalogItem.version == version
+        ).first()
+        if existing:
+            raise HTTPException(409, f"pkg_id '{pkg_id}' + version '{version}' 已存在")
+        
+        ind = (industry or "").strip() or "通用"
+        item = CatalogItem(
+            pkg_id=pkg_id,
+            version=version,
+            name=name,
+            description=description,
+            price=price,
+            author_id=user.id,
+            artifact=artifact,
+            industry=ind,
+            stored_filename=dest_name,
+            sha256=sha256,
+        )
+        session.add(item)
+        session.commit()
+        session.refresh(item)
+        
+        return {
+            "ok": True,
+            "id": item.id,
+            "pkg_id": item.pkg_id,
+            "stored_filename": item.stored_filename,
+            "file_size": session_info["total_size"]
         }
 
 

@@ -7,8 +7,21 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
-from modstore_server.catalog_store import append_package, get_package, list_packages, load_store
+from fastapi import APIRouter, Body, File, Form, Header, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
+
+from modstore_server.catalog_store import (
+    append_package,
+    get_package,
+    list_packages,
+    list_versions,
+    load_store,
+    promote_draft_to_stable,
+)
+from modstore_server.employee_config_v2 import extract_or_upgrade_v2_config, validate_v2_config
+from modstore_server.industry_taxonomy import get_industry_tree
+from modstore_server.models import get_session_factory
+from modstore_server.vector_store import insert_embedding, query_similar
 
 router = APIRouter(prefix="/v1", tags=["catalog"])
 
@@ -42,6 +55,35 @@ def api_get_package(pkg_id: str, version: str):
     if not r:
         raise HTTPException(404, "未找到该版本")
     return r
+
+
+@router.get("/packages/by-id/{pkg_id}/versions", summary="同 id 下所有版本（含 draft/stable）")
+def api_package_versions(pkg_id: str):
+    pid = (pkg_id or "").strip()
+    if not pid:
+        raise HTTPException(400, "pkg_id 无效")
+    return {"pkg_id": pid, "versions": list_versions(pid)}
+
+
+class PromoteBody(BaseModel):
+    from_version: str = Field(..., min_length=1, description="要晋升的 draft 版本号")
+
+
+@router.post("/packages/{pkg_id}/promote", summary="将 draft 版本复制为新的 stable（semver patch+1）")
+def api_promote_package(
+    pkg_id: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    body: PromoteBody = Body(...),
+):
+    _require_upload(authorization)
+    pid = (pkg_id or "").strip()
+    if not pid:
+        raise HTTPException(400, "pkg_id 无效")
+    try:
+        saved = promote_draft_to_stable(pid, body.from_version.strip())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "package": saved}
 
 
 @router.get("/index.json", summary="轻量全量索引")
@@ -103,12 +145,99 @@ async def api_upload_package(
     if not (str(meta.get("id") or "").strip() and str(meta.get("version") or "").strip()):
         raise HTTPException(400, "metadata 须含 id 与 version")
     rec: Dict[str, Any] = dict(meta)
+    v2cfg = extract_or_upgrade_v2_config(rec)
+    sf = get_session_factory()
+    with sf() as db:
+        errs = validate_v2_config(v2cfg, db=db, user_id=None, require_workflow_heart=True)
+    if errs:
+        raise HTTPException(400, "V2 配置校验失败: " + "; ".join(errs))
+    rec["employee_config_v2"] = v2cfg
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".xcmod", ".xcemp", ".zip"}:
         raise HTTPException(400, "file 须为 .xcmod / .xcemp / .zip")
 
+    raw_bytes = await file.read()
+    audit_meta: Dict[str, Any] = {}
+    art = str(rec.get("artifact") or "").strip().lower()
+    if art in ("mod", "employee_pack"):
+        audit_meta["artifact"] = art
+    probe = str(rec.get("probe_mod_id") or "").strip()
+    if probe:
+        audit_meta["probe_mod_id"] = probe
+
+    from modstore_server.package_sandbox_audit import run_package_audit_async
+
+    rep = await run_package_audit_async(raw_bytes, audit_meta if audit_meta else None)
+    if not rep.get("ok"):
+        raise HTTPException(400, str(rep.get("error") or "包审核失败"))
+    summary = rep.get("summary") or {}
+    if not summary.get("pass"):
+        raise HTTPException(400, "五维审核未通过，禁止上架")
+
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td) / (file.filename or "upload.bin")
-        tmp.write_bytes(await file.read())
+        tmp.write_bytes(raw_bytes)
         saved = append_package(rec, tmp)
+
+    embedding_text = f"{saved.get('name', '')} {saved.get('description', '')}"
+    if embedding_text.strip():
+        item_id = f"{saved.get('id')}:{saved.get('version')}"
+        insert_embedding(
+            item_id=item_id,
+            text=embedding_text,
+            metadata={
+                "pkg_id": saved.get("id"),
+                "version": saved.get("version"),
+                "artifact": saved.get("artifact", "mod"),
+                "industry": saved.get("industry", "通用"),
+            },
+        )
+
     return {"ok": True, "package": saved}
+
+
+@router.get("/catalog/industries", summary="获取标准化行业分类树")
+def api_get_industries():
+    return {"industries": get_industry_tree()}
+
+
+@router.get("/catalog/search-semantic", summary="语义搜索商品")
+def api_search_semantic(
+    q: str = Query(..., description="搜索查询文本"),
+    artifact: Optional[str] = Query(None, description="按类型过滤"),
+    industry: Optional[str] = Query(None, description="按行业过滤"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    filter_meta = {}
+    if artifact:
+        filter_meta["artifact"] = artifact
+    if industry:
+        filter_meta["industry"] = industry
+
+    results = query_similar(q, limit=limit, filter_meta=filter_meta if filter_meta else None)
+    return {"results": results, "total": len(results)}
+
+
+@router.get("/catalog/recommend-similar", summary="相似商品推荐")
+def api_recommend_similar(
+    id: str = Query(..., description="商品 ID"),
+    limit: int = Query(10, ge=1, le=50),
+):
+    item_id = (id or "").strip()
+    if not item_id:
+        raise HTTPException(400, "id 参数不能为空")
+
+    pkg = get_package(item_id, "")
+    if not pkg:
+        rows, _ = list_packages(limit=500, offset=0)
+        pkg = next((r for r in rows if r.get("id") == item_id), None)
+
+    if not pkg:
+        raise HTTPException(404, "未找到商品")
+
+    text = f"{pkg.get('name', '')} {pkg.get('description', '')}"
+    results = query_similar(text, limit=limit + 1)
+
+    current_id = pkg.get("id")
+    filtered = [r for r in results if r.get("metadata", {}).get("pkg_id") != current_id]
+    return {"results": filtered[:limit], "total": len(filtered[:limit])}

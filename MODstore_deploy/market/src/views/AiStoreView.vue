@@ -72,6 +72,16 @@
           </button>
         </div>
       </div>
+
+      <div class="filter-block">
+        <span class="filter-label">保密级</span>
+        <div class="chip-row">
+          <button type="button" class="chip" :class="{ active: !filters.securityLevel }" @click="setSecurityLevel('')">全部</button>
+          <button type="button" class="chip" :class="{ active: filters.securityLevel === 'personal' }" @click="setSecurityLevel('personal')">个人级</button>
+          <button type="button" class="chip" :class="{ active: filters.securityLevel === 'enterprise' }" @click="setSecurityLevel('enterprise')">企业级</button>
+          <button type="button" class="chip" :class="{ active: filters.securityLevel === 'confidential' }" @click="setSecurityLevel('confidential')">保密级</button>
+        </div>
+      </div>
     </div>
 
     <div v-if="err" class="flash flash-err">{{ err }}</div>
@@ -83,6 +93,7 @@
         <div class="card-tags">
           <span class="tag tag-industry">{{ item.industry || '通用' }}</span>
           <span class="tag tag-type">{{ artifactLabel(item.artifact) }}</span>
+          <span class="tag" :class="securityLevelClass(item.security_level)">{{ securityLabel(item.security_level) }}</span>
           <span v-if="item.purchased" class="tag tag-owned">已购</span>
         </div>
         <h2 class="card-title">{{ item.name }}</h2>
@@ -114,24 +125,42 @@ const ARTIFACT_LABELS = {
   surface: '界面扩展',
 }
 
+const SECURITY_LABELS = {
+  personal: '个人',
+  enterprise: '企业',
+  confidential: '保密',
+}
+
 const loading = ref(true)
 const err = ref('')
 const items = ref([])
 const total = ref(0)
 const searchQ = ref('')
 const appliedQ = ref('')
-const facets = ref({ industries: [], artifacts: [] })
+const facets = ref({ industries: [], artifacts: [], security_levels: [] })
 
 const filters = reactive({
   industry: '',
   artifact: '',
+  securityLevel: '',
 })
 
 const facetIndustries = computed(() => facets.value.industries || [])
 const facetArtifacts = computed(() => facets.value.artifacts || [])
+const facetSecurityLevels = computed(() => facets.value.security_levels || [])
 
 function artifactLabel(art) {
   return ARTIFACT_LABELS[art] || art || '其他'
+}
+
+function securityLabel(level) {
+  return SECURITY_LABELS[level] || '个人'
+}
+
+function securityLevelClass(level) {
+  if (level === 'confidential') return 'tag-confidential'
+  if (level === 'enterprise') return 'tag-enterprise'
+  return 'tag-personal'
 }
 
 function truncate(str, len) {
@@ -145,9 +174,10 @@ async function loadFacets() {
     facets.value = {
       industries: res.industries || [],
       artifacts: res.artifacts || [],
+      security_levels: res.security_levels || [],
     }
   } catch {
-    facets.value = { industries: [], artifacts: [] }
+    facets.value = { industries: [], artifacts: [], security_levels: [] }
   }
 }
 
@@ -155,7 +185,7 @@ async function loadItems() {
   loading.value = true
   err.value = ''
   try {
-    const res = await api.catalog(appliedQ.value, filters.artifact, 80, 0, filters.industry)
+    const res = await api.catalog(appliedQ.value, filters.artifact, 80, 0, filters.industry, filters.securityLevel)
     items.value = res.items || []
     total.value = res.total ?? items.value.length
   } catch (e) {
@@ -175,6 +205,10 @@ function setArtifact(v) {
   filters.artifact = v
 }
 
+function setSecurityLevel(v) {
+  filters.securityLevel = v
+}
+
 function applyFilters() {
   appliedQ.value = searchQ.value.trim()
   loadItems()
@@ -185,11 +219,12 @@ function resetFilters() {
   appliedQ.value = ''
   filters.industry = ''
   filters.artifact = ''
+  filters.securityLevel = ''
   loadItems()
 }
 
 watch(
-  () => [filters.industry, filters.artifact],
+  () => [filters.industry, filters.artifact, filters.securityLevel],
   () => {
     loadItems()
   },
@@ -211,14 +246,16 @@ onMounted(async () => {
 }
 
 .store-hero {
-  padding: 48px 24px 32px;
+  padding: clamp(2rem, 5vw, 3rem) var(--layout-pad-x) clamp(1.5rem, 4vw, 2rem);
   border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
   background: linear-gradient(180deg, rgba(96, 165, 250, 0.08) 0%, transparent 100%);
 }
 
 .store-hero-inner {
-  max-width: 1100px;
+  width: 100%;
+  max-width: var(--layout-max);
   margin: 0 auto;
+  box-sizing: border-box;
 }
 
 .store-eyebrow {
@@ -245,9 +282,11 @@ onMounted(async () => {
 }
 
 .store-toolbar {
-  max-width: 1100px;
+  width: 100%;
+  max-width: var(--layout-max);
   margin: 0 auto;
-  padding: 24px 24px 8px;
+  padding: 1.5rem var(--layout-pad-x) 0.5rem;
+  box-sizing: border-box;
 }
 
 .toolbar-row {
@@ -347,11 +386,13 @@ onMounted(async () => {
 }
 
 .flash {
-  max-width: 1100px;
+  width: 100%;
+  max-width: var(--layout-max);
   margin: 0 auto 16px;
   padding: 10px 16px;
   border-radius: 8px;
   font-size: 14px;
+  box-sizing: border-box;
 }
 
 .flash-err {
@@ -371,11 +412,13 @@ onMounted(async () => {
 
 .store-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17.5rem), 1fr));
   gap: 16px;
-  max-width: 1100px;
+  width: 100%;
+  max-width: var(--layout-max);
   margin: 0 auto;
-  padding: 8px 24px 0;
+  padding: 8px var(--layout-pad-x) 0;
+  box-sizing: border-box;
 }
 
 .store-card {
@@ -421,6 +464,10 @@ onMounted(async () => {
   background: rgba(74, 222, 128, 0.12);
   color: #86efac;
 }
+
+.tag-personal { background: rgba(74, 222, 128, 0.12); color: #86efac; }
+.tag-enterprise { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+.tag-confidential { background: rgba(248, 113, 113, 0.15); color: #f87171; }
 
 .card-title {
   font-size: 16px;

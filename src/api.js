@@ -2,13 +2,56 @@
 function apiBase() {
   const raw = (import.meta.env?.VITE_API_BASE ?? '').toString().trim()
   if (raw) return raw.replace(/\/$/, '')
-  return 'https://xiu-ci.com'
+  return '' // 使用相对路径，通过 Vite 代理转发
 }
 
 const BASE = apiBase()
 
 function getToken() {
   return localStorage.getItem('modstore_token') || ''
+}
+
+function amountSignStr(n) {
+  const x = Number(n)
+  if (!Number.isFinite(x)) return '0'
+  if (x === Math.trunc(x)) return String(Math.trunc(x))
+  const s = x.toFixed(6).replace(/\.?0+$/, '')
+  return s || '0'
+}
+
+function buildCheckoutSignData(data, requestId, timestamp) {
+  const itemId = Number(data.item_id ?? 0) | 0
+  const planId = String(data.plan_id ?? '').trim()
+  const subject = String(data.subject ?? '').trim()
+  const walletRecharge = Boolean(data.wallet_recharge)
+  return {
+    item_id: String(itemId),
+    plan_id: planId,
+    request_id: String(requestId),
+    subject,
+    timestamp: String(Math.floor(Number(timestamp))),
+    total_amount: amountSignStr(data.total_amount ?? 0),
+    wallet_recharge: walletRecharge ? 'true' : 'false',
+  }
+}
+
+function paymentSecretKey() {
+  const fromEnv = (import.meta.env?.VITE_PAYMENT_SECRET ?? '').toString().trim()
+  return fromEnv || 'default_secret_key'
+}
+
+function generateRequestId() {
+  return 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
+}
+
+async function generateSignature(data, secret) {
+  const sortedKeys = Object.keys(data).sort()
+  const signString = sortedKeys.map((k) => `${k}=${data[k]}`).join('&') + secret
+  const encoder = new TextEncoder()
+  const dataBuffer = encoder.encode(signString)
+  const buffer = await crypto.subtle.digest('SHA-256', dataBuffer)
+  const hexArray = Array.from(new Uint8Array(buffer))
+  return hexArray.map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 async function req(path, opts = {}) {
@@ -68,11 +111,12 @@ export const api = {
   transactions: (limit = 50, offset = 0) =>
     req(`/api/wallet/transactions?limit=${limit}&offset=${offset}`),
 
-  catalog: (q = '', artifact = '', limit = 50, offset = 0, industry = '') => {
+  catalog: (q = '', artifact = '', limit = 50, offset = 0, industry = '', securityLevel = '') => {
     let url = `/api/market/catalog?limit=${limit}&offset=${offset}`
     if (q) url += `&q=${encodeURIComponent(q)}`
     if (artifact) url += `&artifact=${encodeURIComponent(artifact)}`
     if (industry) url += `&industry=${encodeURIComponent(industry)}`
+    if (securityLevel) url += `&security_level=${encodeURIComponent(securityLevel)}`
     return req(url)
   },
   catalogFacets: () => req('/api/market/facets'),
@@ -116,8 +160,21 @@ export const api = {
     req(`/api/admin/transactions?limit=${limit}&offset=${offset}`),
 
   paymentPlans: () => req('/api/payment/plans'),
-  paymentCheckout: (data) =>
-    req('/api/payment/checkout', { method: 'POST', body: JSON.stringify(data) }),
+  paymentCheckout: async (data) => {
+    const requestId = generateRequestId()
+    const timestamp = Math.floor(Date.now() / 1000)
+    const signPayload = buildCheckoutSignData(data, requestId, timestamp)
+    const signature = await generateSignature(signPayload, paymentSecretKey())
+    return req('/api/payment/checkout', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...data,
+        request_id: requestId,
+        timestamp,
+        signature,
+      }),
+    })
+  },
   paymentQuery: (orderId) => req(`/api/payment/query/${orderId}`),
   paymentOrders: (status = '', limit = 50, offset = 0) => {
     let url = `/api/payment/orders?limit=${limit}&offset=${offset}`
@@ -143,6 +200,15 @@ export const api = {
     if (!r.ok) throw new Error(data.detail || r.statusText)
     return data
   },
+  modAiScaffold: (brief, suggestedId = '', replace = true) =>
+    req('/api/mods/ai-scaffold', {
+      method: 'POST',
+      body: JSON.stringify({
+        brief,
+        suggested_id: suggestedId || undefined,
+        replace,
+      }),
+    }),
   push: (mod_ids) =>
     req('/api/sync/push', { method: 'POST', body: JSON.stringify({ mod_ids: mod_ids || null }) }),
   pull: (mod_ids) =>
