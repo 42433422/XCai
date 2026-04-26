@@ -1,0 +1,48 @@
+# 推送 main 且变更 market 时，SSH 到生产机 pull + 构建 /market/ 前端（与 Nginx alias 同一 dist）。
+# 在仓库 Settings → Secrets and variables → Actions 中配置：
+#   DEPLOY_HOST          例：119.27.178.147
+#   DEPLOY_USER          例：root
+#   DEPLOY_SSH_PRIVATE_KEY  登录该用户的私钥全文（含 BEGIN/END）
+# 仓库 Variables（Settings → Variables）可选覆盖路径/分支：
+#   DEPLOY_REMOTE_REPO、DEPLOY_GIT_BRANCH
+
+name: Market live deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "MODstore_deploy/market/**"
+      - ".github/workflows/market-live-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: market-live-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-market-on-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH — git pull + npm ci + build market
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          script_stop: true
+          command_timeout: 25m
+          script: |
+            set -euo pipefail
+            REPO="${{ vars.DEPLOY_REMOTE_REPO }}"
+            BRANCH="${{ vars.DEPLOY_GIT_BRANCH }}"
+            if [ -z "${REPO}" ]; then REPO="/root/成都修茈科技有限公司"; fi
+            if [ -z "${BRANCH}" ]; then BRANCH="main"; fi
+            cd "${REPO}"
+            git fetch origin "${BRANCH}"
+            git pull --ff-only "origin" "${BRANCH}" || git pull "origin" "${BRANCH}"
+            cd MODstore_deploy/market
+            export VITE_PUBLIC_BASE=/market/
+            npm ci
+            npm run build
+            echo "[ok] market dist updated at $(pwd)/dist"
