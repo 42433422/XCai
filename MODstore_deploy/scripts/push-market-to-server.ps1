@@ -1,0 +1,37 @@
+<#
+.SYNOPSIS
+  在服务器上 git pull + npm ci + build market（VITE_PUBLIC_BASE=/market/），产物即 Nginx 指向的 dist。
+
+.PARAMETER GitPush
+  先在本地仓库根执行 git push origin <Branch>（需已 commit）。
+
+.EXAMPLE
+  .\scripts\push-market-to-server.ps1
+  .\scripts\push-market-to-server.ps1 -GitPush
+#>
+param(
+    [switch] $GitPush,
+    [string] $SshTarget = $env:DEPLOY_SSH,
+    [string] $RemoteRepo = $env:DEPLOY_REMOTE_REPO,
+    [string] $Branch = $env:DEPLOY_GIT_BRANCH
+)
+
+$ErrorActionPreference = "Stop"
+if (-not $SshTarget) { $SshTarget = "root@119.27.178.147" }
+if (-not $RemoteRepo) { $RemoteRepo = "/root/成都修茈科技有限公司" }
+if (-not $Branch) { $Branch = "main" }
+
+$ModstoreRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$RepoRoot = Split-Path -Parent $ModstoreRoot
+
+if ($GitPush) {
+    Write-Host "[push-market] GitPush：git push origin $Branch …"
+    Push-Location $RepoRoot
+    try { git push "origin" $Branch }
+    finally { Pop-Location }
+}
+
+Write-Host "[push-market] SSH $SshTarget → $RemoteRepo（分支 $Branch）"
+$remote = $RemoteRepo.Replace("'", "'\''")
+$cmd = "set -euo pipefail; cd '$remote' && git rev-parse --git-dir >/dev/null && git fetch origin '$Branch' && (git pull --ff-only origin '$Branch' || git pull origin '$Branch') && cd MODstore_deploy/market && export VITE_PUBLIC_BASE=/market/ && npm ci && npm run build && echo '[ok] dist:' && pwd"
+ssh -o BatchMode=yes $SshTarget "$cmd"
