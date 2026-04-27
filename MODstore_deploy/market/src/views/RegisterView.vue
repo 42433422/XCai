@@ -57,7 +57,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
@@ -132,9 +132,8 @@ async function doRegister() {
       err.value = '请先点击「获取验证码」，填写邮件中的 6 位验证码'
       return
     }
-    const res = await api.register(username.value, password.value, em, code)
-    localStorage.setItem('modstore_token', res.token)
-    await router.push('/')
+    await api.register(username.value, password.value, em, code)
+    await router.replace('/workbench')
   } catch (e) {
     err.value = e.message
   } finally {
@@ -144,8 +143,25 @@ async function doRegister() {
 </script>
 
 <style scoped>
-.auth-page { display: flex; justify-content: center; padding-top: 60px; }
-.auth-card { background: #111111; border-radius: 12px; border: 0.5px solid rgba(255,255,255,0.1); padding: 32px; width: 100%; max-width: 400px; }
+.auth-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 0 var(--layout-pad-x, 16px) 1rem;
+}
+.auth-card {
+  background: #111111;
+  border-radius: 12px;
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  padding: 32px;
+  width: 100%;
+  max-width: min(400px, 100%);
+  box-sizing: border-box;
+}
 .auth-card h2 { font-size: 22px; margin-bottom: 24px; text-align: center; color: #ffffff; }
 .form-group { margin-bottom: 16px; }
 .form-group label { display: block; font-size: 13px; color: rgba(255,255,255,0.5); margin-bottom: 6px; }

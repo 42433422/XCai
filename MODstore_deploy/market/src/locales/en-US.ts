@@ -1,0 +1,29 @@
+export default {
+  nav: {
+    brand: 'XC AGI',
+    client: 'Client',
+    admin: 'Admin',
+    database: 'Database',
+    adminMode: 'Admin mode',
+    workbench: 'Workbench',
+    aiStore: 'AI Employees',
+    plans: 'Plans',
+    purchased: 'Purchased',
+    orders: 'Orders',
+    refunds: 'Refunds',
+    wallet: 'Wallet',
+    logout: 'Log out',
+    login: 'Log in',
+    register: 'Sign up',
+    profile: 'Profile',
+  },
+  refund: {
+    status: {
+      pending: 'Pending',
+      rejected: 'Rejected',
+      refunded: 'Refunded',
+      refund_failed: 'Refund failed',
+      unknown: 'Unknown',
+    },
+  },
+}

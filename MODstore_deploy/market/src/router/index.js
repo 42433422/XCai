@@ -7,8 +7,16 @@ const routes = [
   { path: '/login-email', name: 'login-email', component: () => import('../views/LoginByEmailView.vue') },
   { path: '/register', name: 'register', component: () => import('../views/RegisterView.vue') },
   { path: '/catalog/:id', name: 'catalog-detail', component: () => import('../views/CatalogDetailView.vue') },
-  { path: '/my-store', name: 'my-store', component: () => import('../views/MyStoreView.vue'), meta: { auth: true } },
-  { path: '/wallet', name: 'wallet', component: () => import('../views/WalletView.vue'), meta: { auth: true } },
+  {
+    path: '/wallet',
+    component: () => import('../views/WalletLayoutView.vue'),
+    meta: { auth: true },
+    children: [
+      { path: '', name: 'wallet', component: () => import('../views/WalletView.vue') },
+      { path: 'purchased', name: 'wallet-purchased', component: () => import('../views/MyStoreView.vue') },
+    ],
+  },
+  { path: '/my-store', redirect: { name: 'wallet-purchased' } },
   { path: '/plans', name: 'plans', component: () => import('../views/PaymentPlansView.vue') },
   {
     path: '/workbench',

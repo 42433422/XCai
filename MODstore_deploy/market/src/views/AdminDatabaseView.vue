@@ -22,6 +22,32 @@
 
       <div v-if="loadingDb" class="loading">加载数据库...</div>
       <template v-else>
+        <!-- Refunds -->
+        <div class="db-section">
+          <h3 class="db-title">退款审核</h3>
+          <p class="db-count">待审核 {{ pendingRefunds.length }} 条</p>
+          <table class="db-table">
+            <thead>
+              <tr><th>ID</th><th>用户ID</th><th>订单号</th><th>金额</th><th>原因</th><th>时间</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in pendingRefunds" :key="r.id">
+                <td>{{ r.id }}</td>
+                <td>{{ r.user_id }}</td>
+                <td class="pkg">{{ r.order_no }}</td>
+                <td class="amount pos">¥{{ Number(r.amount || 0).toFixed(2) }}</td>
+                <td class="desc">{{ r.reason || '—' }}</td>
+                <td class="time">{{ formatTime(r.created_at) }}</td>
+                <td class="action-cell">
+                  <button class="btn-mini btn-approve" @click="reviewRefund(r, 'approve')">通过</button>
+                  <button class="btn-mini btn-reject" @click="reviewRefund(r, 'reject')">拒绝</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="pendingRefunds.length === 0" class="db-empty">暂无待审核退款</p>
+        </div>
+
         <!-- Users -->
         <div class="db-section">
           <h3 class="db-title">📋 用户表</h3>
@@ -113,7 +139,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
@@ -128,6 +154,7 @@ const dbUsers = ref([])
 const dbWallets = ref([])
 const dbCatalog = ref([])
 const dbTransactions = ref([])
+const pendingRefunds = ref([])
 
 function flash(msg, ok = true) {
   message.value = msg
@@ -147,12 +174,14 @@ function formatTime(iso) {
 async function loadDatabase() {
   loadingDb.value = true
   try {
-    const [usersRes, walletsRes, catalogRes, txnsRes] = await Promise.all([
+    const [refundsRes, usersRes, walletsRes, catalogRes, txnsRes] = await Promise.all([
+      api.refundsAdminPending(),
       api.adminListUsers(),
       api.adminListWallets(),
       api.adminListCatalog(),
       api.adminListTransactions(),
     ])
+    pendingRefunds.value = refundsRes.refunds || []
     dbUsers.value = usersRes.users || []
     dbWallets.value = walletsRes.items || []
     dbCatalog.value = catalogRes.items || []
@@ -161,6 +190,19 @@ async function loadDatabase() {
     flash('加载数据库失败: ' + e.message, false)
   } finally {
     loadingDb.value = false
+  }
+}
+
+async function reviewRefund(row, action) {
+  const verb = action === 'approve' ? '通过' : '拒绝'
+  const note = window.prompt(`确认${verb}退款申请 #${row.id}？可填写管理员备注：`, '') ?? null
+  if (note === null) return
+  try {
+    await api.refundsAdminReview(row.id, action, note)
+    flash(`退款申请 #${row.id} 已${verb}`)
+    await loadDatabase()
+  } catch (e) {
+    flash(`审核失败: ${e.message}`, false)
   }
 }
 
@@ -178,9 +220,11 @@ onMounted(async () => {
 
 <style scoped>
 .admin-db-view {
-  max-width: 1200px;
+  width: 100%;
+  max-width: var(--layout-max);
   margin: 0 auto;
-  padding: 2rem 1rem;
+  padding: var(--page-pad-y) var(--layout-pad-x);
+  box-sizing: border-box;
 }
 
 .page-title {
@@ -239,6 +283,31 @@ onMounted(async () => {
 .btn-refresh:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.action-cell {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.btn-mini {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  cursor: pointer;
+}
+
+.btn-approve {
+  border-color: rgba(74, 222, 128, 0.35);
+  color: #86efac;
+}
+
+.btn-reject {
+  border-color: rgba(248, 113, 113, 0.35);
+  color: #fca5a5;
 }
 
 .message {

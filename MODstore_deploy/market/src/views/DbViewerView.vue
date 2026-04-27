@@ -132,7 +132,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { api } from '../api'
 
@@ -146,10 +146,10 @@ onMounted(async () => {
   loading.value = true
   try {
     const [usersRes, walletsRes, catalogRes, txnsRes] = await Promise.all([
-      api.adminListUsers('', 100, 0),
-      api.adminListWallets('', 100, 0),
-      api.adminListCatalog('', 100, 0),
-      api.adminListTransactions('', 100, 0),
+      api.adminListUsers(100, 0),
+      api.adminListWallets(100, 0),
+      api.adminListCatalog(100, 0),
+      api.adminListTransactions(100, 0),
     ])
     users.value = usersRes.items || []
     wallets.value = walletsRes.items || []
@@ -174,9 +174,11 @@ function formatTime(iso) {
 
 <style scoped>
 .db-viewer {
-  max-width: 1200px;
+  width: 100%;
+  max-width: var(--layout-max);
   margin: 0 auto;
-  padding: 24px 20px;
+  padding: var(--page-pad-y) var(--layout-pad-x);
+  box-sizing: border-box;
 }
 
 .page-title {

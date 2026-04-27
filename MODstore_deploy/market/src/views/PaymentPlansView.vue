@@ -1,16 +1,28 @@
 <template>
   <div class="plans-page">
     <div class="page-header">
-      <h1 class="page-title">XC AGI 套餐</h1>
-      <p class="page-desc">选择适合你的 MOD 套餐，免费创建，AI 能力随用随买</p>
+      <h1 class="page-title">会员购买</h1>
+      <p v-if="hasSvipTier" class="page-desc">
+        已解锁 SVIP 进阶档（SVIP2 ~ SVIP8），可逐档升级
+      </p>
     </div>
+
+    <div v-if="errorMsg" ref="errorBannerRef" class="error-msg error-msg--prominent" role="alert">{{ errorMsg }}</div>
 
     <div v-if="loading" class="loading">加载中...</div>
 
     <div v-else class="plans-grid">
-      <div v-for="plan in plans" :key="plan.id" class="plan-card">
+      <div
+        v-for="plan in visiblePlans"
+        :key="plan.id"
+        class="plan-card"
+        :class="['plan-card', isCurrent(plan) ? 'plan-card--current' : '', `plan-card--${tierOf(plan)}`]"
+      >
         <div class="plan-header">
-          <h2 class="plan-name">{{ plan.name }}</h2>
+          <div class="plan-title-row">
+            <h2 class="plan-name">{{ plan.name }}</h2>
+            <span v-if="isCurrent(plan)" class="plan-badge plan-badge--current">当前等级</span>
+          </div>
           <div class="plan-price">
             <span class="price-symbol">¥</span>
             <span class="price-value">{{ plan.price.toFixed(2) }}</span>
@@ -22,69 +34,129 @@
           <li v-for="(feature, i) in plan.features" :key="i">{{ feature }}</li>
         </ul>
 
-        <button class="btn btn-primary" :disabled="checkingOut" @click="handleBuy(plan)">
-          <span v-if="checkingOut">处理中...</span>
+        <button
+          class="btn btn-primary"
+          :disabled="checkingOut || isCurrent(plan)"
+          @click="handleBuy(plan)"
+        >
+          <span v-if="checkingOut && checkingOutId === plan.id">处理中...</span>
+          <span v-else-if="isCurrent(plan)">已是此等级</span>
           <span v-else>立即购买</span>
         </button>
       </div>
     </div>
-
-    <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api.js'
+import { api } from '../api'
+import { useAuthStore } from '../stores/auth'
+import { ApiError } from '../infrastructure/http/client'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const plans = ref([])
+const myPlan = ref(null)
 const loading = ref(true)
 const checkingOut = ref(false)
+const checkingOutId = ref('')
 const errorMsg = ref('')
+const errorBannerRef = ref(null)
 
-onMounted(async () => {
+watch(errorMsg, async (m) => {
+  if (!m) return
+  await nextTick()
+  errorBannerRef.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+})
+
+// 任一 SVIP 档（含 svip 入门档）算"已是 SVIP"用户；SVIP2~8 仅在此条件下出现在卡片网格里
+const SVIP_TIER_IDS = new Set([
+  'plan_enterprise',
+  'plan_svip2', 'plan_svip3', 'plan_svip4',
+  'plan_svip5', 'plan_svip6', 'plan_svip7', 'plan_svip8',
+])
+
+const hasSvipTier = computed(() => {
+  const id = String(myPlan.value?.id || '').trim()
+  return SVIP_TIER_IDS.has(id)
+})
+
+/** 把后端 plan_id 映射成 tier 关键字，用于卡片渐变色等样式 hook */
+function tierOf(plan) {
+  const id = String(plan?.id || '')
+  if (id === 'plan_basic') return 'vip'
+  if (id === 'plan_pro') return 'vip_plus'
+  if (id === 'plan_enterprise') return 'svip1'
+  if (id.startsWith('plan_svip')) return id.replace('plan_', '') // svip2..svip8
+  return 'free'
+}
+
+/** 当前页要显示的卡片：未购 svip 则隐藏 SVIP2~8；已购则全部展示 */
+const visiblePlans = computed(() => {
+  const list = Array.isArray(plans.value) ? plans.value : []
+  if (hasSvipTier.value) return list
+  return list.filter((p) => !p?.requires_plan)
+})
+
+function isCurrent(plan) {
+  return plan?.id && myPlan.value?.id && plan.id === myPlan.value.id
+}
+
+async function loadPlans() {
   try {
-    const res = await api.paymentPlans()
-    plans.value = res.plans || []
+    const [planRes, myPlanRes] = await Promise.all([
+      api.paymentPlans(),
+      authStore.hasToken() ? api.paymentMyPlan().catch(() => null) : Promise.resolve(null),
+    ])
+    plans.value = Array.isArray(planRes?.plans) ? planRes.plans : []
+    myPlan.value = myPlanRes?.plan || null
+    // 把最新会员状态同步给全局 auth store，导航栏用户名颜色随之更新
+    void authStore.refreshMembership()
   } catch (e) {
-    errorMsg.value = '加载套餐失败: ' + e.message
+    errorMsg.value = '加载会员套餐失败：' + (e?.message || String(e))
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(loadPlans)
 
 async function handleBuy(plan) {
-  if (!localStorage.getItem('modstore_token')) {
+  if (checkingOut.value) return
+  if (isCurrent(plan)) return
+  if (!authStore.hasToken()) {
     router.push({ name: 'login', query: { redirect: '/plans' } })
     return
   }
 
   checkingOut.value = true
+  checkingOutId.value = plan.id
   errorMsg.value = ''
 
   try {
-    const res = await api.paymentCheckout({
-      plan_id: plan.id,
-    })
-
+    const res = await api.paymentCheckout({ plan_id: plan.id })
     if (!res.ok) {
-      errorMsg.value = res.message || '下单失败'
+      errorMsg.value = res.message || '会员购买下单失败'
       return
     }
-
     if (res.type === 'page' || res.type === 'wap') {
       window.location.href = res.redirect_url
-    } else if (res.type === 'precreate') {
+    } else if (res.type === 'precreate' || res.type === 'wechat_native') {
       router.push({ name: 'checkout', params: { orderId: res.order_id } })
     } else {
-      errorMsg.value = '未知的支付类型'
+      errorMsg.value = '未知的支付返回类型：' + (res.type || '空')
     }
   } catch (e) {
-    errorMsg.value = '下单失败: ' + e.message
+    let detail = e?.message || String(e)
+    if (e instanceof ApiError && typeof e.status === 'number') {
+      detail += `（HTTP ${e.status}）`
+    }
+    errorMsg.value = '会员购买下单失败：' + detail
   } finally {
     checkingOut.value = false
+    checkingOutId.value = ''
   }
 }
 </script>
@@ -124,13 +196,16 @@ async function handleBuy(plan) {
 
 .plans-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17.5rem), 1fr));
   gap: 16px;
-  max-width: 1000px;
+  width: 100%;
+  max-width: min(80rem, 100%);
   margin: 0 auto;
+  box-sizing: border-box;
 }
 
 .plan-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   padding: 32px 24px;
@@ -138,6 +213,58 @@ async function handleBuy(plan) {
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.02);
   transition: all 0.2s ease-out;
+  --tier-color: rgba(255, 255, 255, 0.4);
+}
+
+.plan-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  pointer-events: none;
+  border-top: 2px solid var(--tier-color);
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+}
+
+.plan-card:hover::before {
+  opacity: 0.85;
+}
+
+/* 各档位的强调色：用于卡片顶边 + 套餐名 */
+.plan-card--vip      { --tier-color: #67e8f9; }
+.plan-card--vip_plus { --tier-color: #fde047; }
+.plan-card--svip1    { --tier-color: #c084fc; }
+.plan-card--svip2    { --tier-color: #f472b6; }
+.plan-card--svip3    { --tier-color: #34d399; }
+.plan-card--svip4    { --tier-color: #fb923c; }
+.plan-card--svip5    { --tier-color: #fb7185; }
+.plan-card--svip6    { --tier-color: #818cf8; }
+.plan-card--svip7    { --tier-color: #fbbf24; }
+.plan-card--svip8    { --tier-color: #f472b6; }
+
+.plan-card--svip8::before {
+  border-top: 2px solid transparent;
+  background: linear-gradient(90deg, #f87171, #fbbf24, #34d399, #38bdf8, #818cf8, #c084fc, #f472b6);
+  background-size: 200% 100%;
+  -webkit-mask:
+    linear-gradient(#000 0 0) padding-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  border-radius: 16px;
+  opacity: 0.7;
+  height: 2px;
+  inset: 0 0 auto 0;
+  animation: plan-card-rainbow 8s linear infinite;
+}
+@keyframes plan-card-rainbow {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+.plan-name {
+  color: var(--tier-color);
 }
 
 .plan-card:hover {
@@ -145,14 +272,59 @@ async function handleBuy(plan) {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.plan-card--locked {
+  opacity: 0.55;
+  filter: grayscale(0.4);
+}
+
+.plan-card--locked:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.plan-card--current {
+  border-color: rgba(120, 200, 120, 0.45);
+  background: rgba(120, 200, 120, 0.05);
+}
+
 .plan-header {
   margin-bottom: 24px;
+}
+
+.plan-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
 }
 
 .plan-name {
   font-size: 18px;
   font-weight: 600;
-  margin: 0 0 12px;
+  margin: 0;
+}
+
+.plan-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 0.5px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.04);
+  letter-spacing: 0.02em;
+}
+
+.plan-badge--current {
+  border-color: rgba(120, 200, 120, 0.4);
+  color: rgb(180, 230, 180);
+  background: rgba(120, 200, 120, 0.1);
+}
+
+.plan-badge--locked {
+  border-color: rgba(255, 200, 80, 0.35);
+  color: rgb(245, 200, 110);
+  background: rgba(255, 200, 80, 0.08);
 }
 
 .plan-price {
@@ -219,15 +391,25 @@ async function handleBuy(plan) {
 }
 
 .error-msg {
-  max-width: 500px;
-  margin: 24px auto 0;
+  width: 100%;
+  max-width: min(42rem, 100%);
+  margin: 0 auto 20px;
   padding: 12px 16px;
   background: rgba(255, 80, 80, 0.1);
   border: 0.5px solid rgba(255, 80, 80, 0.2);
   border-radius: 8px;
   color: #ff6b6b;
-  text-align: center;
+  text-align: left;
   font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-sizing: border-box;
+}
+
+.error-msg--prominent {
+  margin-top: 8px;
 }
 
 @media (max-width: 768px) {
