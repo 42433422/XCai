@@ -4,6 +4,10 @@ import { useAuthStore } from '../stores/auth'
 
 export function installAuthGuards(router: Router): void {
   router.beforeEach(async (to) => {
+    const matched = Array.isArray(to.matched) ? to.matched : []
+    const requiresAuth = matched.some((record) => record.meta.auth) || Boolean(to.meta.auth)
+    const requiresAdmin = matched.some((record) => record.meta.admin) || Boolean(to.meta.admin)
+
     if ((String(to.name) === 'home' || String(to.name) === 'about') && to.hash === '#ai-market') {
       return { name: 'ai-store', replace: true }
     }
@@ -24,10 +28,10 @@ export function installAuthGuards(router: Router): void {
       }
     }
 
-    if (to.meta.auth && !auth.hasToken()) {
+    if (requiresAuth && !auth.hasToken()) {
       return { name: 'login', query: { redirect: to.fullPath } }
     }
-    if (to.meta.admin) {
+    if (requiresAdmin) {
       const user = await auth.refreshSession()
       if (!user) return { name: 'login' }
       if (!user?.is_admin) return { name: 'home' }
