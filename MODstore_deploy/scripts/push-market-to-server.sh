@@ -37,7 +37,10 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
   exit 1
 fi
 git fetch origin "$2"
-git pull --ff-only "origin" "$2" || git pull "origin" "$2"
+# 清掉 market 下未纳入版本管理的内容，避免与即将检出的文件冲突
+git clean -fd -- "MODstore_deploy/market" 2>/dev/null || true
+# 与 origin 一致，避免线上曾手动改文件导致与远程不一致
+git reset --hard "origin/$2"
 cd MODstore_deploy/market
 export VITE_PUBLIC_BASE=/market/
 npm ci
