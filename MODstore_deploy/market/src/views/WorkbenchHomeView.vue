@@ -3043,15 +3043,10 @@ function onComposerKeydown(e) {
   right: clamp(4.5rem, 6.5vw, 5.5rem);
   z-index: 50;
   width: min(22rem, calc(100vw - 6rem));
-  padding: 0.85rem 0.95rem 0.7rem;
-  border-radius: 1rem;
-  background: rgba(15, 23, 42, 0.78);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
-  backdrop-filter: blur(14px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow:
-    0 18px 38px rgba(0, 0, 0, 0.45),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
   animation: wb-direct-tier-fab-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -3072,7 +3067,6 @@ function onComposerKeydown(e) {
     right: 0.6rem;
     left: 0.6rem;
     width: auto;
-    padding: 0.7rem 0.8rem 0.6rem;
   }
 }
 
