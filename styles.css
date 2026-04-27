@@ -109,18 +109,31 @@ a { color: inherit; }
 .btn-primary { color: #fff; background: linear-gradient(135deg, var(--red), var(--amber)); box-shadow: 0 18px 42px rgba(239, 51, 64, .28); }
 .btn-secondary { color: #fff; border-color: var(--line-deep); background: rgba(255,255,255,.1); }
 .btn-light { color: var(--blue); background: #fff; box-shadow: var(--shadow); }
-.hero-visual { position: relative; min-height: 420px; }
+.hero-visual {
+  position: relative;
+  display: grid;
+  align-content: center;
+  gap: 16px;
+  min-height: 420px;
+}
 .device-card {
-  position: absolute; inset: 7% 4% 10% 2%; padding: 26px; border-radius: 34px;
+  position: relative; padding: 26px; border-radius: 34px;
   background: linear-gradient(160deg, rgba(255,255,255,.18), rgba(255,255,255,.06));
   border: 1px solid var(--line-deep); box-shadow: var(--shadow-strong); backdrop-filter: blur(16px);
 }
 .flow-line { height: 12px; border-radius: 99px; background: linear-gradient(90deg, var(--cyan), rgba(255,255,255,.32)); margin: 16px 0; }
 .metric-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 28px; }
 .metric-card, .float-card { border-radius: 22px; padding: 18px; background: rgba(255,255,255,.12); border: 1px solid var(--line-deep); }
+.metric-card { min-height: 118px; }
 .metric-card strong, .stat strong { display: block; font-size: 30px; line-height: 1; color: #fff; }
 .metric-card span, .float-card span { color: rgba(255,255,255,.72); font-size: 13px; }
-.float-card { position: absolute; right: 0; bottom: 2%; width: min(270px, 64%); background: rgba(7,17,31,.74); }
+.float-card {
+  position: relative;
+  justify-self: end;
+  width: min(360px, 92%);
+  background: rgba(7,17,31,.78);
+  box-shadow: 0 18px 48px rgba(2, 8, 23, .22);
+}
 .float-card b { display: block; margin-bottom: 6px; }
 
 .section { padding: clamp(64px, 9vw, 112px) 0; }
@@ -218,6 +231,5 @@ a { color: inherit; }
   .form-row { grid-template-columns: 1fr; }
   .timeline-item { grid-template-columns: 1fr; }
   .footer-links { grid-template-columns: 1fr; }
-  .device-card { inset: 4% 0 12%; }
-  .float-card { width: 78%; }
+  .float-card { justify-self: stretch; width: 100%; }
 }
