@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import shutil
 import uuid
@@ -808,6 +809,36 @@ def api_xcagi_installed_mods():
 from modstore_server.catalog_api import router as catalog_public_router
 
 app.include_router(catalog_public_router)
+
+# 其余功能 router：之前只挂了 market/payment/catalog，导致 /api/llm、/api/notifications、
+# /api/knowledge、/api/realtime/ws 等前端常用接口全部 404。统一在此集中挂载，缺包则跳过。
+def _include_optional(module_path: str) -> None:
+    try:
+        mod = __import__(module_path, fromlist=["router"])
+    except Exception as exc:  # noqa: BLE001 — 启动期容忍可选 router 引入失败
+        logging.getLogger(__name__).warning("skip router %s: %s", module_path, exc)
+        return
+    router = getattr(mod, "router", None)
+    if router is None:
+        return
+    app.include_router(router)
+
+
+for _m in (
+    "modstore_server.llm_api",
+    "modstore_server.notification_api",
+    "modstore_server.knowledge_vector_api",
+    "modstore_server.realtime_ws",
+    "modstore_server.workflow_api",
+    "modstore_server.workbench_api",
+    "modstore_server.employee_api",
+    "modstore_server.analytics_api",
+    "modstore_server.refund_api",
+    "modstore_server.ops_api",
+    "modstore_server.webhook_api",
+    "modstore_server.health_api",
+):
+    _include_optional(_m)
 
 
 def _maybe_mount_ui() -> None:
