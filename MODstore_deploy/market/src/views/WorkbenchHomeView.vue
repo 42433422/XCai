@@ -52,9 +52,6 @@
         <div class="wb-gear-viewport">
           <div class="wb-gear-track" :style="{ transform: `translateY(-${gearIndex * (100 / gearScenes.length)}%)` }">
             <section class="wb-gear-scene wb-direct-scene" aria-label="一档直接聊天">
-              <div class="wb-direct-tier-anchor">
-                <ConsumptionTierControl v-model="consumptionTier" />
-              </div>
               <div class="wb-direct-hero">
                 <h1 class="wb-direct-title">有什么想问的？</h1>
                 <p class="wb-direct-sub">像聊天一样提问，我直接帮你分析、总结和给出可执行答案。</p>
@@ -876,6 +873,16 @@
         </div>
       </div>
     </div>
+    <Teleport to="body">
+      <div
+        v-if="hasWorkflow && activeGear === 'direct'"
+        class="wb-direct-tier-fab"
+        role="region"
+        aria-label="消费档位悬浮控件"
+      >
+        <ConsumptionTierControl v-model="consumptionTier" />
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -3028,17 +3035,45 @@ function onComposerKeydown(e) {
 
 .wb-direct-scene {
   position: relative;
-  /* 为右上角绝对定位的消费档位留出顶栏空间，避免与标题叠压 */
-  padding-top: clamp(2.5rem, 4.5vw, 3.1rem);
 }
 
-.wb-direct-tier-anchor {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 4;
-  max-width: min(calc(100% - 0.5rem), 22rem);
-  padding-left: 0.75rem;
+.wb-direct-tier-fab {
+  position: fixed;
+  top: calc(var(--nav-h, 4rem) + 0.75rem);
+  right: clamp(4.5rem, 6.5vw, 5.5rem);
+  z-index: 50;
+  width: min(22rem, calc(100vw - 6rem));
+  padding: 0.85rem 0.95rem 0.7rem;
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.78);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 18px 38px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  animation: wb-direct-tier-fab-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes wb-direct-tier-fab-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 720px) {
+  .wb-direct-tier-fab {
+    top: calc(var(--nav-h, 4rem) + 0.5rem);
+    right: 0.6rem;
+    left: 0.6rem;
+    width: auto;
+    padding: 0.7rem 0.8rem 0.6rem;
+  }
 }
 
 .wb-make-scene {
