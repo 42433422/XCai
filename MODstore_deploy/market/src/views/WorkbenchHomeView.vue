@@ -52,6 +52,9 @@
         <div class="wb-gear-viewport">
           <div class="wb-gear-track" :style="{ transform: `translateY(-${gearIndex * (100 / gearScenes.length)}%)` }">
             <section class="wb-gear-scene wb-direct-scene" aria-label="一档直接聊天">
+              <div class="wb-direct-tier-anchor">
+                <ConsumptionTierControl v-model="consumptionTier" />
+              </div>
               <div class="wb-direct-hero">
                 <h1 class="wb-direct-title">有什么想问的？</h1>
                 <p class="wb-direct-sub">像聊天一样提问，我直接帮你分析、总结和给出可执行答案。</p>
@@ -68,22 +71,72 @@
                 </article>
               </div>
               <div class="wb-direct-box">
-                <textarea
-                  v-model="directDraft"
-                  class="wb-direct-input"
-                  rows="3"
-                  placeholder="直接问问题，例如：帮我写一份门店日报自动化方案…"
-                  spellcheck="false"
-                  @keydown="onDirectKeydown"
-                />
-                <button
-                  type="button"
-                  class="wb-direct-send"
-                  :disabled="directLoading || !directDraft.trim()"
-                  @click="() => void sendDirectChat()"
-                >
-                  {{ directLoading ? '思考中…' : '发送' }}
-                </button>
+                <div class="wb-direct-box-main">
+                  <input
+                    ref="directFileInputRef"
+                    type="file"
+                    class="wb-direct-file-input"
+                    multiple
+                    @change="onDirectFilesChange"
+                  />
+                  <button
+                    type="button"
+                    class="wb-direct-attach"
+                    :disabled="directLoading"
+                    aria-label="选择本地文件作为附件"
+                    title="选择本地文件（发送时在消息中附带文件名与大小；后续可接实际上传）"
+                    @click="openDirectFilePicker"
+                  >
+                    <svg class="wb-direct-attach__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21.44 11.05l-8.49 8.48a5.66 5.66 0 01-8-8l9.19-9.2a3.77 3.77 0 015.33 5.33L8.95 19.07a2.36 2.36 0 01-3.33-3.33l8.49-8.48" />
+                    </svg>
+                  </button>
+                  <textarea
+                    v-model="directDraft"
+                    class="wb-direct-input"
+                    rows="3"
+                    placeholder="直接问问题，例如：帮我写一份门店日报自动化方案…"
+                    spellcheck="false"
+                    @keydown="onDirectKeydown"
+                  />
+                  <button
+                    type="button"
+                    class="wb-direct-send"
+                    :disabled="directSendDisabled"
+                    @click="() => void sendDirectChat()"
+                  >
+                    {{ directLoading ? '思考中…' : '发送' }}
+                  </button>
+                </div>
+                <div v-if="directAttachedFiles.length" class="wb-direct-file-chips" aria-label="已选附件">
+                  <span
+                    v-for="f in directAttachedFiles"
+                    :key="f.id"
+                    class="wb-direct-file-chip"
+                    :class="`wb-direct-file-chip--${f.status}`"
+                    :title="directFileChipTitle(f)"
+                  >
+                    <span class="wb-direct-file-chip__dot" aria-hidden="true">
+                      <span v-if="f.status === 'uploading'" class="wb-direct-file-chip__spinner" />
+                      <span v-else-if="f.status === 'ready'" class="wb-direct-file-chip__check">✓</span>
+                      <span v-else-if="f.status === 'error' || f.status === 'skipped'" class="wb-direct-file-chip__warn">!</span>
+                    </span>
+                    <span class="wb-direct-file-chip__name">{{ f.name }}</span>
+                    <span class="wb-direct-file-chip__meta">{{ formatDirectFileSize(f.size) }}</span>
+                    <button
+                      type="button"
+                      class="wb-direct-file-chip__remove"
+                      :aria-label="`移除 ${f.name}`"
+                      :disabled="directLoading || f.status === 'uploading'"
+                      @click="() => void removeDirectAttachedFile(f.id)"
+                    >
+                      ×
+                    </button>
+                  </span>
+                </div>
+                <p v-if="directAttachHint" class="wb-direct-attach-hint" role="status">
+                  {{ directAttachHint }}
+                </p>
               </div>
               <p v-if="directError" class="wb-direct-error" role="alert">{{ directError }}</p>
               <div class="wb-direct-suggestions" aria-label="建议问题">
@@ -829,6 +882,7 @@
 <script setup lang="ts">
 import { ref, computed, reactive, onMounted, onUnmounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import ConsumptionTierControl from '../components/workbench/ConsumptionTierControl.vue'
 import { api } from '../api'
 import { getAccessToken } from '../infrastructure/storage/tokenStore'
 
@@ -902,14 +956,72 @@ const gearThumbPercent = computed(() => {
   return Math.min(100, Math.max(0, base + gearDragOffset.value))
 })
 const directDraft = ref('')
+const directFileInputRef = ref(null)
+/**
+ * 直接聊天待发送的本地附件。每项形如：
+ *   { id, name, size, status: 'uploading'|'ready'|'error'|'skipped', docId, error, file }
+ * - status='ready' 的文档已上传到当前用户知识库（doc_id），发送时会做向量检索并拼到 system prompt。
+ * - status='skipped'/'error' 的文件不上传，只在消息中附带文件名说明。
+ */
+const directAttachedFiles = ref([])
 const directMessages = ref([])
 const directLoading = ref(false)
 const directError = ref('')
+
+/** 与后端 knowledge_ingest.SUPPORTED_EXTENSIONS / MAX_UPLOAD_BYTES 保持一致 */
+const DIRECT_KB_SUPPORTED_EXT = new Set(['txt', 'md', 'json', 'csv', 'pdf', 'docx', 'xlsx'])
+const DIRECT_KB_MAX_BYTES = 20 * 1024 * 1024
+
+const directSendDisabled = computed(
+  () =>
+    directLoading.value ||
+    directAttachedFiles.value.some((f) => f.status === 'uploading') ||
+    (!String(directDraft.value || '').trim() && directAttachedFiles.value.length === 0),
+)
+
+const directAttachHint = computed(() => {
+  const list = directAttachedFiles.value
+  if (!list.length) return ''
+  const ready = list.filter((f) => f.status === 'ready').length
+  const uploading = list.filter((f) => f.status === 'uploading').length
+  const skipped = list.filter((f) => f.status === 'skipped').length
+  const errored = list.filter((f) => f.status === 'error').length
+  const parts = []
+  if (uploading) parts.push(`${uploading} 个上传中`)
+  if (ready) parts.push(`${ready} 个已纳入资料库（提问时按相关度自动召回）`)
+  if (skipped) parts.push(`${skipped} 个未受支持，仅附文件名给模型参考`)
+  if (errored) parts.push(`${errored} 个上传失败，仅附文件名给模型参考`)
+  return parts.join(' · ')
+})
 const directSuggestions = [
   '帮我把今天的工作拆成步骤',
   '帮我分析一个自动化流程',
   '帮我写一段客户沟通话术',
 ]
+
+const CONSUMPTION_TIER_STORAGE_KEY = 'workbench_consumption_tier'
+
+function readStoredConsumptionTier(): number {
+  try {
+    const raw = sessionStorage.getItem(CONSUMPTION_TIER_STORAGE_KEY)
+    const n = raw == null ? NaN : parseInt(raw, 10)
+    if (Number.isFinite(n) && n >= 1 && n <= 10) return n
+  } catch {
+    /* ignore */
+  }
+  return 5
+}
+
+/** 直接聊天右上角「消费档位」1–10：占位；与右侧工作台 1/2/3 挡位无关 */
+const consumptionTier = ref(readStoredConsumptionTier())
+
+watch(consumptionTier, (v) => {
+  try {
+    sessionStorage.setItem(CONSUMPTION_TIER_STORAGE_KEY, String(v))
+  } catch {
+    /* ignore */
+  }
+})
 const voiceDraft = ref('')
 const voiceTranscript = ref('')
 const voiceMessages = ref([])
@@ -1003,22 +1115,209 @@ function onGearPointerCancel(e) {
   gearDragOffset.value = 0
 }
 
+function formatDirectFileSize(bytes) {
+  const n = Number(bytes) || 0
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function directFileExt(filename) {
+  const s = String(filename || '')
+  const i = s.lastIndexOf('.')
+  if (i < 0 || i >= s.length - 1) return ''
+  return s.slice(i + 1).toLowerCase()
+}
+
+function directFileChipTitle(f) {
+  if (!f) return ''
+  if (f.status === 'uploading') return `${f.name}：上传中…`
+  if (f.status === 'ready') return `${f.name}：已纳入资料库，提问时会按相关度自动召回片段`
+  if (f.status === 'skipped') return `${f.name}：${f.error || '该格式暂不解析；将仅附文件名供模型参考'}`
+  if (f.status === 'error') return `${f.name}：${f.error || '上传失败'}（仅附文件名给模型参考）`
+  return f.name
+}
+
+function directAttachmentNote(files) {
+  const list = Array.isArray(files) ? files : []
+  if (!list.length) return ''
+  const parts = list.map((f) => {
+    const tag =
+      f.status === 'ready'
+        ? '已入库'
+        : f.status === 'uploading'
+        ? '上传中'
+        : f.status === 'error'
+        ? '上传失败'
+        : '未解析'
+    return `${f.name}（${formatDirectFileSize(f.size)}，${tag}）`
+  })
+  return `[附件：${parts.join('，')}]`
+}
+
+function openDirectFilePicker() {
+  if (directLoading.value) return
+  directFileInputRef.value?.click?.()
+}
+
+function makeDirectAttachId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    try {
+      return crypto.randomUUID()
+    } catch {
+      /* fallthrough */
+    }
+  }
+  return `att_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+async function uploadDirectAttachedFile(item) {
+  try {
+    const res = await api.knowledgeUploadDocument(item.file)
+    const docId = res?.document?.doc_id || res?.document?.docId || ''
+    const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
+    if (idx < 0) {
+      // 已被移除：尝试回收资料库中的副本，避免脏数据
+      if (docId) {
+        try {
+          await api.knowledgeDeleteDocument(docId)
+        } catch {
+          /* ignore cleanup error */
+        }
+      }
+      return
+    }
+    if (docId) {
+      directAttachedFiles.value[idx] = {
+        ...directAttachedFiles.value[idx],
+        status: 'ready',
+        docId,
+        error: '',
+      }
+    } else {
+      directAttachedFiles.value[idx] = {
+        ...directAttachedFiles.value[idx],
+        status: 'error',
+        error: '上传未返回文档 ID',
+      }
+    }
+  } catch (e) {
+    const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
+    if (idx < 0) return
+    directAttachedFiles.value[idx] = {
+      ...directAttachedFiles.value[idx],
+      status: 'error',
+      error: e?.message || String(e),
+    }
+  }
+}
+
+function onDirectFilesChange(e) {
+  const input = e?.target
+  if (!input || typeof input.files === 'undefined') return
+  const picked = Array.from(input.files || [])
+  input.value = ''
+  if (!picked.length) return
+  const maxFiles = 12
+  const remaining = Math.max(0, maxFiles - directAttachedFiles.value.length)
+  const accepted = picked.slice(0, remaining)
+  const items = accepted.map((file) => {
+    const ext = directFileExt(file.name)
+    const supported = DIRECT_KB_SUPPORTED_EXT.has(ext)
+    const tooBig = Number(file.size || 0) > DIRECT_KB_MAX_BYTES
+    if (!supported) {
+      return {
+        id: makeDirectAttachId(),
+        name: file.name,
+        size: file.size || 0,
+        status: 'skipped',
+        docId: '',
+        error: `不支持的格式（仅 ${[...DIRECT_KB_SUPPORTED_EXT].join('/')} 入库）`,
+        file,
+      }
+    }
+    if (tooBig) {
+      return {
+        id: makeDirectAttachId(),
+        name: file.name,
+        size: file.size || 0,
+        status: 'skipped',
+        docId: '',
+        error: `超过 ${formatDirectFileSize(DIRECT_KB_MAX_BYTES)} 上限`,
+        file,
+      }
+    }
+    return {
+      id: makeDirectAttachId(),
+      name: file.name,
+      size: file.size || 0,
+      status: 'uploading',
+      docId: '',
+      error: '',
+      file,
+    }
+  })
+  directAttachedFiles.value = [...directAttachedFiles.value, ...items]
+  for (const it of items) {
+    if (it.status === 'uploading') void uploadDirectAttachedFile(it)
+  }
+}
+
+async function removeDirectAttachedFile(id) {
+  const item = directAttachedFiles.value.find((f) => f.id === id)
+  if (!item) return
+  if (item.status === 'uploading') return
+  directAttachedFiles.value = directAttachedFiles.value.filter((f) => f.id !== id)
+  if (item.docId) {
+    try {
+      await api.knowledgeDeleteDocument(item.docId)
+    } catch {
+      /* 移除知识库中的副本失败不影响 UI */
+    }
+  }
+}
+
 async function sendDirectChat(text = '') {
-  const content = String(text || directDraft.value || '').trim()
-  if (!content || directLoading.value) return
+  if (directAttachedFiles.value.some((f) => f.status === 'uploading')) {
+    directError.value = '附件仍在上传中，请稍候'
+    return
+  }
+  const userText = String(text || directDraft.value || '').trim()
+  const filesSnapshot = [...directAttachedFiles.value]
+  const note = directAttachmentNote(filesSnapshot)
+  let userContent = userText
+  if (note) userContent = userContent ? `${userContent}\n\n${note}` : note
+  if (!userContent || directLoading.value) return
   if (!requireLoginForWorkbenchUse()) return
+  // consumptionTier（1–10）当前仅占位；后续可映射 max_tokens、独立 intensity 或与实时榜单选模后再传入 llmChat / 后端。
   directDraft.value = ''
   directError.value = ''
   directLoading.value = true
-  directMessages.value = [...directMessages.value, { role: 'user', content }]
+  directMessages.value = [...directMessages.value, { role: 'user', content: userContent }]
+  // 立刻清空附件，避免失败后重复点发送时再次叠加同一段说明；ready 文档仍留在用户知识库中。
+  directAttachedFiles.value = []
   try {
+    let knowledgePack = ''
+    const hasReadyDocs = filesSnapshot.some((f) => f.status === 'ready')
+    if (hasReadyDocs && userText) {
+      try {
+        const res = await api.knowledgeSearch(userText, 6)
+        knowledgePack = formatKnowledgeContext(res?.items)
+      } catch {
+        // 检索失败不阻塞对话，模型仍能看到附件文件名说明
+      }
+    }
     const { provider, model } = await resolveChatProviderModel()
+    const sysParts = [
+      '你是一个简洁直接的中文 AI 助手。优先给出可执行答案；如果信息不足，先给合理假设，再列出需要确认的问题。',
+    ]
+    if (knowledgePack) {
+      sysParts.push(
+        `以下是用户当前提问相关的资料库片段（来自其本人上传的文档），优先据此回答；若与提问无关请忽略：\n${knowledgePack}`,
+      )
+    }
     const msgs = [
-      {
-        role: 'system',
-        content:
-          '你是一个简洁直接的中文 AI 助手。优先给出可执行答案；如果信息不足，先给合理假设，再列出需要确认的问题。',
-      },
+      { role: 'system', content: sysParts.join('\n\n') },
       ...directMessages.value.map((m) => ({ role: m.role, content: m.content })),
     ]
     const res = await api.llmChat(provider, model, msgs, 2048)
@@ -2723,6 +3022,21 @@ function onComposerKeydown(e) {
   text-align: center;
 }
 
+.wb-direct-scene {
+  position: relative;
+  /* 为右上角绝对定位的消费档位留出顶栏空间，避免与标题叠压 */
+  padding-top: clamp(2.5rem, 4.5vw, 3.1rem);
+}
+
+.wb-direct-tier-anchor {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 4;
+  max-width: min(calc(100% - 0.5rem), 22rem);
+  padding-left: 0.75rem;
+}
+
 .wb-make-scene {
   display: flex;
   flex-direction: column;
@@ -2773,15 +3087,192 @@ function onComposerKeydown(e) {
 }
 
 .wb-direct-box {
+  position: relative;
   width: min(50rem, 100%);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 0.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   padding: 0.75rem;
   border-radius: 1.35rem;
   background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.wb-direct-box-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.55rem 0.65rem;
+}
+
+.wb-direct-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.wb-direct-attach {
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  flex-shrink: 0;
+  margin-bottom: 0.12rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(226, 232, 240, 0.72);
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.wb-direct-attach:hover:not(:disabled) {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.wb-direct-attach:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.wb-direct-attach__icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.wb-direct-attach:focus-visible {
+  outline: 2px solid rgba(129, 140, 248, 0.65);
+  outline-offset: 2px;
+}
+
+.wb-direct-file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0 0.1rem 0.15rem;
+}
+
+.wb-direct-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.22rem 0.35rem 0.22rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.72rem;
+  color: rgba(226, 232, 240, 0.88);
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.wb-direct-file-chip--ready {
+  border-color: rgba(94, 234, 212, 0.45);
+  background: rgba(13, 148, 136, 0.18);
+}
+
+.wb-direct-file-chip--uploading {
+  border-color: rgba(165, 180, 252, 0.45);
+  background: rgba(79, 70, 229, 0.18);
+}
+
+.wb-direct-file-chip--error,
+.wb-direct-file-chip--skipped {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(127, 29, 29, 0.22);
+}
+
+.wb-direct-file-chip__dot {
+  display: grid;
+  place-items: center;
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.wb-direct-file-chip__check {
+  color: #5eead4;
+}
+
+.wb-direct-file-chip__warn {
+  color: #fca5a5;
+}
+
+.wb-direct-file-chip__spinner {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 999px;
+  border: 1.5px solid rgba(165, 180, 252, 0.35);
+  border-top-color: rgba(199, 210, 254, 0.95);
+  animation: wb-direct-file-chip-spin 0.85s linear infinite;
+}
+
+@keyframes wb-direct-file-chip-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.wb-direct-attach-hint {
+  margin: 0;
+  padding: 0 0.15rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: rgba(148, 163, 184, 0.85);
+  text-align: left;
+}
+
+.wb-direct-file-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12rem;
+}
+
+.wb-direct-file-chip__meta {
+  flex-shrink: 0;
+  color: rgba(148, 163, 184, 0.85);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-direct-file-chip__remove {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: -0.1rem -0.15rem -0.1rem 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(248, 250, 252, 0.55);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.wb-direct-file-chip__remove:hover:not(:disabled) {
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.wb-direct-file-chip__remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .wb-direct-input {

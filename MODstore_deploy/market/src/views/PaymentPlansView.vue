@@ -1,9 +1,24 @@
 <template>
   <div class="plans-page">
+    <Teleport to="body">
+      <div
+        v-if="svipEntryRevealOverlay"
+        class="svip-reveal-overlay"
+        role="dialog"
+        aria-label="欢迎加入超级会员"
+      >
+        <div class="svip-reveal-shimmer" />
+        <div class="svip-reveal-content">
+          <p class="svip-reveal-star" aria-hidden="true">✦</p>
+          <h2 class="svip-reveal-h2">欢迎加入超级会员</h2>
+          <p class="svip-reveal-p">更多进阶线已开放，下方为你展示可选档位</p>
+        </div>
+      </div>
+    </Teleport>
     <div class="page-header">
       <h1 class="page-title">会员购买</h1>
       <p v-if="hasSvipTier" class="page-desc">
-        已解锁 SVIP 进阶档（SVIP2 ~ SVIP8），可逐档升级
+        可在此继续升级、查看各档权益
       </p>
     </div>
 
@@ -16,12 +31,26 @@
         v-for="plan in visiblePlans"
         :key="plan.id"
         class="plan-card"
-        :class="['plan-card', isCurrent(plan) ? 'plan-card--current' : '', `plan-card--${tierOf(plan)}`]"
+        :class="[
+          'plan-card',
+          isCurrent(plan) ? 'plan-card--current' : '',
+          isBelowMyPlan(plan) ? 'plan-card--lower-tier' : '',
+          `plan-card--${tierOf(plan)}`,
+          hideSvipLadderTiers && isSvipLadderPlan(plan) ? 'plan-card--pre-reveal' : '',
+          svipLadderRevealPop && isSvipLadderPlan(plan) ? 'plan-card--reveal-pop' : '',
+        ]"
+        :style="
+          svipLadderRevealPop && isSvipLadderPlan(plan) ? { animationDelay: svipLadderStaggerDelay(plan) } : {}
+        "
       >
         <div class="plan-header">
           <div class="plan-title-row">
             <h2 class="plan-name">{{ plan.name }}</h2>
             <span v-if="isCurrent(plan)" class="plan-badge plan-badge--current">当前等级</span>
+            <span
+              v-else-if="isBelowMyPlan(plan)"
+              class="plan-badge plan-badge--superseded"
+            >已高于此档</span>
           </div>
           <div class="plan-price">
             <span class="price-symbol">¥</span>
@@ -36,11 +65,12 @@
 
         <button
           class="btn btn-primary"
-          :disabled="checkingOut || isCurrent(plan)"
+          :disabled="checkingOut || isCurrent(plan) || isBelowMyPlan(plan)"
           @click="handleBuy(plan)"
         >
           <span v-if="checkingOut && checkingOutId === plan.id">处理中...</span>
           <span v-else-if="isCurrent(plan)">已是此等级</span>
+          <span v-else-if="isBelowMyPlan(plan)">不可购买更低档</span>
           <span v-else>立即购买</span>
         </button>
       </div>
@@ -55,6 +85,8 @@ import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 import { ApiError } from '../infrastructure/http/client'
 
+const SVIP_LADDER_REVEAL_KEY = 'modstore_svip_ladder_reveal'
+
 const router = useRouter()
 const authStore = useAuthStore()
 const plans = ref([])
@@ -64,6 +96,10 @@ const checkingOut = ref(false)
 const checkingOutId = ref('')
 const errorMsg = ref('')
 const errorBannerRef = ref(null)
+
+const svipEntryRevealOverlay = ref(false)
+const hideSvipLadderTiers = ref(false)
+const svipLadderRevealPop = ref(false)
 
 watch(errorMsg, async (m) => {
   if (!m) return
@@ -83,6 +119,83 @@ const hasSvipTier = computed(() => {
   return SVIP_TIER_IDS.has(id)
 })
 
+/** 会员线序：数值越大档越高，用于禁止「已高等级后购买低等级」 */
+const MEMBERSHIP_TIER_ORDER = {
+  plan_basic: 0,
+  plan_pro: 1,
+  plan_enterprise: 2,
+  plan_svip2: 3,
+  plan_svip3: 4,
+  plan_svip4: 5,
+  plan_svip5: 6,
+  plan_svip6: 7,
+  plan_svip7: 8,
+  plan_svip8: 9,
+}
+
+function planTierOrder(planId) {
+  const id = String(planId || '').trim()
+  return Object.prototype.hasOwnProperty.call(MEMBERSHIP_TIER_ORDER, id)
+    ? MEMBERSHIP_TIER_ORDER[id]
+    : -1
+}
+
+const myPlanTierOrder = computed(() => planTierOrder(myPlan.value?.id))
+
+/**
+ * 当前用户已拥有比该套餐更高的有效档位，不应再购买这一档（降级/重复买低档）。
+ * 无会员或 current 为未知 id 时不过滤，避免误伤。
+ */
+function isBelowMyPlan(plan) {
+  if (!plan?.id || isCurrent(plan)) return false
+  const cur = myPlanTierOrder.value
+  const t = planTierOrder(plan.id)
+  if (cur < 0 || t < 0) return false
+  return t < cur
+}
+
+function isSvipLadderPlan(plan) {
+  return /^plan_svip[2-8]$/.test(String(plan?.id || ''))
+}
+
+/** SVIP2→0 … SVIP8→6s */
+function svipLadderStaggerDelay(plan) {
+  const m = String(plan?.id || '').match(/^plan_svip(\d+)$/)
+  if (!m) return '0s'
+  const n = Math.min(8, Math.max(2, parseInt(m[1], 10) || 2))
+  return `${(n - 2) * 0.07}s`
+}
+
+let svipLadderPopClearTimer = 0
+function startSvipEntryRevealIfDue() {
+  if (!hasSvipTier.value) return
+  let due = false
+  try {
+    due = sessionStorage.getItem(SVIP_LADDER_REVEAL_KEY) === '1'
+  } catch {
+    return
+  }
+  if (!due) return
+  try {
+    sessionStorage.removeItem(SVIP_LADDER_REVEAL_KEY)
+  } catch {
+    /* ignore */
+  }
+  hideSvipLadderTiers.value = true
+  svipEntryRevealOverlay.value = true
+  window.setTimeout(() => {
+    svipEntryRevealOverlay.value = false
+    hideSvipLadderTiers.value = false
+    svipLadderRevealPop.value = true
+  }, 2300)
+  if (svipLadderPopClearTimer) {
+    clearTimeout(svipLadderPopClearTimer)
+  }
+  svipLadderPopClearTimer = window.setTimeout(() => {
+    svipLadderRevealPop.value = false
+  }, 5200)
+}
+
 /** 把后端 plan_id 映射成 tier 关键字，用于卡片渐变色等样式 hook */
 function tierOf(plan) {
   const id = String(plan?.id || '')
@@ -96,8 +209,20 @@ function tierOf(plan) {
 /** 当前页要显示的卡片：未购 svip 则隐藏 SVIP2~8；已购则全部展示 */
 const visiblePlans = computed(() => {
   const list = Array.isArray(plans.value) ? plans.value : []
-  if (hasSvipTier.value) return list
-  return list.filter((p) => !p?.requires_plan)
+  const filtered = hasSvipTier.value
+    ? list
+    : list.filter((p) => !p?.requires_plan)
+  return [...filtered].sort((a, b) => {
+    const oa = planTierOrder(a?.id)
+    const ob = planTierOrder(b?.id)
+    if (oa < 0 && ob < 0) {
+      return String(a?.id || '').localeCompare(String(b?.id || ''), 'zh')
+    }
+    if (oa < 0) return 1
+    if (ob < 0) return -1
+    if (oa !== ob) return oa - ob
+    return String(a?.id || '').localeCompare(String(b?.id || ''), 'zh')
+  })
 })
 
 function isCurrent(plan) {
@@ -118,6 +243,8 @@ async function loadPlans() {
     errorMsg.value = '加载会员套餐失败：' + (e?.message || String(e))
   } finally {
     loading.value = false
+    await nextTick()
+    startSvipEntryRevealIfDue()
   }
 }
 
@@ -126,6 +253,7 @@ onMounted(loadPlans)
 async function handleBuy(plan) {
   if (checkingOut.value) return
   if (isCurrent(plan)) return
+  if (isBelowMyPlan(plan)) return
   if (!authStore.hasToken()) {
     router.push({ name: 'login', query: { redirect: '/plans' } })
     return
@@ -282,6 +410,42 @@ async function handleBuy(plan) {
   background: rgba(255, 255, 255, 0.02);
 }
 
+/* 已拥有更高会员时，更低档位不可再购 */
+.plan-card--lower-tier {
+  opacity: 0.58;
+  filter: grayscale(0.35);
+}
+
+.plan-card--lower-tier:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.plan-card--pre-reveal {
+  opacity: 0;
+  transform: translateY(14px) scale(0.98);
+  filter: blur(2px);
+  pointer-events: none;
+  transition: none;
+}
+
+.plan-card--reveal-pop {
+  animation: plan-svip-ladder-pop 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes plan-svip-ladder-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.94);
+    filter: blur(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
 .plan-card--current {
   border-color: rgba(120, 200, 120, 0.45);
   background: rgba(120, 200, 120, 0.05);
@@ -319,6 +483,12 @@ async function handleBuy(plan) {
   border-color: rgba(120, 200, 120, 0.4);
   color: rgb(180, 230, 180);
   background: rgba(120, 200, 120, 0.1);
+}
+
+.plan-badge--superseded {
+  border-color: rgba(150, 150, 150, 0.35);
+  color: rgba(200, 200, 200, 0.75);
+  background: rgba(120, 120, 120, 0.12);
 }
 
 .plan-badge--locked {
@@ -419,6 +589,78 @@ async function handleBuy(plan) {
 
   .plans-grid {
     grid-template-columns: 1fr;
+  }
+}
+</style>
+
+<style>
+/* 全屏揭晓层（Teleport 到 body，用非 scoped 保证全屏蒙层与动效） */
+.svip-reveal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse 80% 60% at 50% 40%, rgba(120, 60, 180, 0.45), rgba(0, 0, 0, 0.92));
+  animation: svip-reveal-fade 0.45s ease;
+}
+.svip-reveal-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 0%, rgba(255, 255, 255, 0.06) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: svip-reveal-sweep 2.2s ease-in-out;
+  pointer-events: none;
+}
+.svip-reveal-content {
+  position: relative;
+  text-align: center;
+  padding: 0 24px;
+  max-width: 24rem;
+}
+.svip-reveal-star {
+  margin: 0 0 8px;
+  font-size: 2rem;
+  color: #e9d5ff;
+  animation: svip-reveal-twinkle 1.2s ease-in-out infinite alternate;
+}
+.svip-reveal-h2 {
+  margin: 0 0 12px;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+.svip-reveal-p {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.6);
+}
+@keyframes svip-reveal-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes svip-reveal-sweep {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+@keyframes svip-reveal-twinkle {
+  from {
+    filter: drop-shadow(0 0 6px rgba(192, 132, 252, 0.4));
+  }
+  to {
+    filter: drop-shadow(0 0 14px rgba(244, 114, 182, 0.55));
   }
 }
 </style>
