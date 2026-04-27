@@ -3039,11 +3039,10 @@ function onComposerKeydown(e) {
 
 .wb-direct-tier-fab {
   position: fixed;
-  /* 让出主导航 + 工作台二级导航（workbench-bar）的总高度，避免与「工作台」标题/Tabs 重叠 */
-  top: calc(var(--nav-h, 4rem) + 4.75rem);
-  right: clamp(4.5rem, 6.5vw, 5.5rem);
+  left: clamp(0.85rem, 2.2vw, 1.35rem);
+  bottom: clamp(0.85rem, 2.2vw, 1.35rem);
   z-index: 50;
-  width: min(22rem, calc(100vw - 6rem));
+  width: min(22rem, calc(100vw - 2rem));
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -3064,10 +3063,10 @@ function onComposerKeydown(e) {
 
 @media (max-width: 720px) {
   .wb-direct-tier-fab {
-    top: calc(var(--nav-h, 4rem) + 4.25rem);
-    right: 0.6rem;
-    left: 0.6rem;
-    width: auto;
+    left: 0.75rem;
+    right: auto;
+    bottom: 0.75rem;
+    width: min(21rem, calc(100vw - 1.5rem));
   }
 }
 
