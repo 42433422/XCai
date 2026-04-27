@@ -2835,11 +2835,14 @@ function onComposerKeydown(e) {
 
 .wb-hero {
   text-align: center;
-  margin-top: clamp(1rem, 3.5vw, 2.4rem);
+  /* 顶部留白：避免「你好，xx」与「今天有什么安排？」紧贴页面顶端，
+     兼顾首页态（hasWorkflow=false）与二档场景（activeGear === 'make'） */
+  padding-top: clamp(1.5rem, 4.5vw, 3rem);
+  margin-bottom: clamp(0.4rem, 1vw, 0.85rem);
 }
 
 .wb-hero-kicker {
-  margin: 0 0 0.35rem;
+  margin: 0 0 0.5rem;
   font-size: clamp(0.95rem, 0.9rem + 0.2vw, 1.05rem);
   color: rgba(255, 255, 255, 0.45);
 }
@@ -3059,10 +3062,6 @@ function onComposerKeydown(e) {
 .wb-direct-hero,
 .wb-voice-copy {
   max-width: 42rem;
-}
-
-.wb-direct-hero {
-  margin-top: clamp(0.6rem, 2.4vw, 1.6rem);
 }
 
 .wb-direct-kicker,
