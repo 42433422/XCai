@@ -43,7 +43,9 @@ git clean -fd -- "MODstore_deploy/market" 2>/dev/null || true
 git reset --hard "origin/$2"
 cd MODstore_deploy/market
 export VITE_PUBLIC_BASE=/market/
-npm ci
+rm -rf node_modules
+# 与 npm ci 不同：在 Linux 上只装本机需要的一套可选依赖，避免 lock 里多平台 @esbuild/* 触发 EBADPLATFORM
+npm install
 npm run build
 echo "[ok] dist 已更新: $(pwd)/dist"
 REMOTE
