@@ -904,6 +904,14 @@ _HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
+_PROXY_RESPONSE_DROP_HEADERS = _HOP_BY_HOP_HEADERS | frozenset(
+    {
+        # httpx 自动解压上游 gzip/br/deflate 内容；若原样转发 content-encoding，
+        # 浏览器会再次解压明文 JSON，表现为 fetch 直接失败（ERR_CONTENT_DECODING_FAILED）。
+        "content-encoding",
+    }
+)
+
 
 @app.middleware("http")
 async def _payment_backend_proxy_middleware(request: Request, call_next):
@@ -939,7 +947,7 @@ async def _payment_backend_proxy_middleware(request: Request, call_next):
             status_code=502,
         )
     out_headers = {
-        k: v for k, v in up.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS
+        k: v for k, v in up.headers.items() if k.lower() not in _PROXY_RESPONSE_DROP_HEADERS
     }
     return Response(
         content=up.content,
