@@ -37,11 +37,27 @@
             <span class="label">支付时间</span>
             <span class="value">{{ order.paid_at ? formatTime(order.paid_at) : '—' }}</span>
           </div>
+          <div class="order-field">
+            <span class="label">退款状态</span>
+            <span class="value">{{ refundStatusText(order.refund_status) }}</span>
+          </div>
+          <div class="order-field">
+            <span class="label">已退金额</span>
+            <span class="value">¥{{ money(order.refunded_amount) }}</span>
+          </div>
         </div>
 
         <div class="actions">
           <router-link to="/plans" class="btn btn-primary">返回套餐页</router-link>
-          <router-link to="/my-store" class="btn btn-ghost">我的商店</router-link>
+          <router-link :to="{ name: 'wallet-purchased' }" class="btn btn-ghost">已购资产</router-link>
+          <button
+            v-if="order.status === 'paid'"
+            type="button"
+            class="btn btn-refund"
+            @click="goRefund"
+          >
+            申请退款
+          </button>
         </div>
       </template>
 
@@ -53,18 +69,19 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { api } from '../api.js'
+import { useRoute, useRouter } from 'vue-router'
+import { api } from '../api'
 
 const route = useRoute()
+const router = useRouter()
 const order = ref(null)
 const loading = ref(true)
 
 onMounted(async () => {
   try {
-    const res = await api.paymentQuery(route.params.orderId)
+    const res = await api.paymentQuery(route.params.orderId, { reconcile: true })
     order.value = res
   } catch {
     order.value = null
@@ -77,10 +94,29 @@ function statusText(status) {
   const map = {
     pending: '待支付',
     paid: '已支付',
+    refunding: '退款中',
+    refunded: '已退款',
+    partial_refunded: '部分退款',
     failed: '支付失败',
     closed: '已关闭',
   }
   return map[status] || status || '未知'
+}
+
+function refundStatusText(status) {
+  const map = {
+    none: '无退款',
+    pending: '审核中',
+    rejected: '已拒绝',
+    refunded: '已退回钱包',
+    partial_refunded: '部分退回钱包',
+  }
+  return map[status] || status || '无退款'
+}
+
+function money(value) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(2) : '0.00'
 }
 
 function formatTime(iso) {
@@ -94,6 +130,11 @@ function formatTime(iso) {
     minute: '2-digit',
     second: '2-digit',
   })
+}
+
+function goRefund() {
+  if (!order.value?.out_trade_no) return
+  router.push({ name: 'refunds', query: { order_no: order.value.out_trade_no } })
 }
 </script>
 
@@ -171,6 +212,15 @@ function formatTime(iso) {
   color: #4ade80;
 }
 
+.status-refunding {
+  color: #c7d2fe;
+}
+
+.status-refunded,
+.status-partial_refunded {
+  color: #93c5fd;
+}
+
 .status-failed {
   color: #ff6b6b;
 }
@@ -216,9 +266,37 @@ function formatTime(iso) {
   color: #ffffff;
 }
 
+.btn-refund {
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(129, 140, 248, 0.45);
+  color: #c7d2fe;
+}
+
+.btn-refund:hover {
+  border-color: rgba(199, 210, 254, 0.8);
+}
+
 @media (max-width: 768px) {
   .order-detail-page {
-    padding-top: 64px;
+    padding-top: 24px;
+    align-items: flex-start;
+  }
+  .order-container {
+    padding: 0 12px;
+  }
+  .order-card {
+    padding: 18px;
+  }
+  .order-field {
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .order-field .value {
+    max-width: 58vw;
+  }
+  .actions .btn {
+    width: 100%;
+    text-align: center;
   }
 }
 </style>

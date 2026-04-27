@@ -41,10 +41,13 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { api } from '../api'
+import { useAuthStore } from '../stores/auth'
+import { pickRedirectFromRoute } from '../authPaths'
 
 const router = useRouter()
+const route = useRoute()
 const email = ref('')
 const code = ref('')
 const err = ref('')
@@ -52,6 +55,7 @@ const loading = ref(false)
 const sent = ref(false)
 const codeSent = ref(false)
 const countdown = ref(0)
+const authStore = useAuthStore()
 
 let timer = null
 
@@ -94,9 +98,9 @@ async function doLogin() {
   err.value = ''
   loading.value = true
   try {
-    const res = await api.loginWithCode(email.value, code.value)
-    localStorage.setItem('modstore_token', res.token)
-    window.location.href = '/'
+    await authStore.loginWithCode(email.value, code.value)
+    const dest = pickRedirectFromRoute(route)
+    await router.replace(dest)
   } catch (e) {
     err.value = e.message
   } finally {
@@ -107,19 +111,24 @@ async function doLogin() {
 
 <style scoped>
 .auth-page {
-  min-height: 80vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 0 var(--layout-pad-x, 16px) 1rem;
 }
 
 .auth-card {
   background: #111111;
-  border: 0.5px solid rgba(255,255,255,0.1);
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
   padding: 32px;
   width: 100%;
-  max-width: 400px;
+  max-width: min(400px, 100%);
+  box-sizing: border-box;
 }
 
 .auth-card h2 {

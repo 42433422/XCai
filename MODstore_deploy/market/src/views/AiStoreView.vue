@@ -114,9 +114,9 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
-import { api } from '../api.js'
+import { api } from '../api'
 
 const ARTIFACT_LABELS = {
   mod: 'MOD 插件',

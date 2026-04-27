@@ -8,6 +8,13 @@
         <p>加载订单信息...</p>
       </div>
 
+      <div v-if="error" class="error-section">
+        <div class="error-icon">!</div>
+        <h2 class="error-title">加载失败</h2>
+        <p class="error-desc">{{ error }}</p>
+        <router-link to="/plans" class="btn btn-primary">返回套餐页</router-link>
+      </div>
+
       <template v-else-if="order">
         <!-- 订单信息 -->
         <div class="order-info">
@@ -45,7 +52,9 @@
             />
           </div>
           <p v-if="isExpired" class="qr-expired-hint">
-            订单已超时未支付，<router-link to="/plans">重新下单</router-link>
+            订单已超时未支付。
+            <button type="button" class="btn-retry" @click="retryPayment">重新支付</button>
+            <router-link to="/plans" class="link-muted">或返回套餐页</router-link>
           </p>
           <p v-else class="qr-waiting">等待支付中，支付成功后自动跳转...</p>
         </div>
@@ -54,11 +63,22 @@
         <div v-if="order.status === 'paid'" class="success-section">
           <div class="success-icon">✓</div>
           <h2 class="success-title">支付成功</h2>
-          <p class="success-desc">权益已发放，请前往"我的商店"查看</p>
+          <p class="success-desc">资金已进入钱包账本，订单消费与权益发放已完成。</p>
           <div class="success-actions">
-            <router-link to="/my-store" class="btn btn-primary">查看我的商店</router-link>
+            <router-link to="/wallet" class="btn btn-primary">查看钱包资金账户</router-link>
+            <router-link :to="{ name: 'wallet-purchased' }" class="btn btn-ghost">已购资产</router-link>
             <router-link to="/plans" class="btn btn-ghost">继续选购</router-link>
           </div>
+          <p class="refund-hint">
+            如需退款，可
+            <router-link
+              :to="{ name: 'refunds', query: { order_no: order.out_trade_no } }"
+              class="refund-link"
+            >
+              提交退款申请
+            </router-link>
+            ，处理进度会显示在钱包资金账户中。
+          </p>
         </div>
 
         <!-- 支付失败 -->
@@ -70,7 +90,8 @@
         <!-- 已关闭 -->
         <div v-if="order.status === 'closed'" class="closed-section">
           <p>订单已关闭</p>
-          <router-link to="/plans" class="btn btn-primary">返回套餐页</router-link>
+          <button type="button" class="btn btn-primary" @click="retryPayment">重新支付</button>
+          <router-link to="/plans" class="btn btn-ghost">返回套餐页</router-link>
         </div>
       </template>
 
@@ -82,16 +103,21 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { useRoute } from 'vue-router'
-import { api } from '../api.js'
+import { useRoute, useRouter } from 'vue-router'
+import { api } from '../api'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
+const router = useRouter()
+const authStore = useAuthStore()
 const order = ref(null)
 const loading = ref(true)
+const error = ref('')
 const qrCode = ref('')
 const pollingTimer = ref(null)
+const pollCount = ref(0)
 
 const qrImageUrl = computed(() => {
   if (!qrCode.value) return ''
@@ -120,18 +146,23 @@ onBeforeUnmount(() => {
 
 async function fetchOrder() {
   try {
-    const res = await api.paymentQuery(route.params.orderId)
+    error.value = ''
+    const res = await api.paymentQuery(route.params.orderId, { reconcile: true })
     order.value = res
 
     if (res.qr_code) {
       qrCode.value = String(res.qr_code)
     }
 
+    if (res.status === 'paid') {
+      void authStore.refreshSession(true)
+    }
     if (res.status === 'paid' && pollingTimer.value) {
       clearInterval(pollingTimer.value)
       pollingTimer.value = null
     }
-  } catch {
+  } catch (err) {
+    error.value = err.message || '加载订单信息失败，请重试'
     order.value = null
   } finally {
     loading.value = false
@@ -140,16 +171,24 @@ async function fetchOrder() {
 
 async function pollOrder() {
   try {
-    const res = await api.paymentQuery(route.params.orderId)
+    pollCount.value += 1
+    // 每 2 次轮询带一次对账，减轻支付宝侧查询压力
+    const res = await api.paymentQuery(route.params.orderId, {
+      reconcile: pollCount.value % 2 === 0,
+    })
     order.value = res
     if (res.qr_code) qrCode.value = String(res.qr_code)
 
+    if (res.status === 'paid') {
+      void authStore.refreshSession(true)
+    }
     if (res.status === 'paid' && pollingTimer.value) {
       clearInterval(pollingTimer.value)
       pollingTimer.value = null
     }
-  } catch {
-    // ignore polling errors
+  } catch (err) {
+    //  polling errors，不显示错误，避免干扰用户
+    console.error('Polling error:', err)
   }
 }
 
@@ -161,6 +200,67 @@ function statusText(status) {
     closed: '已关闭',
   }
   return map[status] || status || '未知'
+}
+
+async function retryPayment() {
+  const o = order.value
+  if (!o) return
+  if (pollingTimer.value) {
+    clearInterval(pollingTimer.value)
+    pollingTimer.value = null
+  }
+  try {
+    if ((o.status === 'pending' || o.status === 'closed') && o.out_trade_no) {
+      try {
+        await api.paymentCancelOrder(o.out_trade_no)
+      } catch {
+        /* 非待支付等情况下取消会失败，忽略 */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  loading.value = true
+  error.value = ''
+  try {
+    const kind = String(o.order_kind || '').toLowerCase()
+    const itemId = Number(o.item_id || 0) || 0
+    const planId = String(o.plan_id || '').trim()
+    const walletRecharge = kind === 'wallet'
+    const payload: Record<string, unknown> = {
+      plan_id: planId,
+      item_id: itemId,
+      subject: o.subject || '',
+      wallet_recharge: walletRecharge,
+    }
+    if (walletRecharge) {
+      const ta = Number.parseFloat(String(o.total_amount ?? '0'))
+      if (ta > 0) payload.total_amount = ta
+    }
+    const checkout = await api.paymentCheckout(payload)
+    if (!checkout.ok) {
+      error.value = checkout.message || '重新下单失败'
+      return
+    }
+    if ((checkout.type === 'precreate' || checkout.type === 'wechat_native') && checkout.order_id) {
+      await router.replace({ name: 'checkout', params: { orderId: checkout.order_id } })
+      order.value = null
+      qrCode.value = ''
+      await fetchOrder()
+      if (order.value && order.value.status === 'pending' && !isExpired.value) {
+        pollingTimer.value = setInterval(pollOrder, 3000)
+      }
+    } else if (checkout.type === 'page' || checkout.type === 'wap') {
+      window.location.href = checkout.redirect_url
+    } else {
+      error.value = '不支持的支付类型'
+    }
+  } catch (e) {
+    error.value = e.message || '重新支付失败'
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 
@@ -280,8 +380,29 @@ function statusText(status) {
   color: #ff6b6b;
 }
 
-.qr-expired-hint a {
-  color: #ffffff;
+.qr-expired-hint a,
+.qr-expired-hint .link-muted {
+  color: rgba(255, 255, 255, 0.75);
+  margin-left: 8px;
+}
+
+.btn-retry {
+  margin-right: 8px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btn-retry:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.closed-section .btn-primary {
+  margin-right: 8px;
 }
 
 .qr-waiting {
@@ -326,6 +447,21 @@ function statusText(status) {
   flex-wrap: wrap;
 }
 
+.refund-hint {
+  margin-top: 16px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 13px;
+}
+
+.refund-link {
+  color: #c7d2fe;
+  text-decoration: none;
+}
+
+.refund-link:hover {
+  color: #ffffff;
+}
+
 .failed-section, .closed-section {
   text-align: center;
   padding: 48px 24px;
@@ -339,6 +475,42 @@ function statusText(status) {
 
 .closed-section p {
   color: rgba(255, 255, 255, 0.5);
+}
+
+.error-section {
+  text-align: center;
+  padding: 48px 24px;
+}
+
+.error-icon {
+  width: 64px;
+  height: 64px;
+  line-height: 64px;
+  border-radius: 50%;
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  font-size: 28px;
+  color: #ff6b6b;
+  margin: 0 auto 24px;
+}
+
+.error-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: #ff6b6b;
+}
+
+.error-desc {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.75);
+  margin: 0 auto 24px;
+  max-width: 100%;
+  text-align: left;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .btn {
@@ -387,7 +559,34 @@ function statusText(status) {
 
 @media (max-width: 768px) {
   .checkout-page {
-    padding-top: 64px;
+    padding-top: 24px;
+    align-items: flex-start;
+  }
+  .checkout-container {
+    padding: 0 12px;
+  }
+  .order-info {
+    padding: 18px;
+  }
+  .order-field {
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .order-field .value {
+    max-width: 58vw;
+    word-break: break-all;
+  }
+  .qr-img {
+    width: min(280px, calc(100vw - 72px));
+    height: min(280px, calc(100vw - 72px));
+  }
+  .success-actions,
+  .closed-section {
+    flex-direction: column;
+  }
+  .success-actions .btn,
+  .closed-section .btn {
+    width: 100%;
   }
 }
 </style>

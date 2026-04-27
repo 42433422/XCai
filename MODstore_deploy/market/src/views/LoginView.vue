@@ -18,6 +18,7 @@
       </form>
       <p class="auth-footer">
         <router-link to="/login-email" class="link">邮箱验证码登录</router-link>
+        · <router-link to="/forgot-password" class="link">忘记密码</router-link>
         · 没有账号？<router-link to="/register" class="link">注册</router-link>
       </p>
     </div>
@@ -27,7 +28,8 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { api } from '../api'
+import { useAuthStore } from '../stores/auth'
+import { pickRedirectFromRoute } from '../authPaths'
 
 const router = useRouter()
 const route = useRoute()
@@ -35,15 +37,15 @@ const username = ref('')
 const password = ref('')
 const loading = ref(false)
 const err = ref('')
+const authStore = useAuthStore()
 
 async function doLogin() {
   loading.value = true
   err.value = ''
   try {
-    const res = await api.login(username.value, password.value)
-    localStorage.setItem('modstore_token', res.token)
-    const redirect = route.query.redirect || '/'
-    window.location.href = redirect
+    await authStore.loginWithPassword(username.value, password.value)
+    const dest = pickRedirectFromRoute(route)
+    await router.replace(dest)
   } catch (e) {
     err.value = e.message
   } finally {
@@ -53,8 +55,25 @@ async function doLogin() {
 </script>
 
 <style scoped>
-.auth-page { display: flex; justify-content: center; padding-top: 60px; }
-.auth-card { background: #111111; border-radius: 12px; border: 0.5px solid rgba(255,255,255,0.1); padding: 32px; width: 100%; max-width: 400px; }
+.auth-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 0 var(--layout-pad-x, 16px) 1rem;
+}
+.auth-card {
+  background: #111111;
+  border-radius: 12px;
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  padding: 32px;
+  width: 100%;
+  max-width: min(400px, 100%);
+  box-sizing: border-box;
+}
 .auth-card h2 { font-size: 22px; margin-bottom: 24px; text-align: center; color: #ffffff; }
 .form-group { margin-bottom: 16px; }
 .form-group label { display: block; font-size: 13px; color: rgba(255,255,255,0.5); margin-bottom: 6px; }

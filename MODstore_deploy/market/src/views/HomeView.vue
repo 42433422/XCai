@@ -8,7 +8,16 @@
           <nav class="landing-nav-links">
             <router-link :to="{ name: 'ai-store' }" class="nav-ghost">AI 员工商店</router-link>
             <router-link :to="workbenchLink" class="nav-ghost">进入工作台</router-link>
-            <router-link v-if="!isLoggedIn" to="/register" class="nav-primary">免费注册</router-link>
+            <router-link
+              v-if="!isLoggedIn"
+              to="/register"
+              class="nav-primary"
+            >免费注册</router-link>
+            <span
+              v-else
+              class="nav-user"
+              :title="userLabel"
+            >{{ userLabel }}</span>
           </nav>
         </div>
       </div>
@@ -176,6 +185,7 @@
             浏览和购买现成的 MOD 扩展，快速为你的业务系统添加能力。
             <router-link :to="{ name: 'ai-store' }" class="section-more-link">进入专属商店页（按行业 / 类型筛选）</router-link>
           </p>
+          <button v-if="isLoggedIn" @click="showUploadModal = true" class="btn btn-primary">上架员工</button>
         </div>
 
         <div v-if="loading" class="market-loading">加载中...</div>
@@ -194,6 +204,48 @@
         <div v-else class="market-empty">市场暂无商品</div>
       </div>
     </section>
+
+    <!-- 上架员工模态框 -->
+    <div v-if="showUploadModal" class="modal-overlay" @click="showUploadModal = false">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <h3>上架员工</h3>
+          <button @click="showUploadModal = false" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form @submit.prevent="uploadEmployee">
+            <div class="form-group">
+              <label for="employee-name">员工名称</label>
+              <input type="text" id="employee-name" v-model="uploadForm.name" required>
+            </div>
+            <div class="form-group">
+              <label for="employee-description">描述</label>
+              <textarea id="employee-description" v-model="uploadForm.description" required></textarea>
+            </div>
+            <div class="form-group">
+              <label for="employee-industry">行业</label>
+              <input type="text" id="employee-industry" v-model="uploadForm.industry">
+            </div>
+            <div class="form-group">
+              <label for="employee-price">价格 (¥)</label>
+              <input type="number" id="employee-price" v-model.number="uploadForm.price" min="0" step="0.01">
+            </div>
+            <div class="form-group">
+              <label for="employee-file">员工包文件 (.xcemp 或 .zip)</label>
+              <input type="file" id="employee-file" @change="handleFileChange" required>
+            </div>
+            <div v-if="uploadError" class="error-message">{{ uploadError }}</div>
+            <div v-if="uploadSuccess" class="success-message">上架成功！</div>
+            <div class="form-actions">
+              <button type="button" @click="showUploadModal = false" class="btn btn-secondary">取消</button>
+              <button type="submit" class="btn btn-primary" :disabled="uploading">
+                {{ uploading ? '上传中...' : '上架' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
 
     <!-- CTA -->
     <section class="section section--border-top">
@@ -253,8 +305,8 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 
@@ -266,12 +318,35 @@ const heroVideoUrl = `${import.meta.env.BASE_URL}hero-video.mp4`
 const loading = ref(false)
 const items = ref([])
 const isLoggedIn = ref(false)
+const username = ref('')
+const userEmail = ref('')
+
+const userLabel = computed(() => {
+  const u = (username.value || '').trim()
+  if (u) return u
+  const e = (userEmail.value || '').trim()
+  if (e) return e.split('@')[0] || e
+  return '已登录'
+})
+
+// 上传相关状态
+const showUploadModal = ref(false)
+const uploadForm = ref({
+  name: '',
+  description: '',
+  industry: '',
+  price: 0
+})
+const uploadFile = ref(null)
+const uploadError = ref('')
+const uploadSuccess = ref(false)
+const uploading = ref(false)
 
 /** 已登录直接去仓库工作台；未登录去登录页并带回跳，避免已登录点 /login 被守卫立即打回首页像「点不动」 */
 const workbenchLink = computed(() =>
   isLoggedIn.value
-    ? '/workbench/repository'
-    : { path: '/login', query: { redirect: '/workbench/repository' } },
+    ? '/workbench'
+    : { path: '/login', query: { redirect: '/workbench' } },
 )
 
 function truncate(str, len) {
@@ -280,16 +355,86 @@ function truncate(str, len) {
 }
 
 async function refreshLandingAuth() {
-  const token = localStorage.getItem('modstore_token')
+  const raw = localStorage.getItem('modstore_token')
+  const token = raw && raw !== 'undefined' && raw !== 'null' ? raw : ''
   if (!token) {
     isLoggedIn.value = false
+    username.value = ''
+    userEmail.value = ''
+    if (raw) localStorage.removeItem('modstore_token')
     return
   }
   try {
-    await api.me()
+    const me = await api.me()
     isLoggedIn.value = true
+    username.value = typeof me.username === 'string' ? me.username : ''
+    userEmail.value = typeof me.email === 'string' ? me.email : ''
   } catch {
     isLoggedIn.value = false
+    username.value = ''
+    userEmail.value = ''
+  }
+}
+
+function handleFileChange(event) {
+  uploadFile.value = event.target.files[0]
+}
+
+async function uploadEmployee() {
+  if (!uploadFile.value) {
+    uploadError.value = '请选择员工包文件'
+    return
+  }
+
+  uploadError.value = ''
+  uploadSuccess.value = false
+  uploading.value = true
+
+  try {
+    // 生成唯一的包ID和版本号
+    const pkgId = `employee_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+    const version = '1.0.0'
+
+    const metadata = {
+      id: pkgId,
+      version: version,
+      name: uploadForm.value.name,
+      description: uploadForm.value.description,
+      artifact: 'employee_pack',
+      industry: uploadForm.value.industry || '通用',
+      commerce: {
+        price: uploadForm.value.price
+      }
+    }
+
+    await api.uploadPackage(metadata, uploadFile.value)
+    uploadSuccess.value = true
+    
+    // 重置表单
+    uploadForm.value = {
+      name: '',
+      description: '',
+      industry: '',
+      price: 0
+    }
+    uploadFile.value = null
+    
+    // 重新加载商品列表
+    try {
+      const res = await api.catalog('', '', 4, 0)
+      items.value = res.items
+    } catch {
+      // 加载失败不影响上传成功的提示
+    }
+    
+    // 3秒后关闭模态框
+    setTimeout(() => {
+      showUploadModal.value = false
+    }, 3000)
+  } catch (error) {
+    uploadError.value = error.message || '上传失败，请重试'
+  } finally {
+    uploading.value = false
   }
 }
 
@@ -304,8 +449,14 @@ onMounted(async () => {
 })
 
 const stopAfterEach = router.afterEach((to) => {
-  if (to.name === 'home') refreshLandingAuth()
+  if (to.name === 'home') void refreshLandingAuth()
 })
+watch(
+  () => router.currentRoute.value.name,
+  (name) => {
+    if (name === 'home') void refreshLandingAuth()
+  },
+)
 onUnmounted(() => {
   stopAfterEach()
 })
@@ -322,13 +473,15 @@ onUnmounted(() => {
 
 /* 顶栏 / 落地页锚点跳转时避免标题被 sticky 导航挡住 */
 #ai-market {
-  scroll-margin-top: 72px;
+  scroll-margin-top: calc(var(--nav-h) + 16px);
 }
 
 .container {
-  max-width: 1200px;
+  width: 100%;
+  max-width: var(--layout-max);
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--layout-pad-x);
+  box-sizing: border-box;
 }
 
 /* Landing Nav */
@@ -348,7 +501,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 56px;
+  height: var(--nav-h);
+  min-height: var(--nav-h);
 }
 
 .landing-logo {
@@ -390,6 +544,18 @@ onUnmounted(() => {
   opacity: 0.9;
 }
 
+.nav-user {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.88);
+  padding: 6px 12px;
+  border-radius: 6px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Gradient Text */
 .gradient-text {
   background: linear-gradient(135deg, #60a5fa, #a78bfa);
@@ -404,7 +570,7 @@ onUnmounted(() => {
   min-height: 100vh;
   display: flex;
   align-items: center;
-  padding-top: 56px;
+  padding-top: var(--nav-h);
   overflow: hidden;
 }
 
@@ -503,14 +669,165 @@ onUnmounted(() => {
 }
 
 .btn-sm:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-}
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+  }
+
+  .btn-primary {
+    background: #60a5fa;
+    color: #0a0a0a;
+  }
+
+  .btn-primary:hover {
+    background: #3b82f6;
+  }
+
+  .btn-secondary {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+  }
+
+  .btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  /* 模态框样式 */
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 3000;
+  }
+
+  .modal-content {
+    background: #111111;
+    border-radius: 12px;
+    border: 0.5px solid rgba(255, 255, 255, 0.1);
+    width: 100%;
+    max-width: 500px;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 0.5px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-close:hover {
+    color: #ffffff;
+  }
+
+  .modal-body {
+    padding: 20px;
+  }
+
+  .form-group {
+    margin-bottom: 16px;
+  }
+
+  .form-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 6px;
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .form-group input,
+  .form-group textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 0.5px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: #ffffff;
+    font-size: 14px;
+  }
+
+  .form-group textarea {
+    resize: vertical;
+    min-height: 80px;
+  }
+
+  .form-group input:focus,
+  .form-group textarea:focus {
+    outline: none;
+    border-color: #60a5fa;
+  }
+
+  .error-message {
+    background: rgba(255, 80, 80, 0.1);
+    color: #ff8a8a;
+    padding: 10px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
+
+  .success-message {
+    background: rgba(74, 222, 128, 0.1);
+    color: #86efac;
+    padding: 10px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
+
+  .form-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+
+  .form-actions button {
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+  }
+
+  .form-actions button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
 
 /* Sections */
 .section {
-  padding-top: 96px;
-  padding-bottom: 96px;
+  padding-top: clamp(3.5rem, 10vw, 6rem);
+  padding-bottom: clamp(3.5rem, 10vw, 6rem);
 }
 
 .section--border-top {
@@ -560,8 +877,8 @@ onUnmounted(() => {
 /* Features */
 .features-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: clamp(1rem, 3vw, 1.5rem);
 }
 
 .feature-item {
@@ -925,8 +1242,8 @@ onUnmounted(() => {
 
   .hero {
     min-height: auto;
-    padding-top: 120px;
-    padding-bottom: 64px;
+    padding-top: calc(var(--nav-h) + 3rem);
+    padding-bottom: 4rem;
   }
 
   .hero-video {
