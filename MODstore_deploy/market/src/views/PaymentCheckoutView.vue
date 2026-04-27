@@ -156,6 +156,13 @@ async function fetchOrder() {
 
     if (res.status === 'paid') {
       void authStore.refreshSession(true)
+      if (String(res.plan_id || '').trim() === 'plan_enterprise') {
+        try {
+          sessionStorage.setItem('modstore_svip_ladder_reveal', '1')
+        } catch {
+          /* ignore */
+        }
+      }
     }
     if (res.status === 'paid' && pollingTimer.value) {
       clearInterval(pollingTimer.value)
@@ -181,6 +188,13 @@ async function pollOrder() {
 
     if (res.status === 'paid') {
       void authStore.refreshSession(true)
+      if (String(res.plan_id || '').trim() === 'plan_enterprise') {
+        try {
+          sessionStorage.setItem('modstore_svip_ladder_reveal', '1')
+        } catch {
+          /* ignore */
+        }
+      }
     }
     if (res.status === 'paid' && pollingTimer.value) {
       clearInterval(pollingTimer.value)
