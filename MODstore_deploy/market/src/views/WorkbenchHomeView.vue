@@ -51,102 +51,269 @@
         </nav>
         <div class="wb-gear-viewport">
           <div class="wb-gear-track" :style="{ transform: `translateY(-${gearIndex * (100 / gearScenes.length)}%)` }">
-            <section class="wb-gear-scene wb-direct-scene" aria-label="一档直接聊天">
-              <div class="wb-direct-hero">
-                <h1 class="wb-direct-title">有什么想问的？</h1>
-                <p class="wb-direct-sub">像聊天一样提问，我直接帮你分析、总结和给出可执行答案。</p>
-              </div>
-              <div v-if="directMessages.length" class="wb-direct-thread" aria-live="polite">
-                <article
-                  v-for="(msg, i) in directMessages"
-                  :key="`direct-${i}`"
-                  class="wb-direct-msg"
-                  :class="msg.role === 'user' ? 'wb-direct-msg--user' : 'wb-direct-msg--assistant'"
+            <section class="wb-gear-scene wb-direct-scene" aria-label="一档直接聊天" :style="directFontPxStyle">
+              <div class="wb-direct-shell">
+                <div
+                  class="wb-direct-main"
+                  :class="{
+                    'wb-direct-main--empty': !directMessages.length,
+                    'wb-direct-main--chatting': directMessages.length,
+                    'wb-direct-main--drop': directIsDragging,
+                  }"
+                  @dragenter="onSurfaceDragEnter"
+                  @dragover="onSurfaceDragOver"
+                  @dragleave="onSurfaceDragLeave"
+                  @drop="onSurfaceDrop"
                 >
-                  <span class="wb-direct-msg__role">{{ msg.role === 'user' ? '你' : 'AI' }}</span>
-                  <p class="wb-direct-msg__body">{{ msg.content }}</p>
-                </article>
-              </div>
-              <div class="wb-direct-box">
-                <div class="wb-direct-box-main">
-                  <input
-                    ref="directFileInputRef"
-                    type="file"
-                    class="wb-direct-file-input"
-                    multiple
-                    @change="onDirectFilesChange"
-                  />
-                  <button
-                    type="button"
-                    class="wb-direct-attach"
-                    :disabled="directLoading"
-                    aria-label="选择本地文件作为附件"
-                    title="选择本地文件（发送时在消息中附带文件名与大小；后续可接实际上传）"
-                    @click="openDirectFilePicker"
+                  <div
+                    v-if="directIsDragging"
+                    class="wb-direct-dropzone"
+                    aria-hidden="true"
                   >
-                    <svg class="wb-direct-attach__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M21.44 11.05l-8.49 8.48a5.66 5.66 0 01-8-8l9.19-9.2a3.77 3.77 0 015.33 5.33L8.95 19.07a2.36 2.36 0 01-3.33-3.33l8.49-8.48" />
-                    </svg>
-                  </button>
-                  <textarea
-                    v-model="directDraft"
-                    class="wb-direct-input"
-                    rows="3"
-                    placeholder="直接问问题，例如：帮我写一份门店日报自动化方案…"
-                    spellcheck="false"
-                    @keydown="onDirectKeydown"
-                  />
-                  <button
-                    type="button"
-                    class="wb-direct-send"
-                    :disabled="directSendDisabled"
-                    @click="() => void sendDirectChat()"
+                    <div class="wb-direct-dropzone__panel">
+                      <div class="wb-direct-dropzone__icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M21.44 11.05l-8.49 8.48a5.66 5.66 0 01-8-8l9.19-9.2a3.77 3.77 0 015.33 5.33L8.95 19.07a2.36 2.36 0 01-3.33-3.33l8.49-8.48" />
+                        </svg>
+                      </div>
+                      <p class="wb-direct-dropzone__title">松开以添加附件</p>
+                      <p class="wb-direct-dropzone__sub">支持 PDF / Word / Excel / 文本，图片可粘贴或拖入</p>
+                    </div>
+                  </div>
+                  <header class="wb-direct-topbar">
+                    <div class="wb-direct-topbar__l">
+                      <span v-if="activeBot" class="wb-direct-bot-chip">
+                        <span aria-hidden="true">{{ activeBot.icon }}</span>
+                        <span class="wb-direct-bot-chip__name">@{{ activeBot.name }}</span>
+                        <button type="button" class="wb-direct-bot-chip__x" aria-label="切回通用助手" @click="clearActiveBot">×</button>
+                      </span>
+                      <button type="button" class="wb-direct-topbtn" @click="showAgentMarket = true">
+                        <span aria-hidden="true">🤖</span> 智能体广场
+                      </button>
+                      <button type="button" class="wb-direct-topbtn" @click="showMediaGen = true">
+                        <span aria-hidden="true">🎨</span> AI 创作
+                      </button>
+                      <button type="button" class="wb-direct-topbtn" @click="showVoicePhone = true">
+                        <span aria-hidden="true">📞</span> 语音电话
+                      </button>
+                    </div>
+                    <div class="wb-direct-topbar__r">
+                      <BalanceBadge
+                        :balance="balanceValue"
+                        :member-plan="memberPlan"
+                        :member-expire-at="memberExpireAt"
+                        :invited="!!inviteToast"
+                        :invited-text="inviteToast"
+                        @open-balance="openBalance"
+                        @upgrade="openUpgrade"
+                        @invite="openInvite"
+                      />
+                      <button type="button" class="wb-direct-topbtn" aria-label="个性化设置" title="个性化设置" @click="showPersonalSettings = true">
+                        <span aria-hidden="true">⚙️</span>
+                      </button>
+                    </div>
+                  </header>
+
+                  <div
+                    class="wb-direct-hero"
+                    :class="{ 'wb-direct-hero--compact': directMessages.length }"
                   >
-                    {{ directLoading ? '思考中…' : '发送' }}
-                  </button>
-                </div>
-                <div v-if="directAttachedFiles.length" class="wb-direct-file-chips" aria-label="已选附件">
-                  <span
-                    v-for="f in directAttachedFiles"
-                    :key="f.id"
-                    class="wb-direct-file-chip"
-                    :class="`wb-direct-file-chip--${f.status}`"
-                    :title="directFileChipTitle(f)"
+                    <h1 class="wb-direct-title">{{ activeBot ? activeBot.name : '有什么想问的？' }}</h1>
+                    <p class="wb-direct-sub">{{ activeBot?.desc || '像聊天一样提问，我直接帮你分析、总结和给出可执行答案。' }}</p>
+                  </div>
+                  <TransitionGroup
+                    v-if="directMessages.length"
+                    ref="directThreadRef"
+                    name="wb-direct-msg-flow"
+                    tag="div"
+                    class="wb-direct-thread"
+                    aria-live="polite"
                   >
-                    <span class="wb-direct-file-chip__dot" aria-hidden="true">
-                      <span v-if="f.status === 'uploading'" class="wb-direct-file-chip__spinner" />
-                      <span v-else-if="f.status === 'ready'" class="wb-direct-file-chip__check">✓</span>
-                      <span v-else-if="f.status === 'error' || f.status === 'skipped'" class="wb-direct-file-chip__warn">!</span>
-                    </span>
-                    <span class="wb-direct-file-chip__name">{{ f.name }}</span>
-                    <span class="wb-direct-file-chip__meta">{{ formatDirectFileSize(f.size) }}</span>
-                    <button
-                      type="button"
-                      class="wb-direct-file-chip__remove"
-                      :aria-label="`移除 ${f.name}`"
-                      :disabled="directLoading || f.status === 'uploading'"
-                      @click="() => void removeDirectAttachedFile(f.id)"
+                    <article
+                      v-for="msg in directMessages"
+                      :key="msg.id"
+                      class="wb-direct-msg"
+                      :class="msg.role === 'user' ? 'wb-direct-msg--user' : 'wb-direct-msg--assistant'"
                     >
-                      ×
-                    </button>
-                  </span>
+                      <header class="wb-direct-msg__head">
+                        <span class="wb-direct-msg__role">{{ msg.role === 'user' ? '你' : 'AI' }}</span>
+                        <span v-if="msg.skills && msg.skills.length" class="wb-direct-msg__skills">
+                          <span
+                            v-for="s in msg.skills"
+                            :key="`s-${msg.id}-${s}`"
+                            class="wb-direct-msg__skill-chip"
+                          >{{ s }}</span>
+                        </span>
+                        <span v-if="msg.attachments && msg.attachments.length" class="wb-direct-msg__atts">
+                          <span
+                            v-for="a in msg.attachments"
+                            :key="`a-${msg.id}-${a.name}`"
+                            class="wb-direct-msg__att-chip"
+                            :title="`${a.name} · ${formatDirectFileSize(a.size)} · ${a.status}`"
+                          >📎 {{ a.name }}</span>
+                        </span>
+                      </header>
+                      <template v-if="msg.role === 'user' && editingMessageId === msg.id">
+                        <div class="wb-direct-edit">
+                          <textarea
+                            v-model="editingDraft"
+                            class="wb-direct-edit__input"
+                            rows="3"
+                            spellcheck="false"
+                          />
+                          <div class="wb-direct-edit__ops">
+                            <button type="button" class="wb-direct-edit__btn wb-direct-edit__btn--ghost" @click="cancelEditUserMessage">取消</button>
+                            <button type="button" class="wb-direct-edit__btn wb-direct-edit__btn--primary" :disabled="!editingDraft.trim() || directLoading" @click="() => void commitEditedUserMessage()">改后重发</button>
+                          </div>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <MessageBody :content="msg.content" :streaming="!!msg.pending" />
+                        <p v-if="msg.error" class="wb-direct-msg__err" role="alert">{{ msg.error }}</p>
+                        <div v-if="msg.role === 'assistant' && msg.citations && msg.citations.length" class="wb-direct-cites" aria-label="引用来源">
+                          <div class="wb-direct-cites__head">引用资料</div>
+                          <details
+                            v-for="(cite, ci) in msg.citations"
+                            :key="`cite-${msg.id}-${ci}`"
+                            class="wb-direct-cite"
+                          >
+                            <summary class="wb-direct-cite__sum">
+                              <span aria-hidden="true">📄</span>
+                              <span>{{ cite.title }}</span>
+                            </summary>
+                            <p class="wb-direct-cite__snip">{{ cite.snippet }}</p>
+                          </details>
+                        </div>
+                        <MessageActions
+                          :role="msg.role"
+                          :content="msg.content"
+                          :feedback="msg.feedback"
+                          :can-regenerate="msg.role === 'assistant' && !msg.pending && !directLoading"
+                          :speaking="speakingMessageId === msg.id"
+                          @edit="startEditUserMessage(msg.id)"
+                          @regenerate="() => void regenerateAssistant(msg.id)"
+                          @speak="speakMessage(msg.id)"
+                          @feedback="(v) => setMessageFeedback(msg.id, v)"
+                        />
+                      </template>
+                    </article>
+                  </TransitionGroup>
+
+                  <div
+                    class="wb-direct-box"
+                    :class="{ 'wb-direct-box--drop': directIsDragging }"
+                    @paste="onComposerPaste"
+                  >
+                    <div class="wb-direct-box-main">
+                      <input
+                        ref="directFileInputRef"
+                        type="file"
+                        class="wb-direct-file-input"
+                        multiple
+                        @change="onDirectFilesChange"
+                      />
+                      <button
+                        type="button"
+                        class="wb-direct-attach"
+                        :disabled="directLoading"
+                        aria-label="选择本地文件作为附件"
+                        title="选择本地文件（图片、PDF、Word、Excel；图片支持粘贴/拖拽进输入框）"
+                        @click="openDirectFilePicker"
+                      >
+                        <svg class="wb-direct-attach__icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M21.44 11.05l-8.49 8.48a5.66 5.66 0 01-8-8l9.19-9.2a3.77 3.77 0 015.33 5.33L8.95 19.07a2.36 2.36 0 01-3.33-3.33l8.49-8.48" />
+                        </svg>
+                      </button>
+                      <textarea
+                        v-model="directDraft"
+                        class="wb-direct-input"
+                        rows="3"
+                        placeholder="直接问问题，例如：帮我写一份门店日报自动化方案…粘贴/拖拽图片或文件也可以"
+                        spellcheck="false"
+                        @keydown="onDirectKeydown"
+                      />
+                      <button
+                        v-if="directLoading"
+                        type="button"
+                        class="wb-direct-send wb-direct-send--stop"
+                        title="停止生成"
+                        @click="stopGeneration"
+                      >停止</button>
+                      <button
+                        v-else
+                        type="button"
+                        class="wb-direct-send"
+                        :disabled="directSendDisabled"
+                        @click="() => void sendDirectChat()"
+                      >发送</button>
+                    </div>
+                    <div v-if="directAttachedFiles.length" class="wb-direct-file-chips" aria-label="已选附件">
+                      <span
+                        v-for="f in directAttachedFiles"
+                        :key="f.id"
+                        class="wb-direct-file-chip"
+                        :class="`wb-direct-file-chip--${f.status}`"
+                        :title="directFileChipTitle(f)"
+                      >
+                        <span class="wb-direct-file-chip__dot" aria-hidden="true">
+                          <span v-if="f.status === 'uploading'" class="wb-direct-file-chip__spinner" />
+                          <span v-else-if="f.status === 'ready'" class="wb-direct-file-chip__check">✓</span>
+                          <span v-else-if="f.status === 'error' || f.status === 'skipped'" class="wb-direct-file-chip__warn">!</span>
+                        </span>
+                        <span class="wb-direct-file-chip__name">{{ f.name }}</span>
+                        <span class="wb-direct-file-chip__meta">{{ formatDirectFileSize(f.size) }}</span>
+                        <button
+                          type="button"
+                          class="wb-direct-file-chip__remove"
+                          :aria-label="`移除 ${f.name}`"
+                          :disabled="directLoading || f.status === 'uploading'"
+                          @click="() => void removeDirectAttachedFile(f.id)"
+                        >×</button>
+                      </span>
+                    </div>
+                    <p v-if="directAttachHint" class="wb-direct-attach-hint" role="status">
+                      {{ directAttachHint }}
+                    </p>
+                  </div>
+                  <p v-if="directError" class="wb-direct-error" role="alert">{{ directError }}</p>
+                  <div v-if="!directMessages.length" class="wb-direct-suggestions" aria-label="建议问题">
+                    <button
+                      v-for="item in directSuggestions"
+                      :key="item"
+                      type="button"
+                      class="wb-direct-suggestion"
+                      @click="() => void sendDirectChat(item)"
+                    >{{ item }}</button>
+                  </div>
                 </div>
-                <p v-if="directAttachHint" class="wb-direct-attach-hint" role="status">
-                  {{ directAttachHint }}
-                </p>
               </div>
-              <p v-if="directError" class="wb-direct-error" role="alert">{{ directError }}</p>
-              <div class="wb-direct-suggestions" aria-label="建议问题">
-                <button
-                  v-for="item in directSuggestions"
-                  :key="item"
-                  type="button"
-                  class="wb-direct-suggestion"
-                  @click="() => void sendDirectChat(item)"
-                >
-                  {{ item }}
-                </button>
-              </div>
+
+              <PersonalSettings
+                :open="showPersonalSettings"
+                :model-value="personalSettings"
+                @update:model-value="onPersonalSettingsUpdate"
+                @close="showPersonalSettings = false"
+              />
+              <AgentMarket
+                :open="showAgentMarket"
+                :bots="allBots"
+                @close="showAgentMarket = false"
+                @start="onStartWithAgent"
+                @create="onCreateAgent"
+                @remove="onRemoveAgent"
+                @favorite="onFavoriteAgent"
+              />
+              <VoicePhoneModal
+                :open="showVoicePhone"
+                :on-turn="handleVoicePhoneTurn"
+                @close="showVoicePhone = false"
+              />
+              <MediaGenPanel
+                :open="showMediaGen"
+                :runner="mediaGenRunner"
+                @close="showMediaGen = false"
+                @insert="insertGeneratedToChat"
+              />
             </section>
 
             <section class="wb-gear-scene wb-make-scene" aria-label="二档制作流程">
@@ -890,8 +1057,46 @@
 import { ref, computed, reactive, onMounted, onUnmounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import ConsumptionTierControl from '../components/workbench/ConsumptionTierControl.vue'
+import MessageBody from '../components/workbench/MessageBody.vue'
+import MessageActions from '../components/workbench/MessageActions.vue'
+import VoicePhoneModal from '../components/workbench/VoicePhoneModal.vue'
+import AgentMarket from '../components/workbench/AgentMarket.vue'
+import PersonalSettings from '../components/workbench/PersonalSettings.vue'
+import BalanceBadge from '../components/workbench/BalanceBadge.vue'
+import MediaGenPanel from '../components/workbench/MediaGenPanel.vue'
+import type { AgentBot } from '../utils/agentBots'
+import {
+  loadAllBots,
+  loadMyBots,
+  saveMyBots,
+  loadFavorites,
+  saveFavorites,
+  loadActiveBotId,
+  saveActiveBotId,
+} from '../utils/agentBots'
+import type { PersonalSettings as PersonalSettingsValue } from '../utils/personalSettings'
+import {
+  defaultPersonalSettings,
+  loadPersonalSettings,
+  savePersonalSettings,
+  applyThemeToDocument,
+} from '../utils/personalSettings'
 import { api } from '../api'
 import { getAccessToken } from '../infrastructure/storage/tokenStore'
+import type { ChatMessage, Conversation } from '../utils/conversationStore'
+import {
+  loadConversations,
+  saveConversations,
+  loadActiveId,
+  saveActiveId,
+  createConversation,
+  makeMessage,
+  summarizeForTitle,
+  exportConversationAsMarkdown,
+} from '../utils/conversationStore'
+import { streamLLMChat } from '../utils/llmStream'
+import type { StreamHandle } from '../utils/llmStream'
+import { stripInternalMarkers } from '../utils/lightMarkdown'
 
 /** 与后端 llm_model_taxonomy.CATEGORY_ORDER 一致 */
 const LLM_CATEGORY_ORDER = ['llm', 'vlm', 'image', 'video', 'other']
@@ -964,6 +1169,7 @@ const gearThumbPercent = computed(() => {
 })
 const directDraft = ref('')
 const directFileInputRef = ref(null)
+const directThreadRef = ref<HTMLElement | null>(null)
 /**
  * 直接聊天待发送的本地附件。每项形如：
  *   { id, name, size, status: 'uploading'|'ready'|'error'|'skipped', docId, error, file }
@@ -971,9 +1177,36 @@ const directFileInputRef = ref(null)
  * - status='skipped'/'error' 的文件不上传，只在消息中附带文件名说明。
  */
 const directAttachedFiles = ref([])
-const directMessages = ref([])
 const directLoading = ref(false)
 const directError = ref('')
+
+// === 一档「直接聊天」会话管理 / 流式 / 多模态 / 工具栏 / 个性化 ===
+const conversations = ref<Conversation[]>([])
+const activeConversationId = ref<string>('')
+const activeConversation = computed<Conversation | null>(
+  () => conversations.value.find((c) => c.id === activeConversationId.value) || null,
+)
+const directMessages = computed<ChatMessage[]>(() => activeConversation.value?.messages || [])
+const directIsDragging = ref(false)
+let currentStreamHandle: StreamHandle | null = null
+const editingMessageId = ref<string>('')
+const editingDraft = ref<string>('')
+const personalSettings = ref<PersonalSettingsValue>(defaultPersonalSettings())
+const showPersonalSettings = ref(false)
+const showAgentMarket = ref(false)
+const showVoicePhone = ref(false)
+const showMediaGen = ref(false)
+const allBots = ref<AgentBot[]>([])
+const activeBotId = ref<string>('')
+const activeBot = computed<AgentBot | null>(
+  () => allBots.value.find((b) => b.id === activeBotId.value) || null,
+)
+const speakingMessageId = ref<string>('')
+let phoneSynth: SpeechSynthesis | null = null
+const balanceValue = ref<number | string | null>(null)
+const memberPlan = ref<string>('')
+const memberExpireAt = ref<string>('')
+const inviteToast = ref<string>('')
 
 /** 与后端 knowledge_ingest.SUPPORTED_EXTENSIONS / MAX_UPLOAD_BYTES 保持一致 */
 const DIRECT_KB_SUPPORTED_EXT = new Set(['txt', 'md', 'json', 'csv', 'pdf', 'docx', 'xlsx'])
@@ -1000,11 +1233,11 @@ const directAttachHint = computed(() => {
   if (errored) parts.push(`${errored} 个上传失败，仅附文件名给模型参考`)
   return parts.join(' · ')
 })
-const directSuggestions = [
-  '帮我把今天的工作拆成步骤',
-  '帮我分析一个自动化流程',
-  '帮我写一段客户沟通话术',
-]
+const directSuggestions = computed<string[]>(() => {
+  const list = personalSettings.value?.suggestions || []
+  if (Array.isArray(list) && list.length) return list
+  return ['帮我把今天的工作拆成步骤', '帮我分析一个自动化流程', '帮我写一段客户沟通话术']
+})
 
 const CONSUMPTION_TIER_STORAGE_KEY = 'workbench_consumption_tier'
 
@@ -1220,15 +1453,15 @@ async function uploadDirectAttachedFile(item) {
 }
 
 function onDirectFilesChange(e) {
-  const input = e?.target
+  const input = e?.target as HTMLInputElement | null
   if (!input || typeof input.files === 'undefined') return
-  const picked = Array.from(input.files || [])
+  const picked: File[] = Array.from(input.files || [])
   input.value = ''
   if (!picked.length) return
   const maxFiles = 12
   const remaining = Math.max(0, maxFiles - directAttachedFiles.value.length)
   const accepted = picked.slice(0, remaining)
-  const items = accepted.map((file) => {
+  const items = accepted.map((file: File) => {
     const ext = directFileExt(file.name)
     const supported = DIRECT_KB_SUPPORTED_EXT.has(ext)
     const tooBig = Number(file.size || 0) > DIRECT_KB_MAX_BYTES
@@ -1284,6 +1517,185 @@ async function removeDirectAttachedFile(id) {
   }
 }
 
+function persistConversations() {
+  saveConversations(conversations.value.slice())
+}
+
+function ensureActiveConversation(opts?: { forceNew?: boolean; bot?: AgentBot | null }): Conversation {
+  if (!opts?.forceNew && activeConversation.value) return activeConversation.value
+  const bot = opts?.bot ?? activeBot.value
+  const conv = createConversation({
+    title: '新对话',
+    agentId: bot?.id,
+    agentLabel: bot?.name,
+  })
+  if (bot?.opener) {
+    conv.messages.push(makeMessage('assistant', bot.opener))
+  }
+  conversations.value = [conv, ...conversations.value]
+  activeConversationId.value = conv.id
+  saveActiveId(conv.id)
+  persistConversations()
+  return conv
+}
+
+function patchActiveConversation(mutator: (c: Conversation) => void) {
+  const id = activeConversationId.value
+  if (!id) return
+  conversations.value = conversations.value.map((c) => {
+    if (c.id !== id) return c
+    const next: Conversation = { ...c, messages: c.messages.slice() }
+    mutator(next)
+    next.updatedAt = Date.now()
+    return next
+  })
+  persistConversations()
+}
+
+function appendUserAndAssistant(userMsg: ChatMessage, assistantPlaceholder: ChatMessage) {
+  patchActiveConversation((c) => {
+    c.messages.push(userMsg)
+    c.messages.push(assistantPlaceholder)
+    if (!c.title || c.title === '新对话') {
+      c.title = summarizeForTitle(userMsg.content)
+    }
+  })
+}
+
+function updateAssistantMessage(id: string, mutator: (m: ChatMessage) => void) {
+  patchActiveConversation((c) => {
+    const idx = c.messages.findIndex((m) => m.id === id)
+    if (idx < 0) return
+    const next = { ...c.messages[idx] }
+    mutator(next)
+    c.messages[idx] = next
+  })
+}
+
+function buildSystemPrompt(activeBotPersona: string, knowledgePack: string): string {
+  const parts: string[] = []
+  if (activeBotPersona) {
+    parts.push(activeBotPersona)
+  } else {
+    parts.push('你是一个简洁直接的中文 AI 助手。优先给出可执行答案；如果信息不足，先给合理假设，再列出需要确认的问题。')
+  }
+  if (personalSettings.value.memory && personalSettings.value.memory.trim()) {
+    parts.push(`关于用户的长期记忆（请在回答中合理利用，但不要每次都重复念出）：\n${personalSettings.value.memory.trim()}`)
+  }
+  if (knowledgePack) {
+    parts.push(
+      `以下是用户当前提问相关的资料库片段（来自其本人上传的文档），优先据此回答；若与提问无关请忽略：\n${knowledgePack}`,
+    )
+  }
+  parts.push('回答时使用 Markdown：标题用 ## / ###，列表用「-」或「1.」，代码用 ``` 包裹并标注语言；公式用 $$ 包裹；如需画图请用 ```mermaid 代码块。')
+  return parts.join('\n\n')
+}
+
+function rebuildContextMessages(forSendUpToIndex?: number): Array<{ role: string; content: string }> {
+  const msgs = directMessages.value
+  const sliceEnd = typeof forSendUpToIndex === 'number' ? forSendUpToIndex + 1 : msgs.length
+  return msgs.slice(0, sliceEnd).map((m) => ({ role: m.role, content: m.content }))
+}
+
+async function runDirectChatTurn(opts: { userMsg?: ChatMessage; assistantId: string; userText: string }) {
+  directError.value = ''
+  directLoading.value = true
+  let knowledgePack = ''
+  let citations: Array<{ title: string; snippet?: string; url?: string }> = []
+  try {
+    if (opts.userText) {
+      try {
+        const employeeId = activeBot.value?.id || ''
+        const res: any = await api.knowledgeV2Retrieve({
+          query: opts.userText,
+          top_k: 6,
+          employee_id: employeeId || undefined,
+        })
+        const items = Array.isArray(res?.items) ? res.items : []
+        if (items.length > 0) {
+          knowledgePack = formatKnowledgeContext(items)
+          citations = items.slice(0, 6).map((it: any, i: number) => {
+            const filename = String(it?.filename || '资料')
+            const pageNo = Number(it?.page_no || it?.pageNo || 0) || 0
+            const snippet = String(it?.content || '').trim().slice(0, 200)
+            return { title: `${i + 1}. ${filename}${pageNo ? ` · 第 ${pageNo} 页` : ''}`, snippet }
+          })
+        }
+      } catch {
+        // v2 不可用时回退到 v1（仅当用户有上传附件时检索）
+        try {
+          const ready = directAttachedFiles.value.some((f) => f.status === 'ready')
+          const hasUserUploads = activeConversation.value?.messages?.some(
+            (m) => Array.isArray(m.attachments) && m.attachments.some((a) => a.status === 'ready'),
+          )
+          if (ready || hasUserUploads) {
+            const res: any = await api.knowledgeSearch(opts.userText, 6)
+            const items = Array.isArray(res?.items) ? res.items : []
+            knowledgePack = formatKnowledgeContext(items)
+            citations = items.slice(0, 6).map((it: any, i: number) => {
+              const filename = String(it?.filename || '资料')
+              const pageNo = Number(it?.page_no || it?.pageNo || 0) || 0
+              const snippet = String(it?.content || '').trim().slice(0, 200)
+              return { title: `${i + 1}. ${filename}${pageNo ? ` · 第 ${pageNo} 页` : ''}`, snippet }
+            })
+          }
+        } catch {
+          /* 检索失败不阻塞聊天 */
+        }
+      }
+    }
+    const { provider, model } = await resolveChatProviderModel()
+    const sys = buildSystemPrompt(activeBot.value?.persona || '', knowledgePack)
+    const ctx = directMessages.value
+      .filter((m) => m.id !== opts.assistantId)
+      .map((m) => ({ role: m.role, content: m.content }))
+    const msgs = [{ role: 'system', content: sys }, ...ctx]
+    const handle = streamLLMChat({
+      provider,
+      model,
+      messages: msgs,
+      maxTokens: 2048,
+      onToken: (_delta, soFar) => {
+        updateAssistantMessage(opts.assistantId, (m) => {
+          m.content = soFar
+          m.pending = true
+        })
+      },
+      onError: (e) => {
+        directError.value = e?.message || String(e)
+        updateAssistantMessage(opts.assistantId, (m) => {
+          m.pending = false
+          m.error = e?.message || String(e)
+          if (!m.content) m.content = `（生成失败：${m.error}）`
+        })
+      },
+      onDone: (full, aborted) => {
+        updateAssistantMessage(opts.assistantId, (m) => {
+          m.pending = false
+          if (aborted) {
+            m.content = m.content ? `${m.content}\n\n_（已中断）_` : '_（已中断）_'
+          } else if (full) {
+            m.content = full
+          }
+          if (citations.length) m.citations = citations
+        })
+      },
+    })
+    currentStreamHandle = handle
+    await handle.done
+  } catch (e: any) {
+    directError.value = e?.message || String(e)
+    updateAssistantMessage(opts.assistantId, (m) => {
+      m.pending = false
+      m.error = e?.message || String(e)
+      if (!m.content) m.content = `（生成失败：${m.error}）`
+    })
+  } finally {
+    currentStreamHandle = null
+    directLoading.value = false
+  }
+}
+
 async function sendDirectChat(text = '') {
   if (directAttachedFiles.value.some((f) => f.status === 'uploading')) {
     directError.value = '附件仍在上传中，请稍候'
@@ -1296,45 +1708,489 @@ async function sendDirectChat(text = '') {
   if (note) userContent = userContent ? `${userContent}\n\n${note}` : note
   if (!userContent || directLoading.value) return
   if (!requireLoginForWorkbenchUse()) return
-  // consumptionTier（1–10）当前仅占位；后续可映射 max_tokens、独立 intensity 或与实时榜单选模后再传入 llmChat / 后端。
+
+  ensureActiveConversation()
   directDraft.value = ''
   directError.value = ''
-  directLoading.value = true
-  directMessages.value = [...directMessages.value, { role: 'user', content: userContent }]
-  // 立刻清空附件，避免失败后重复点发送时再次叠加同一段说明；ready 文档仍留在用户知识库中。
+
+  const userMsg = makeMessage('user', userContent, {
+    skills: [],
+    attachments: filesSnapshot.map((f) => ({ name: f.name, size: f.size, status: f.status, docId: f.docId })),
+  })
+  const placeholder = makeMessage('assistant', '', { pending: true })
+  appendUserAndAssistant(userMsg, placeholder)
   directAttachedFiles.value = []
-  try {
-    let knowledgePack = ''
-    const hasReadyDocs = filesSnapshot.some((f) => f.status === 'ready')
-    if (hasReadyDocs && userText) {
-      try {
-        const res = await api.knowledgeSearch(userText, 6)
-        knowledgePack = formatKnowledgeContext(res?.items)
-      } catch {
-        // 检索失败不阻塞对话，模型仍能看到附件文件名说明
+
+  await runDirectChatTurn({ userMsg, assistantId: placeholder.id, userText })
+}
+
+function stopGeneration() {
+  if (currentStreamHandle) {
+    currentStreamHandle.abort()
+  }
+}
+
+async function regenerateAssistant(messageId: string) {
+  if (directLoading.value) return
+  const msgs = directMessages.value
+  const idx = msgs.findIndex((m) => m.id === messageId)
+  if (idx <= 0) return
+  let userIdx = -1
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    if (msgs[i].role === 'user') {
+      userIdx = i
+      break
+    }
+  }
+  if (userIdx < 0) return
+  const userText = msgs[userIdx].content
+  patchActiveConversation((c) => {
+    c.messages.splice(idx, 1)
+  })
+  const placeholder = makeMessage('assistant', '', { pending: true })
+  patchActiveConversation((c) => {
+    c.messages.push(placeholder)
+  })
+  await runDirectChatTurn({ assistantId: placeholder.id, userText })
+}
+
+function startEditUserMessage(messageId: string) {
+  const m = directMessages.value.find((x) => x.id === messageId)
+  if (!m || m.role !== 'user') return
+  editingMessageId.value = messageId
+  editingDraft.value = m.content
+}
+
+async function commitEditedUserMessage() {
+  const id = editingMessageId.value
+  const draft = String(editingDraft.value || '').trim()
+  if (!id || !draft) {
+    editingMessageId.value = ''
+    editingDraft.value = ''
+    return
+  }
+  const idx = directMessages.value.findIndex((m) => m.id === id)
+  if (idx < 0) {
+    editingMessageId.value = ''
+    return
+  }
+  patchActiveConversation((c) => {
+    c.messages[idx] = { ...c.messages[idx], content: draft }
+    c.messages.splice(idx + 1)
+  })
+  editingMessageId.value = ''
+  editingDraft.value = ''
+  const placeholder = makeMessage('assistant', '', { pending: true })
+  patchActiveConversation((c) => {
+    c.messages.push(placeholder)
+  })
+  await runDirectChatTurn({ assistantId: placeholder.id, userText: draft })
+}
+
+function cancelEditUserMessage() {
+  editingMessageId.value = ''
+  editingDraft.value = ''
+}
+
+function setMessageFeedback(messageId: string, fb: 'up' | 'down' | null) {
+  patchActiveConversation((c) => {
+    const idx = c.messages.findIndex((m) => m.id === messageId)
+    if (idx < 0) return
+    c.messages[idx] = { ...c.messages[idx], feedback: fb }
+  })
+}
+
+function getPhoneSynth(): SpeechSynthesis | null {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null
+  if (!phoneSynth) phoneSynth = window.speechSynthesis
+  return phoneSynth
+}
+
+function speakMessage(messageId: string) {
+  const synth = getPhoneSynth()
+  if (!synth) {
+    directError.value = '当前浏览器不支持语音合成。'
+    return
+  }
+  if (speakingMessageId.value === messageId) {
+    synth.cancel()
+    speakingMessageId.value = ''
+    return
+  }
+  const m = directMessages.value.find((x) => x.id === messageId)
+  if (!m?.content) return
+  synth.cancel()
+  const u = new SpeechSynthesisUtterance(stripInternalMarkers(m.content).slice(0, 1500))
+  const voices = synth.getVoices()
+  const zh = voices.find((v) => /^zh/i.test(v.lang))
+  if (zh) u.voice = zh
+  u.rate = 1
+  u.onend = () => {
+    if (speakingMessageId.value === messageId) speakingMessageId.value = ''
+  }
+  u.onerror = () => {
+    if (speakingMessageId.value === messageId) speakingMessageId.value = ''
+  }
+  speakingMessageId.value = messageId
+  synth.speak(u)
+}
+
+function copyConversationLink(c: Conversation) {
+  const md = exportConversationAsMarkdown(c)
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${c.title || '对话'}-${c.id.slice(0, 8)}.md`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function newConversationHandler() {
+  ensureActiveConversation({ forceNew: true })
+}
+
+function pickConversation(id: string) {
+  if (id === activeConversationId.value) return
+  if (currentStreamHandle) currentStreamHandle.abort()
+  activeConversationId.value = id
+  saveActiveId(id)
+}
+
+function pinConversation(id: string) {
+  conversations.value = conversations.value.map((c) =>
+    c.id === id ? { ...c, pinned: !c.pinned, updatedAt: Date.now() } : c,
+  )
+  persistConversations()
+}
+
+function renameConversation(id: string, title: string) {
+  conversations.value = conversations.value.map((c) =>
+    c.id === id ? { ...c, title: title.slice(0, 60), updatedAt: Date.now() } : c,
+  )
+  persistConversations()
+}
+
+function exportConversation(id: string) {
+  const c = conversations.value.find((x) => x.id === id)
+  if (!c) return
+  copyConversationLink(c)
+}
+
+function removeConversation(id: string) {
+  if (!window.confirm('确定删除这个对话？删除后无法恢复。')) return
+  conversations.value = conversations.value.filter((c) => c.id !== id)
+  if (activeConversationId.value === id) {
+    activeConversationId.value = conversations.value[0]?.id || ''
+    saveActiveId(activeConversationId.value)
+  }
+  persistConversations()
+}
+
+function clearAllConversations() {
+  if (!window.confirm('清空全部对话？此操作不可恢复。')) return
+  conversations.value = []
+  activeConversationId.value = ''
+  saveActiveId('')
+  persistConversations()
+}
+
+function onComposerPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (!items?.length) return
+  const images: File[] = []
+  for (const it of Array.from(items)) {
+    if (it.kind === 'file') {
+      const f = it.getAsFile()
+      if (f && f.type.startsWith('image/')) images.push(f)
+    }
+  }
+  if (!images.length) return
+  e.preventDefault()
+  void ingestComposerFiles(images)
+}
+
+/** 拖入计数：dragenter/leave 在子元素切换时会成对触发，单纯靠 dragleave 关闭遮罩会闪烁，
+ *  改用计数器在所有子元素都 leave 完成后再清零。 */
+const directDragDepth = ref(0)
+
+function dragHasFiles(e: DragEvent): boolean {
+  const types = e.dataTransfer?.types
+  if (!types) return false
+  for (let i = 0; i < types.length; i += 1) {
+    if (types[i] === 'Files') return true
+  }
+  return false
+}
+
+function onSurfaceDragEnter(e: DragEvent) {
+  if (!dragHasFiles(e)) return
+  e.preventDefault()
+  directDragDepth.value += 1
+  directIsDragging.value = true
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+
+function onSurfaceDragOver(e: DragEvent) {
+  if (!dragHasFiles(e)) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+
+function onSurfaceDragLeave(e: DragEvent) {
+  if (!dragHasFiles(e)) return
+  directDragDepth.value = Math.max(0, directDragDepth.value - 1)
+  if (directDragDepth.value === 0) directIsDragging.value = false
+}
+
+function onSurfaceDrop(e: DragEvent) {
+  directDragDepth.value = 0
+  directIsDragging.value = false
+  const list = e.dataTransfer?.files
+  if (!list?.length) return
+  e.preventDefault()
+  void ingestComposerFiles(Array.from(list))
+}
+
+async function ingestComposerFiles(files: File[]) {
+  const remaining = Math.max(0, 12 - directAttachedFiles.value.length)
+  const accepted = files.slice(0, remaining)
+  const items = accepted.map((file) => {
+    const ext = directFileExt(file.name)
+    const supported = DIRECT_KB_SUPPORTED_EXT.has(ext)
+    const isImage = file.type.startsWith('image/')
+    const tooBig = Number(file.size || 0) > DIRECT_KB_MAX_BYTES
+    if (isImage) {
+      return {
+        id: makeDirectAttachId(),
+        name: file.name,
+        size: file.size || 0,
+        status: 'skipped',
+        docId: '',
+        error: '图片暂以「文件名 + 简短描述」形式给模型；接入视觉模型后会改为 base64 上送。',
+        file,
       }
     }
-    const { provider, model } = await resolveChatProviderModel()
-    const sysParts = [
-      '你是一个简洁直接的中文 AI 助手。优先给出可执行答案；如果信息不足，先给合理假设，再列出需要确认的问题。',
-    ]
-    if (knowledgePack) {
-      sysParts.push(
-        `以下是用户当前提问相关的资料库片段（来自其本人上传的文档），优先据此回答；若与提问无关请忽略：\n${knowledgePack}`,
-      )
+    if (!supported || tooBig) {
+      return {
+        id: makeDirectAttachId(),
+        name: file.name,
+        size: file.size || 0,
+        status: 'skipped',
+        docId: '',
+        error: tooBig
+          ? `超过 ${formatDirectFileSize(DIRECT_KB_MAX_BYTES)} 上限`
+          : `不支持的格式（仅 ${[...DIRECT_KB_SUPPORTED_EXT].join('/')} 入库）`,
+        file,
+      }
     }
-    const msgs = [
-      { role: 'system', content: sysParts.join('\n\n') },
-      ...directMessages.value.map((m) => ({ role: m.role, content: m.content })),
-    ]
-    const res = await api.llmChat(provider, model, msgs, 2048)
-    const reply = String(res?.content || '').trim() || '（无回复）'
-    directMessages.value = [...directMessages.value, { role: 'assistant', content: reply }]
-  } catch (e) {
-    directError.value = e?.message || String(e)
-  } finally {
-    directLoading.value = false
+    return {
+      id: makeDirectAttachId(),
+      name: file.name,
+      size: file.size || 0,
+      status: 'uploading',
+      docId: '',
+      error: '',
+      file,
+    }
+  })
+  directAttachedFiles.value = [...directAttachedFiles.value, ...items]
+  for (const it of items) {
+    if (it.status === 'uploading') void uploadDirectAttachedFile(it)
   }
+}
+
+function refreshAllBots() {
+  allBots.value = loadAllBots()
+}
+
+function onCreateAgent(bot: AgentBot) {
+  const my = loadMyBots()
+  const next = [{ ...bot, mine: true }, ...my.filter((b) => b.id !== bot.id)]
+  saveMyBots(next)
+  const fav = loadFavorites()
+  fav.add(bot.id)
+  saveFavorites(fav)
+  refreshAllBots()
+}
+
+function onRemoveAgent(bot: AgentBot) {
+  if (!bot.mine) return
+  if (!window.confirm(`删除我的 Bot「${bot.name}」？`)) return
+  const my = loadMyBots().filter((b) => b.id !== bot.id)
+  saveMyBots(my)
+  const fav = loadFavorites()
+  fav.delete(bot.id)
+  saveFavorites(fav)
+  if (activeBotId.value === bot.id) {
+    activeBotId.value = ''
+    saveActiveBotId('')
+  }
+  refreshAllBots()
+}
+
+function onFavoriteAgent(bot: AgentBot) {
+  const fav = loadFavorites()
+  if (fav.has(bot.id)) fav.delete(bot.id)
+  else fav.add(bot.id)
+  saveFavorites(fav)
+  refreshAllBots()
+}
+
+function onStartWithAgent(bot: AgentBot) {
+  activeBotId.value = bot.id
+  saveActiveBotId(bot.id)
+  showAgentMarket.value = false
+  ensureActiveConversation({ forceNew: true, bot })
+}
+
+function clearActiveBot() {
+  activeBotId.value = ''
+  saveActiveBotId('')
+}
+
+function onPersonalSettingsUpdate(v: PersonalSettingsValue) {
+  personalSettings.value = v
+  savePersonalSettings(v)
+  applyThemeToDocument(v.theme)
+}
+
+const directFontPxStyle = computed(() => ({
+  '--wb-direct-font-px': `${personalSettings.value.fontPx}px`,
+}))
+
+async function refreshBalance() {
+  if (!getAccessToken()) {
+    balanceValue.value = null
+    return
+  }
+  try {
+    const res: any = await api.balance()
+    balanceValue.value =
+      typeof res?.balance === 'number' ? res.balance : typeof res?.amount === 'number' ? res.amount : (res?.balance ?? null)
+  } catch {
+    /* ignore */
+  }
+  try {
+    const plan: any = await api.paymentMyPlan()
+    memberPlan.value = String(
+      plan?.plan_id ||
+      plan?.tier ||
+      plan?.membership?.tier ||
+      plan?.plan?.tier ||
+      plan?.plan?.id ||
+      '',
+    ).toLowerCase()
+    const expiresAt = plan?.expire_at || plan?.expires_at || plan?.plan?.expires_at || ''
+    memberExpireAt.value = expiresAt ? new Date(expiresAt).toLocaleDateString() : ''
+  } catch {
+    /* ignore */
+  }
+}
+
+function openBalance() {
+  void router.push({ name: 'wallet' }).catch(() => {
+    void router.push('/wallet').catch(() => undefined)
+  })
+}
+
+function openUpgrade() {
+  void router.push({ name: 'plans' }).catch(() => {
+    void router.push('/plans').catch(() => undefined)
+  })
+}
+
+async function openInvite() {
+  const url = `${location.origin}/?invite=${encodeURIComponent(getAccessToken() ? 'me' : 'guest')}`
+  try {
+    await navigator.clipboard.writeText(url)
+    inviteToast.value = '邀请链接已复制'
+    window.setTimeout(() => {
+      inviteToast.value = ''
+    }, 2400)
+  } catch {
+    inviteToast.value = url
+  }
+}
+
+const mediaGenRunner = {
+  async generateImages(prompt: string, opts: { size: string; style: string; count: number }) {
+    const safePrompt = prompt.slice(0, 240)
+    const styled = opts.style && opts.style !== 'default' ? `${opts.style} 风格，` : ''
+    try {
+      const { provider, model } = await resolveChatProviderModel()
+      const imageModel = /image|dall|gpt-image|sdxl|flux|wanx|jimeng|seedream/i.test(model)
+        ? model
+        : provider === 'openai'
+        ? 'gpt-image-1'
+        : model
+      const res = await api.llmGenerateImage(provider, imageModel, `${styled}${safePrompt}`, {
+        size: opts.size,
+        count: opts.count,
+      })
+      const urls = Array.isArray(res?.images) ? res.images.filter(Boolean) : []
+      if (urls.length) return urls
+    } catch {
+      // 未配置真实生图模型时保留占位图回退，避免打断创作流程。
+    }
+    const items: string[] = []
+    for (let i = 0; i < Math.max(1, Math.min(4, opts.count)); i += 1) {
+      const seed = `${safePrompt}-${opts.size}-${i}`
+      const url = `https://picsum.photos/seed/${encodeURIComponent(seed)}/${opts.size.replace('x', '/')}`
+      items.push(url)
+    }
+    return items
+  },
+  async generatePptOutline(topic: string, audience: string, pages: number) {
+    const { provider, model } = await resolveChatProviderModel()
+    const sys = '你是高级 PPT 大纲编写者。为给定主题生成精炼的 markdown 大纲：每页用 ## 标题，下方 3-5 个要点（- 开头），并附 1 行口播说明。控制在指定页数内。'
+    const usr = `主题：${topic}\n受众/风格：${audience || '通用商务'}\n页数：${pages}\n请直接输出 markdown 大纲。`
+    const res = await api.llmChat(provider, model, [
+      { role: 'system', content: sys },
+      { role: 'user', content: usr },
+    ], 1800)
+    return String(res?.content || '').trim() || '（无输出）'
+  },
+  async generatePptx(topic: string, markdown: string) {
+    return await api.llmGeneratePptxBlob(topic, markdown, `${topic.slice(0, 32) || 'ai-presentation'}.pptx`)
+  },
+  async generateDocument(kind: string, inputs: string) {
+    const { provider, model } = await resolveChatProviderModel()
+    const kindMap: Record<string, string> = {
+      weekly: '周报',
+      proposal: '商业方案/提案',
+      article: '公众号文章',
+      redbook: '小红书种草文案',
+      email: '商务邮件',
+    }
+    const sys = `你是擅长写「${kindMap[kind] || kind}」的中文写手。结构清晰、节奏流畅、有重点；输出 markdown，必要时用列表与小标题。不要套话，先抓重点。`
+    const usr = `信息素材：${inputs}\n请直接输出成稿。`
+    const res = await api.llmChat(provider, model, [
+      { role: 'system', content: sys },
+      { role: 'user', content: usr },
+    ], 2200)
+    return String(res?.content || '').trim() || '（无输出）'
+  },
+}
+
+function insertGeneratedToChat(text: string) {
+  if (!text) return
+  ensureActiveConversation()
+  const m = makeMessage('assistant', text, {
+    agentLabel: 'AI 创作',
+  })
+  patchActiveConversation((c) => c.messages.push(m))
+  showMediaGen.value = false
+}
+
+async function handleVoicePhoneTurn(userText: string): Promise<string> {
+  ensureActiveConversation()
+  const userMsg = makeMessage('user', userText, { agentLabel: '语音电话' })
+  const placeholder = makeMessage('assistant', '', { pending: true })
+  appendUserAndAssistant(userMsg, placeholder)
+  await runDirectChatTurn({ assistantId: placeholder.id, userText })
+  const m = directMessages.value.find((x) => x.id === placeholder.id)
+  return stripInternalMarkers(m?.content || '')
 }
 
 function onDirectKeydown(e) {
@@ -1828,6 +2684,17 @@ function orchStepClass(st) {
   }
 }
 
+watch(
+  () => directMessages.value.map((m) => `${m.id}:${m.content.length}:${m.pending ? 1 : 0}`).join('|'),
+  async () => {
+    await nextTick()
+    const raw = directThreadRef.value as any
+    const el: HTMLElement | null = raw?.$el || raw
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  },
+)
+
 onMounted(async () => {
   document.addEventListener('pointerdown', onLlmDocPointerDown, true)
   window.addEventListener('keydown', onLlmEscape)
@@ -1852,6 +2719,26 @@ onMounted(async () => {
   await loadLlmCatalogForWorkbench()
   await loadWorkbenchRepoPicks()
   await loadKnowledgeDocuments()
+
+  try {
+    personalSettings.value = loadPersonalSettings()
+    applyThemeToDocument(personalSettings.value.theme)
+  } catch { /* ignore */ }
+  try {
+    refreshAllBots()
+    activeBotId.value = loadActiveBotId() || ''
+  } catch { /* ignore */ }
+  try {
+    conversations.value = loadConversations()
+    const storedActive = loadActiveId()
+    if (storedActive && conversations.value.some((c) => c.id === storedActive)) {
+      activeConversationId.value = storedActive
+    } else if (conversations.value.length) {
+      activeConversationId.value = conversations.value[0].id
+      saveActiveId(activeConversationId.value)
+    }
+  } catch { /* ignore */ }
+  void refreshBalance()
 })
 
 onBeforeUnmount(() => {
@@ -2184,8 +3071,9 @@ function formatKnowledgeContext(items) {
     .slice(0, 6)
     .map((it, i) => {
       const filename = it?.filename || '资料'
+      const pageNo = Number(it?.page_no || it?.pageNo || 0) || 0
       const content = String(it?.content || '').trim()
-      return `### ${i + 1}. ${filename}\n${content}`
+      return `### ${i + 1}. ${filename}${pageNo ? `（第 ${pageNo} 页）` : ''}\n${content}`
     })
     .join('\n\n---\n\n')
 }
@@ -3023,7 +3911,6 @@ function onComposerKeydown(e) {
   scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
 }
 
-.wb-direct-scene,
 .wb-voice-scene {
   display: flex;
   flex-direction: column;
@@ -3035,6 +3922,379 @@ function onComposerKeydown(e) {
 
 .wb-direct-scene {
   position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  text-align: left;
+  font-size: var(--wb-direct-font-px, 15px);
+}
+
+.wb-direct-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+  width: 100%;
+  max-width: min(78rem, 100%);
+  margin: 0 auto;
+  border-radius: 1.1rem;
+  background: rgba(2, 6, 23, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  position: relative;
+}
+
+.wb-direct-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0.85rem clamp(0.75rem, 1.5vw, 1.25rem) 1rem;
+  gap: 0.55rem;
+  overflow: hidden;
+}
+
+.wb-direct-main--empty {
+  align-items: center;
+  justify-content: center;
+  padding-top: clamp(2.2rem, 8vh, 5.6rem);
+  padding-bottom: clamp(2rem, 7vh, 4.8rem);
+}
+
+.wb-direct-main--chatting {
+  align-items: stretch;
+  justify-content: flex-start;
+  animation: wb-direct-chat-surface-in 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wb-direct-main--drop {
+  box-shadow: inset 0 0 0 2px rgba(165, 180, 252, 0.55);
+  background: rgba(99, 102, 241, 0.05);
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.wb-direct-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 4vh, 2rem);
+  background: radial-gradient(120% 80% at 50% 40%, rgba(99, 102, 241, 0.22), rgba(2, 6, 23, 0.78) 70%);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+  animation: wb-direct-dropzone-in 0.18s ease-out;
+}
+
+.wb-direct-dropzone__panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 1.1rem 1.5rem;
+  border-radius: 1rem;
+  border: 2px dashed rgba(165, 180, 252, 0.7);
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+  text-align: center;
+  box-shadow: 0 18px 40px -20px rgba(15, 23, 42, 0.6);
+}
+
+.wb-direct-dropzone__icon {
+  width: 2.4rem;
+  height: 2.4rem;
+  display: grid;
+  place-items: center;
+  color: #c7d2fe;
+}
+
+.wb-direct-dropzone__icon > svg {
+  width: 100%;
+  height: 100%;
+}
+
+.wb-direct-dropzone__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.wb-direct-dropzone__sub {
+  margin: 0;
+  font-size: 0.82rem;
+  color: rgba(226, 232, 240, 0.75);
+}
+
+@keyframes wb-direct-dropzone-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes wb-direct-chat-surface-in {
+  from {
+    opacity: 0.84;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wb-direct-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-wrap: wrap;
+  transition:
+    opacity 0.24s ease,
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wb-direct-main--empty .wb-direct-topbar {
+  position: absolute;
+  top: 0.85rem;
+  left: clamp(0.75rem, 1.5vw, 1.25rem);
+  right: clamp(0.75rem, 1.5vw, 1.25rem);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-8px);
+  border-bottom: 0;
+}
+
+.wb-direct-main--empty:hover .wb-direct-topbar,
+.wb-direct-main--empty:focus-within .wb-direct-topbar {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.wb-direct-main--chatting .wb-direct-topbar {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.wb-direct-topbar__l,
+.wb-direct-topbar__r {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.wb-direct-topbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.86);
+  cursor: pointer;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.wb-direct-topbtn:hover {
+  background: rgba(99, 102, 241, 0.18);
+  color: #fff;
+}
+
+.wb-direct-bot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(244, 114, 182, 0.32), rgba(168, 85, 247, 0.42));
+  border: 1px solid rgba(244, 114, 182, 0.45);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.wb-direct-bot-chip__name {
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-direct-bot-chip__x {
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1;
+  padding: 0;
+}
+
+.wb-direct-msg__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.25rem;
+}
+
+.wb-direct-msg__skills,
+.wb-direct-msg__atts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.wb-direct-msg__skill-chip,
+.wb-direct-msg__att-chip {
+  font-size: 0.62rem;
+  padding: 0.05rem 0.32rem;
+  border-radius: 0.32rem;
+  background: rgba(99, 102, 241, 0.22);
+  color: rgba(199, 210, 254, 0.98);
+  border: 1px solid rgba(165, 180, 252, 0.32);
+}
+
+.wb-direct-msg__att-chip {
+  background: rgba(45, 212, 191, 0.18);
+  color: #5eead4;
+  border-color: rgba(45, 212, 191, 0.32);
+}
+
+.wb-direct-msg__err {
+  margin: 0.35rem 0 0;
+  color: rgba(252, 165, 165, 0.95);
+  font-size: 0.78rem;
+}
+
+.wb-direct-cites {
+  margin: 0.55rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.5rem;
+  background: rgba(45, 212, 191, 0.07);
+  border: 1px dashed rgba(45, 212, 191, 0.32);
+}
+
+.wb-direct-cites__head {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: rgba(94, 234, 212, 0.95);
+  font-weight: 700;
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+}
+
+.wb-direct-cite {
+  font-size: 0.78rem;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.wb-direct-cite + .wb-direct-cite {
+  margin-top: 0.15rem;
+}
+
+.wb-direct-cite__sum {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  cursor: pointer;
+  padding: 0.18rem 0;
+  list-style: none;
+}
+
+.wb-direct-cite__sum::-webkit-details-marker {
+  display: none;
+}
+
+.wb-direct-cite__snip {
+  margin: 0.2rem 0 0.4rem 1.3rem;
+  padding: 0.32rem 0.55rem;
+  border-left: 2px solid rgba(94, 234, 212, 0.45);
+  background: rgba(2, 6, 23, 0.32);
+  border-radius: 0.32rem;
+  font-size: 0.74rem;
+  color: rgba(203, 213, 225, 0.78);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.wb-direct-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.wb-direct-edit__input {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.5rem;
+  background: rgba(2, 6, 23, 0.7);
+  border: 1px solid rgba(165, 180, 252, 0.45);
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: inherit;
+  resize: vertical;
+  min-height: 4rem;
+}
+
+.wb-direct-edit__ops {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.wb-direct-edit__btn {
+  padding: 0.32rem 0.85rem;
+  border-radius: 0.4rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.wb-direct-edit__btn--primary {
+  background: linear-gradient(135deg, rgba(129, 140, 248, 0.55), rgba(99, 102, 241, 0.75));
+  color: #fff;
+  border-color: rgba(165, 180, 252, 0.55);
+}
+
+.wb-direct-edit__btn--ghost {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(226, 232, 240, 0.85);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.wb-direct-edit__btn--primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wb-direct-box--drop {
+  outline: 2px dashed rgba(165, 180, 252, 0.55);
+  outline-offset: 4px;
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.wb-direct-send--stop {
+  background: rgba(248, 113, 113, 0.32) !important;
+  color: #fff !important;
+  border: 1px solid rgba(248, 113, 113, 0.45) !important;
 }
 
 .wb-direct-tier-fab {
@@ -3093,6 +4353,56 @@ function onComposerKeydown(e) {
   max-width: 42rem;
 }
 
+.wb-direct-hero {
+  width: min(42rem, 100%);
+  text-align: center;
+  transform-origin: left top;
+  transition:
+    width 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.3s ease,
+    margin 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: wb-direct-hero-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wb-direct-hero--compact {
+  width: 100%;
+  max-width: 100%;
+  align-self: stretch;
+  text-align: left;
+  margin-top: 0.1rem;
+  margin-bottom: 0.35rem;
+  transform: translate3d(0, 0, 0);
+  animation: wb-direct-hero-collapse 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes wb-direct-hero-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes wb-direct-hero-collapse {
+  from {
+    opacity: 0.94;
+    transform: translate3d(18%, 48%, 0) scale(2.2);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
 .wb-direct-kicker,
 .wb-voice-kicker {
   margin: 0 0 0.45rem;
@@ -3110,6 +4420,16 @@ function onComposerKeydown(e) {
   font-size: clamp(2rem, 5vw, 3.2rem);
   line-height: 1.08;
   letter-spacing: -0.05em;
+  transition:
+    font-size 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    letter-spacing 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.3s ease;
+}
+
+.wb-direct-hero--compact .wb-direct-title {
+  font-size: clamp(1.06rem, 0.94rem + 0.45vw, 1.38rem);
+  letter-spacing: -0.025em;
+  color: rgba(248, 250, 252, 0.96);
 }
 
 .wb-direct-sub,
@@ -3117,6 +4437,18 @@ function onComposerKeydown(e) {
   margin: 0.65rem 0 0;
   color: rgba(226, 232, 240, 0.58);
   font-size: clamp(0.95rem, 0.9rem + 0.22vw, 1.1rem);
+  transition:
+    opacity 0.28s ease,
+    transform 0.36s cubic-bezier(0.22, 1, 0.36, 1),
+    font-size 0.36s cubic-bezier(0.22, 1, 0.36, 1),
+    margin 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wb-direct-hero--compact .wb-direct-sub {
+  margin-top: 0.18rem;
+  font-size: 0.78rem;
+  opacity: 0.46;
+  transform: translateY(-2px);
 }
 
 .wb-direct-box {
@@ -3129,6 +4461,50 @@ function onComposerKeydown(e) {
   border-radius: 1.35rem;
   background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.1);
+  transition:
+    width 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    margin 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 0.32s ease,
+    background 0.32s ease,
+    box-shadow 0.32s ease;
+  animation: wb-direct-composer-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wb-direct-main--empty .wb-direct-box {
+  margin-top: 0.55rem;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+}
+
+.wb-direct-main--chatting .wb-direct-box {
+  width: min(54rem, 100%);
+  margin-top: auto;
+  transform: translateY(0);
+  border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.062);
+  animation: wb-direct-composer-drop 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes wb-direct-composer-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes wb-direct-composer-drop {
+  from {
+    transform: translateY(-18px) scale(1.015);
+    opacity: 0.82;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
 }
 
 .wb-direct-box-main {
@@ -3351,6 +4727,7 @@ function onComposerKeydown(e) {
   flex-wrap: wrap;
   justify-content: center;
   gap: 0.55rem;
+  animation: wb-direct-suggestions-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both;
 }
 
 .wb-direct-suggestion {
@@ -3362,9 +4739,31 @@ function onComposerKeydown(e) {
   cursor: pointer;
   font: inherit;
   font-size: 0.8rem;
+  transition:
+    transform 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease;
 }
 
-.wb-direct-thread,
+.wb-direct-suggestion:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.075);
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+@keyframes wb-direct-suggestions-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .wb-voice-thread {
   width: min(50rem, 100%);
   max-height: 12rem;
@@ -3374,7 +4773,34 @@ function onComposerKeydown(e) {
   text-align: left;
 }
 
-.wb-direct-msg,
+.wb-direct-thread {
+  flex: 1;
+  width: min(54rem, 100%);
+  align-self: center;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.6rem;
+  text-align: left;
+  padding: 0.15rem 0.4rem 0.55rem 0;
+  align-content: start;
+  scroll-behavior: smooth;
+  animation: wb-direct-thread-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes wb-direct-thread-rise {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
 .wb-voice-msg {
   padding: 0.65rem 0.8rem;
   border-radius: 0.85rem;
@@ -3382,19 +4808,82 @@ function onComposerKeydown(e) {
   color: rgba(248, 250, 252, 0.9);
 }
 
+.wb-direct-msg {
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.85rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  max-width: 100%;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.12);
+  transform-origin: left top;
+}
+
 .wb-direct-msg--user,
 .wb-voice-msg--user {
   justify-self: end;
   max-width: 82%;
   background: rgba(129, 140, 248, 0.22);
+  border-color: rgba(165, 180, 252, 0.22);
+}
+
+.wb-direct-msg--assistant {
+  background: rgba(15, 23, 42, 0.42);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.wb-direct-msg-flow-enter-active,
+.wb-direct-msg-flow-leave-active {
+  transition:
+    opacity 0.36s ease,
+    transform 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.32s ease;
+}
+
+.wb-direct-msg-flow-enter-from {
+  opacity: 0;
+  transform: translateY(16px) scale(0.985);
+  filter: blur(4px);
+}
+
+.wb-direct-msg-flow-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.99);
+  filter: blur(3px);
+}
+
+.wb-direct-msg-flow-move {
+  transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wb-direct-msg--assistant:first-child,
+.wb-direct-msg--assistant:nth-child(2) {
+  animation: wb-direct-ai-stream-card 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes wb-direct-ai-stream-card {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+    box-shadow: 0 0 0 rgba(99, 102, 241, 0);
+  }
+  45% {
+    opacity: 1;
+    box-shadow: 0 0 34px rgba(99, 102, 241, 0.18);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.12);
+  }
 }
 
 .wb-direct-msg__role {
   display: block;
-  margin-bottom: 0.2rem;
-  color: rgba(255, 255, 255, 0.48);
+  color: rgba(255, 255, 255, 0.55);
   font-size: 0.68rem;
   font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
 .wb-direct-msg__body {
