@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -67,6 +68,11 @@ _TAGS = [
     {"name": "sync", "description": "与 XCAGI/mods 推送与拉回"},
     {"name": "debug", "description": "沙箱目录、primary 批量标记、XCAGI 状态代理"},
     {"name": "authoring", "description": "扩展面文档、蓝图路由静态扫描、宿主 OpenAPI 合并"},
+    {"name": "payment", "description": "支付、订单与会员计划"},
+    {"name": "workflow", "description": "工作流编排与执行"},
+    {"name": "webhooks", "description": "业务 Webhook 投递与重放"},
+    {"name": "refunds", "description": "退款申请与审核"},
+    {"name": "catalog", "description": "公开目录与市场检索"},
 ]
 
 app = FastAPI(
@@ -84,6 +90,43 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
 )
+
+
+from modstore_server.metrics import install_metrics, observe_payment_proxy
+
+
+install_metrics(app)
+
+
+# 把通知 / 审计日志 / 事件指标 等横切关注点接入领域事件总线。
+# 业务路由仍可通过 ``webhook_dispatcher.publish_event`` /
+# ``webhook_dispatcher.enqueue_event`` 触发事件，由订阅者负责副作用。
+try:
+    from modstore_server.eventing.subscribers import install_default_subscribers
+
+    install_default_subscribers()
+except Exception:  # 启动期失败必须降级，不能影响进程拉起
+    logging.getLogger(__name__).exception(
+        "domain event subscribers failed to install"
+    )
+
+
+def _request_id_from_headers(request: Request) -> str:
+    raw = request.headers.get("x-request-id") or request.headers.get("x-correlation-id")
+    if raw:
+        cleaned = raw.strip()
+        if cleaned:
+            return cleaned[:128]
+    return uuid.uuid4().hex
+
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    request_id = _request_id_from_headers(request)
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 def _get_allowed_origins() -> list[str]:
     """从环境变量获取允许的跨域来源，默认包含本地开发地址。"""
@@ -182,6 +225,10 @@ class ConfigDTO(BaseModel):
     xcagi_backend_url: str = ""
 
 
+class HealthResponse(BaseModel):
+    ok: bool = True
+
+
 class CreateModDTO(BaseModel):
     mod_id: str = Field(..., min_length=1, max_length=128)
     display_name: str = Field(..., min_length=1, max_length=256)
@@ -271,9 +318,9 @@ def _assert_user_owns_mod(user: User, mod_id: str) -> None:
         raise HTTPException(403, "您无权访问此 MOD")
 
 
-@app.get("/api/health", tags=["health"])
-def health():
-    return {"ok": True}
+@app.get("/api/health", tags=["health"], response_model=HealthResponse)
+def health() -> HealthResponse:
+    return HealthResponse(ok=True)
 
 
 @app.get("/api/auth/me", tags=["auth"])
@@ -828,6 +875,7 @@ for _m in (
     "modstore_server.llm_api",
     "modstore_server.notification_api",
     "modstore_server.knowledge_vector_api",
+    "modstore_server.knowledge_v2_api",
     "modstore_server.realtime_ws",
     "modstore_server.workflow_api",
     "modstore_server.workbench_api",
@@ -837,8 +885,28 @@ for _m in (
     "modstore_server.ops_api",
     "modstore_server.webhook_api",
     "modstore_server.health_api",
+    "modstore_server.openapi_connector_api",
+    "modstore_server.developer_api",
+    "modstore_server.webhook_subscription_api",
+    "modstore_server.templates_api",
 ):
     _include_optional(_m)
+
+
+def _maybe_mount_dev_docs() -> None:
+    """把仓库的 docs/ 目录挂到 /dev-docs，让 /dev 门户能直接展示开发者手册。
+
+    访问示例：``/dev-docs/developer/01-quickstart.md``、
+    ``/dev-docs/contracts/openapi/modstore-server.json``。
+    避免与 FastAPI 自带的 ``/docs`` (Swagger UI) 冲突，所以用 ``-md`` 后缀路径。
+    """
+    docs_root = Path(__file__).resolve().parent.parent / "docs"
+    if not docs_root.is_dir():
+        return
+    app.mount("/dev-docs", StaticFiles(directory=str(docs_root)), name="dev-docs")
+
+
+_maybe_mount_dev_docs()
 
 
 def _maybe_mount_ui() -> None:
@@ -864,6 +932,7 @@ def _maybe_mount_ui() -> None:
             full_path.startswith("api")
             or full_path.startswith("v1")
             or full_path.startswith("docs")
+            or full_path.startswith("dev-docs")
             or full_path.startswith("redoc")
             or full_path.startswith("market")
             or full_path == "openapi.json"
@@ -877,16 +946,14 @@ def _maybe_mount_ui() -> None:
 _maybe_mount_ui()
 
 
-_payment_gateway = None
-
-
 def _gateway() -> "PaymentGatewayService":
-    global _payment_gateway
-    if _payment_gateway is None:
-        from modstore_server.application.payment_gateway import PaymentGatewayService
+    from modstore_server.application.payment_gateway import PaymentGatewayService
 
-        _payment_gateway = PaymentGatewayService()
-    return _payment_gateway
+    return PaymentGatewayService()
+
+
+def _payment_backend_is_java(request: Request) -> bool:
+    return _gateway().should_proxy_to_java(request.url.path)
 
 
 _HOP_BY_HOP_HEADERS = frozenset(
@@ -930,9 +997,16 @@ async def _payment_backend_proxy_middleware(request: Request, call_next):
     fwd_headers = {
         k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS
     }
+    request_id = getattr(request.state, "request_id", "") or _request_id_from_headers(request)
+    fwd_headers["X-Request-Id"] = request_id
     body_bytes = await request.body() if method not in ("GET", "HEAD") else b""
+    started = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        timeout = httpx.Timeout(
+            gateway.read_timeout_seconds,
+            connect=gateway.connect_timeout_seconds,
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             up = await client.request(
                 method,
                 target_url,
@@ -942,13 +1016,17 @@ async def _payment_backend_proxy_middleware(request: Request, call_next):
     except httpx.HTTPError as exc:
         from modstore_server.application.payment_gateway import java_payment_unreachable_message
 
+        observe_payment_proxy(method, request.url.path, 502, time.perf_counter() - started)
         return JSONResponse(
             {"ok": False, "message": java_payment_unreachable_message(exc)},
+            headers={"X-Request-Id": request_id},
             status_code=502,
         )
+    observe_payment_proxy(method, request.url.path, up.status_code, time.perf_counter() - started)
     out_headers = {
         k: v for k, v in up.headers.items() if k.lower() not in _PROXY_RESPONSE_DROP_HEADERS
     }
+    out_headers["X-Request-Id"] = request_id
     return Response(
         content=up.content,
         status_code=up.status_code,

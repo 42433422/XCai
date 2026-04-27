@@ -1,16 +1,18 @@
-"""XC AGI 用户认证服务：注册、登录、JWT。"""
+"""XC AGI 用户认证服务：注册、登录、JWT，以及 Personal Access Token (PAT) 工具。"""
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 import bcrypt
 import jwt
 from sqlalchemy import func
 
-from modstore_server.models import User, Wallet, get_session_factory
+from modstore_server.models import DeveloperToken, User, Wallet, get_session_factory
 
 _JWT_SECRET = os.environ.get("MODSTORE_JWT_SECRET", "modstore-dev-secret-change-in-prod")
 _JWT_ALGORITHM = "HS256"
@@ -110,3 +112,61 @@ def get_user_by_id(user_id: int) -> Optional[User]:
     sf = get_session_factory()
     with sf() as session:
         return session.query(User).filter(User.id == user_id).first()
+
+
+# ----- Personal Access Token (PAT) -----------------------------------------
+
+PAT_PREFIX = "pat_"
+_PAT_BODY_LEN = 32  # base32hex 字符数；安全度 ≈ 160 bit
+
+
+def hash_pat(raw_token: str) -> str:
+    """sha256 反向哈希 (hex)，DB 端唯一索引。"""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def generate_pat() -> Tuple[str, str, str]:
+    """生成一个 PAT，返回 (raw_token, prefix, sha256_hex)。
+
+    raw_token 仅一次性返回给客户端，prefix 用于 UI 掩码展示 (例：``pat_AbCdEf12``)。
+    """
+    body = secrets.token_urlsafe(_PAT_BODY_LEN)[:_PAT_BODY_LEN]
+    raw = f"{PAT_PREFIX}{body}"
+    prefix = raw[: len(PAT_PREFIX) + 8]
+    return raw, prefix, hash_pat(raw)
+
+
+def resolve_user_from_pat(raw_token: str) -> Optional[User]:
+    """按 PAT 反查用户；非 ``pat_`` 前缀直接返回 None。
+
+    命中后异步更新 ``last_used_at``。已吊销 / 已过期的 token 视为无效。
+    """
+    raw = (raw_token or "").strip()
+    if not raw.startswith(PAT_PREFIX):
+        return None
+    digest = hash_pat(raw)
+
+    sf = get_session_factory()
+    with sf() as session:
+        row = (
+            session.query(DeveloperToken)
+            .filter(
+                DeveloperToken.token_hash == digest,
+                DeveloperToken.revoked_at.is_(None),
+            )
+            .first()
+        )
+        if not row:
+            return None
+        if row.expires_at and row.expires_at < datetime.utcnow():
+            return None
+        user = session.query(User).filter(User.id == row.user_id).first()
+        if not user:
+            return None
+        # 写一次 last_used_at（容忍并发竞态：单字段 UPDATE 安全）
+        try:
+            row.last_used_at = datetime.utcnow()
+            session.commit()
+        except Exception:
+            session.rollback()
+        return user

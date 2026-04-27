@@ -35,7 +35,8 @@
             <span>更新于: {{ formatDate(workflow.updated_at) }}</span>
           </div>
           <div class="workflow-card-actions">
-            <button class="btn btn-sm" @click="editWorkflow(workflow.id)">编辑</button>
+            <button class="btn btn-sm" @click="openV2Editor(workflow.id)" title="新版可视化编辑器（Vue Flow，推荐）">编辑</button>
+            <button class="btn btn-sm" @click="editWorkflow(workflow.id)" title="旧版自绘画布（即将下线）">旧编辑器</button>
             <button class="btn btn-sm" @click="toggleWorkflowStatus(workflow.id, !workflow.is_active)">
               {{ workflow.is_active ? '停用' : '激活' }}
             </button>
@@ -79,6 +80,10 @@
             <div class="node-item" @click="addNode('condition')">
               <div class="node-icon condition-node">条件</div>
               <span>条件</span>
+            </div>
+            <div class="node-item" @click="addKnowledgeSearchNode()">
+              <div class="node-icon knowledge-node">检索</div>
+              <span>知识检索</span>
             </div>
           </div>
           <div class="node-category">
@@ -397,6 +402,37 @@
             <option value="generate_report">生成报告</option>
           </select>
         </div>
+        <template v-if="selectedNode.node_type === 'knowledge_search'">
+          <div class="form-group">
+            <label class="label">检索文本（支持 ${'$'}{nodes.foo.bar} 模板）</label>
+            <input
+              v-model="selectedNode.config.query"
+              class="input"
+              placeholder="例如：${'$'}{nodes.start.user_query} 或固定文本"
+            />
+          </div>
+          <div class="form-group">
+            <label class="label">集合 ID 列表（逗号分隔；留空表示按身份自动可见）</label>
+            <input
+              :value="(selectedNode.config.collection_ids || []).join(',')"
+              class="input"
+              placeholder="例如：12,18"
+              @input="(e: any) => selectedNode.config.collection_ids = String(e?.target?.value || '').split(',').map((x: string) => Number(x.trim())).filter((n: number) => !isNaN(n) && n > 0)"
+            />
+          </div>
+          <div class="form-group">
+            <label class="label">top_k</label>
+            <input v-model.number="selectedNode.config.top_k" type="number" min="1" max="20" class="input" />
+          </div>
+          <div class="form-group">
+            <label class="label">最低分数（0–1，越高越严）</label>
+            <input v-model.number="selectedNode.config.min_score" type="number" min="0" max="1" step="0.05" class="input" />
+          </div>
+          <div class="form-group">
+            <label class="label">输出变量名</label>
+            <input v-model="selectedNode.config.output_var" class="input" placeholder="knowledge" />
+          </div>
+        </template>
         <div class="modal-actions">
           <button class="btn" @click="showNodeConfigModal = false">取消</button>
           <button class="btn btn-primary" @click="saveNodeConfig">保存</button>
@@ -533,7 +569,8 @@ function getNodeTypeLabel(type) {
     start: '开始节点',
     end: '结束节点',
     employee: '员工节点',
-    condition: '条件节点'
+    condition: '条件节点',
+    knowledge_search: '知识检索节点'
   }
   return labels[type] || type
 }
@@ -1328,6 +1365,10 @@ watch(showCreateModal, (open) => {
 })
 
 // 编辑工作流
+function openV2Editor(workflowId) {
+  router.push({ name: 'workflow-v2-editor', params: { id: String(workflowId) } })
+}
+
 async function editWorkflow(workflowId) {
   loading.value = true
   try {
@@ -1445,6 +1486,25 @@ function addEmployeeNode(employeeId, employeeName) {
     config: {
       employee_id: employeeId,
       task: 'analyze_document'
+    },
+    position_x: 100,
+    position_y: 100
+  }
+  nodes.value.push(node)
+}
+
+// 添加知识检索节点（默认配置可在选中节点后编辑）
+function addKnowledgeSearchNode() {
+  const node = {
+    id: Date.now(),
+    node_type: 'knowledge_search',
+    name: '知识检索',
+    config: {
+      query: '',
+      collection_ids: [],
+      top_k: 6,
+      min_score: 0,
+      output_var: 'knowledge'
     },
     position_x: 100,
     position_y: 100

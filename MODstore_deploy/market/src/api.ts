@@ -322,7 +322,99 @@ export const api: any = {
   createWorkflowTrigger: (workflowId: string | number, payload: unknown) => req(`/api/workflow/${workflowId}/triggers`, { method: 'POST', body: JSON.stringify(payload || {}) }),
   deleteWorkflowTrigger: (workflowId: string | number, triggerId: string | number) => req(`/api/workflow/${workflowId}/triggers/${triggerId}`, { method: 'DELETE' }),
   workflowWebhookRun: (workflowId: string | number, payload = {}) => req(`/api/workflow/${workflowId}/webhook-run`, { method: 'POST', body: JSON.stringify(payload) }),
+  publishWorkflowVersion: (workflowId: string | number, note = '') =>
+    req(`/api/workflow/${workflowId}/versions/publish`, { method: 'POST', body: JSON.stringify({ note }) }),
+  listWorkflowVersions: (workflowId: string | number, limit = 50, offset = 0) =>
+    req(`/api/workflow/${workflowId}/versions?limit=${limit}&offset=${offset}`),
+  getWorkflowVersion: (workflowId: string | number, versionId: string | number) =>
+    req(`/api/workflow/${workflowId}/versions/${versionId}`),
+  rollbackWorkflowVersion: (workflowId: string | number, versionId: string | number) =>
+    req(`/api/workflow/${workflowId}/versions/${versionId}/rollback`, { method: 'POST' }),
   getExecution: (executionId: string | number) => req(`/api/workflow/executions/${executionId}`),
+
+  // 开发者门户：Personal Access Token
+  developerListTokens: () => req('/api/developer/tokens'),
+  developerCreateToken: (name: string, scopes: string[] = [], expiresDays: number | null = null) =>
+    req('/api/developer/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name, scopes, expires_days: expiresDays }),
+    }),
+  developerRevokeToken: (tokenId: string | number) =>
+    req(`/api/developer/tokens/${tokenId}`, { method: 'DELETE' }),
+
+  // 开发者门户：Webhook 订阅
+  developerWebhookEventCatalog: () => req('/api/developer/webhooks/event-catalog'),
+  developerListWebhooks: () => req('/api/developer/webhooks'),
+  developerCreateWebhook: (payload: {
+    name: string
+    target_url: string
+    secret?: string
+    enabled_events?: string[]
+    description?: string
+    is_active?: boolean
+  }) => req('/api/developer/webhooks', { method: 'POST', body: JSON.stringify(payload) }),
+  developerUpdateWebhook: (
+    id: string | number,
+    payload: {
+      name?: string
+      target_url?: string
+      secret?: string
+      enabled_events?: string[]
+      description?: string
+      is_active?: boolean
+    },
+  ) => req(`/api/developer/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  developerDeleteWebhook: (id: string | number) =>
+    req(`/api/developer/webhooks/${id}`, { method: 'DELETE' }),
+  developerListWebhookDeliveries: (
+    id: string | number,
+    opts: { limit?: number; offset?: number; status?: string } = {},
+  ) => {
+    const p = new URLSearchParams()
+    if (opts.limit) p.set('limit', String(opts.limit))
+    if (opts.offset) p.set('offset', String(opts.offset))
+    if (opts.status) p.set('status', opts.status)
+    const qs = p.toString()
+    return req(`/api/developer/webhooks/${id}/deliveries${qs ? `?${qs}` : ''}`)
+  },
+  developerRetryWebhookDelivery: (deliveryId: string | number) =>
+    req(`/api/developer/webhooks/deliveries/${deliveryId}/retry`, { method: 'POST' }),
+  developerTestWebhook: (id: string | number) =>
+    req(`/api/developer/webhooks/${id}/test`, { method: 'POST' }),
+
+  // 模板市场
+  templatesList: (
+    opts: { q?: string; category?: string; difficulty?: string; sort?: string; limit?: number; offset?: number } = {},
+  ) => {
+    const p = new URLSearchParams()
+    if (opts.q) p.set('q', opts.q)
+    if (opts.category) p.set('category', opts.category)
+    if (opts.difficulty) p.set('difficulty', opts.difficulty)
+    if (opts.sort) p.set('sort', opts.sort)
+    if (opts.limit) p.set('limit', String(opts.limit))
+    if (opts.offset) p.set('offset', String(opts.offset))
+    return req(`/api/templates${p.toString() ? '?' + p.toString() : ''}`)
+  },
+  templatesCategories: () => req('/api/templates/categories'),
+  templateDetail: (id: string | number) => req(`/api/templates/${encodeURIComponent(String(id))}`),
+  templateInstall: (id: string | number) =>
+    req(`/api/templates/${encodeURIComponent(String(id))}/install`, { method: 'POST' }),
+  saveWorkflowAsTemplate: (
+    workflowId: string | number,
+    payload: {
+      name: string
+      description?: string
+      template_category?: string
+      template_difficulty?: string
+      price?: number
+      is_public?: boolean
+      industry?: string
+    },
+  ) =>
+    req(`/api/templates/from-workflow/${workflowId}`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   notificationsList: (unreadOnly = false, limit = 50, kind = '') => {
     const p = new URLSearchParams({ unread_only: unreadOnly ? 'true' : 'false', limit: String(limit) })
@@ -351,6 +443,50 @@ export const api: any = {
   llmAdminSavePrice: (data: any) => req('/api/llm/admin/pricing', { method: 'PUT', body: JSON.stringify(data || {}) }),
   llmChat: (provider: string, model: string, messages: unknown[], maxTokens: number | null = null, conversationId: number | null = null) =>
     req('/api/llm/chat', { method: 'POST', body: JSON.stringify({ provider, model, messages, max_tokens: maxTokens, conversation_id: conversationId }) }),
+  llmChatStream: (provider: string, model: string, messages: unknown[], maxTokens: number | null = null, conversationId: number | null = null, signal?: AbortSignal) => {
+    const headers = new Headers(authHeaders())
+    headers.set('Content-Type', 'application/json')
+    headers.set('Accept', 'text/event-stream')
+    return fetch('/api/llm/chat/stream', {
+      method: 'POST',
+      headers,
+      signal,
+      body: JSON.stringify({ provider, model, messages, max_tokens: maxTokens, conversation_id: conversationId }),
+    })
+  },
+  llmGenerateImage: (provider: string, model: string, prompt: string, opts: any = {}) =>
+    req('/api/llm/image', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider,
+        model,
+        prompt,
+        size: opts.size || '1024x1024',
+        n: opts.count || opts.n || 1,
+      }),
+    }),
+  llmGeneratePptxBlob: async (title: string, markdown: string, filename = 'ai-presentation.pptx') => {
+    const headers = new Headers(authHeaders())
+    headers.set('Content-Type', 'application/json')
+    const res = await fetch('/api/llm/pptx', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ title, markdown, filename }),
+    })
+    const buf = await res.arrayBuffer()
+    if (!res.ok) {
+      let message = res.statusText || '生成 PPT 失败'
+      try {
+        const text = new TextDecoder().decode(buf)
+        const data = JSON.parse(text)
+        message = data?.detail || data?.message || message
+      } catch {
+        /* ignore */
+      }
+      throw new Error(message)
+    }
+    return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' })
+  },
   workbenchResearchContext: (body: unknown) => req('/api/workbench/research-context', { method: 'POST', body: JSON.stringify(body) }),
   workbenchStartSession: (body: unknown) => req('/api/workbench/sessions', { method: 'POST', body: JSON.stringify(body) }),
   workbenchGetSession: (sessionId: string) => req(`/api/workbench/sessions/${encodeURIComponent(sessionId)}`),
@@ -363,8 +499,111 @@ export const api: any = {
     return req('/api/knowledge/documents', { method: 'POST', body: form })
   },
   knowledgeDeleteDocument: (docId: string) => req(`/api/knowledge/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' }),
+  knowledgeExtractText: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return req('/api/knowledge/extract-text', { method: 'POST', body: form })
+  },
   knowledgeSearch: (query: string, limit = 6) =>
     req('/api/knowledge/search', { method: 'POST', body: JSON.stringify({ query, limit }) }),
+
+  // v2: 集合 + 共享 + 跨上下文检索
+  knowledgeV2Status: () => req('/api/knowledge/v2/status'),
+  knowledgeV2ListCollections: (params?: { ownerKind?: string; ownerId?: string }) => {
+    const qs: string[] = []
+    if (params?.ownerKind) qs.push(`owner_kind=${encodeURIComponent(params.ownerKind)}`)
+    if (params?.ownerId !== undefined && params?.ownerId !== null)
+      qs.push(`owner_id=${encodeURIComponent(String(params.ownerId))}`)
+    const suffix = qs.length ? `?${qs.join('&')}` : ''
+    return req(`/api/knowledge/v2/collections${suffix}`)
+  },
+  knowledgeV2CreateCollection: (body: {
+    owner_kind?: string
+    owner_id?: string
+    name: string
+    description?: string
+    visibility?: string
+    embedding_model?: string
+    embedding_dim?: number
+  }) => req('/api/knowledge/v2/collections', { method: 'POST', body: JSON.stringify(body) }),
+  knowledgeV2UpdateCollection: (
+    id: number,
+    body: { name?: string; description?: string; visibility?: string },
+  ) =>
+    req(`/api/knowledge/v2/collections/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  knowledgeV2DeleteCollection: (id: number) =>
+    req(`/api/knowledge/v2/collections/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  knowledgeV2ListDocuments: (id: number) =>
+    req(`/api/knowledge/v2/collections/${encodeURIComponent(String(id))}/documents`),
+  knowledgeV2UploadDocument: (id: number, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return req(
+      `/api/knowledge/v2/collections/${encodeURIComponent(String(id))}/documents`,
+      { method: 'POST', body: form },
+    )
+  },
+  knowledgeV2DeleteDocument: (id: number, docId: string) =>
+    req(
+      `/api/knowledge/v2/collections/${encodeURIComponent(String(id))}/documents/${encodeURIComponent(docId)}`,
+      { method: 'DELETE' },
+    ),
+  knowledgeV2ShareCollection: (
+    id: number,
+    body: { grantee_kind: string; grantee_id: string; permission?: string },
+  ) =>
+    req(`/api/knowledge/v2/collections/${encodeURIComponent(String(id))}/share`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  knowledgeV2Unshare: (id: number, membershipId: number) =>
+    req(
+      `/api/knowledge/v2/collections/${encodeURIComponent(String(id))}/share/${encodeURIComponent(String(membershipId))}`,
+      { method: 'DELETE' },
+    ),
+  knowledgeV2Retrieve: (body: {
+    query: string
+    top_k?: number
+    min_score?: number
+    employee_id?: string | null
+    workflow_id?: number | null
+    org_id?: string | null
+    collection_ids?: number[]
+  }) => req('/api/knowledge/v2/retrieve', { method: 'POST', body: JSON.stringify(body) }),
+
+  openApiListConnectors: () => req('/api/openapi-connectors/'),
+  openApiGetConnector: (id: number | string) => req(`/api/openapi-connectors/${encodeURIComponent(String(id))}`),
+  openApiImportConnector: (payload: unknown) =>
+    req('/api/openapi-connectors/import', { method: 'POST', body: JSON.stringify(payload) }),
+  openApiDeleteConnector: (id: number | string) =>
+    req(`/api/openapi-connectors/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  openApiSaveCredentials: (id: number | string, authType: string, config: unknown) =>
+    req(`/api/openapi-connectors/${encodeURIComponent(String(id))}/credentials`, {
+      method: 'PUT',
+      body: JSON.stringify({ auth_type: authType, config }),
+    }),
+  openApiDeleteCredentials: (id: number | string) =>
+    req(`/api/openapi-connectors/${encodeURIComponent(String(id))}/credentials`, { method: 'DELETE' }),
+  openApiToggleOperation: (id: number | string, operationId: string, enabled: boolean) =>
+    req(
+      `/api/openapi-connectors/${encodeURIComponent(String(id))}/operations/${encodeURIComponent(operationId)}`,
+      { method: 'PATCH', body: JSON.stringify({ enabled }) },
+    ),
+  openApiTestOperation: (id: number | string, operationId: string, payload: unknown) =>
+    req(
+      `/api/openapi-connectors/${encodeURIComponent(String(id))}/operations/${encodeURIComponent(operationId)}/test`,
+      { method: 'POST', body: JSON.stringify(payload || {}) },
+    ),
+  openApiPublishWorkflowNode: (id: number | string, payload: unknown) =>
+    req(`/api/openapi-connectors/${encodeURIComponent(String(id))}/publish-workflow-node`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  openApiListLogs: (id: number | string, limit = 50, offset = 0) =>
+    req(`/api/openapi-connectors/${encodeURIComponent(String(id))}/logs?limit=${limit}&offset=${offset}`),
 }
 
 export { clearAuthTokens }

@@ -37,6 +37,10 @@ export default defineConfig(({ command }) => {
           target: apiProxyTarget,
           changeOrigin: true,
         },
+        '/dev-docs': {
+          target: apiProxyTarget,
+          changeOrigin: true,
+        },
       },
     },
     test: {

@@ -14,6 +14,12 @@ const routes: RouteRecordRaw[] = [
   { path: '/register', name: 'register', component: () => import('../react/wrappers/RegisterReactView.vue') },
   { path: '/legacy-register', name: 'legacy-register', component: () => import('../views/RegisterView.vue') },
   { path: '/catalog/:id', name: 'catalog-detail', component: () => import('../views/CatalogDetailView.vue') },
+  { path: '/templates', name: 'templates', component: () => import('../views/templates/TemplatesView.vue') },
+  {
+    path: '/templates/:id',
+    name: 'template-detail',
+    component: () => import('../views/templates/TemplateDetailView.vue'),
+  },
   {
     path: '/wallet',
     component: () => import('../views/WalletLayoutView.vue'),
@@ -30,6 +36,12 @@ const routes: RouteRecordRaw[] = [
   { path: '/recharge', name: 'recharge', component: () => import('../views/WalletRechargeView.vue'), meta: { auth: true } },
   { path: '/plans', name: 'plans', component: () => import('../views/PaymentPlansView.vue') },
   { path: '/workflow', name: 'workflow', component: () => import('../views/WorkflowView.vue'), meta: { auth: true } },
+  {
+    path: '/workflow/v2/:id',
+    name: 'workflow-v2-editor',
+    component: () => import('../views/workflow/v2/WorkflowFlowEditorPage.vue'),
+    meta: { auth: true },
+  },
   {
     path: '/workbench',
     component: () => import('../views/WorkbenchView.vue'),
@@ -53,6 +65,11 @@ const routes: RouteRecordRaw[] = [
         name: 'workbench-employee',
         redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'employee' } }),
       },
+      {
+        path: 'integrations',
+        name: 'workbench-integrations',
+        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'integrations' } }),
+      },
       { path: 'mod/:modId', name: 'mod-authoring', component: () => import('../views/ModAuthoringView.vue') },
     ],
   },
@@ -67,6 +84,13 @@ const routes: RouteRecordRaw[] = [
   { path: '/order/:orderId', name: 'order-detail', component: () => import('../views/OrderDetailView.vue'), meta: { auth: true } },
   { path: '/orders', name: 'orders', component: () => import('../views/OrderListView.vue'), meta: { auth: true } },
   { path: '/account', name: 'account', component: () => import('../views/AccountSettingsView.vue'), meta: { auth: true } },
+  { path: '/knowledge', name: 'knowledge', component: () => import('../views/KnowledgeManagerView.vue'), meta: { auth: true } },
+  {
+    path: '/dev',
+    name: 'developer-portal',
+    component: () => import('../views/developer/DeveloperPortalView.vue'),
+    meta: { auth: true },
+  },
   { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('../views/NotFoundView.vue') },
 ]
 
