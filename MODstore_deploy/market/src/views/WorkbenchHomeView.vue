@@ -2835,6 +2835,7 @@ function onComposerKeydown(e) {
 
 .wb-hero {
   text-align: center;
+  margin-top: clamp(1rem, 3.5vw, 2.4rem);
 }
 
 .wb-hero-kicker {
@@ -3058,6 +3059,10 @@ function onComposerKeydown(e) {
 .wb-direct-hero,
 .wb-voice-copy {
   max-width: 42rem;
+}
+
+.wb-direct-hero {
+  margin-top: clamp(0.6rem, 2.4vw, 1.6rem);
 }
 
 .wb-direct-kicker,
