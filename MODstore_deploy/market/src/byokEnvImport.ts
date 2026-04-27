@@ -1,6 +1,8 @@
 /**
  * 解析粘贴的 .env 片段，映射到 LLM provider（与 modstore_server.llm_key_resolver 环境变量名对齐）。
- * 不做跨厂商猜测：无 KEY= 或 provider= 的裸 key 由调用方决定是否绑定当前选中厂商。
+ *
+ * 无 KEY= 或 provider= 的裸密钥行不再直接丢弃，而是收集进 `bareKeys` 返回给调用方，
+ * 由调用方提交到后端 `/api/llm/credentials/detect-bare`，依次拉取各厂商 /models 自动命中归属。
  */
 
 /** 与后端 KNOWN_PROVIDERS 顺序一致，用于 openai=... 行校验 */
@@ -94,17 +96,34 @@ function stripQuotes(s) {
   return t
 }
 
+/** 看起来像 API Key 的裸字符串：不含空格/等号、长度 ≥ 8（与后端 detect-bare 的最小长度对齐） */
+function looksLikeBareKey(s) {
+  const t = s.trim()
+  if (!t) return false
+  if (t.length < 8) return false
+  if (/\s/.test(t)) return false
+  if (t.includes('=')) return false
+  return /^[A-Za-z0-9._\-+/:]+$/.test(t)
+}
+
 /**
  * @param {string} text
- * @returns {{ entries: { provider: string, api_key: string, base_url?: string|null }[], warnings: string[] }}
+ * @returns {{
+ *   entries: { provider: string, api_key: string, base_url?: string|null }[],
+ *   bareKeys: string[],
+ *   warnings: string[],
+ * }}
  */
 export function parseByokPaste(text) {
   const warnings = []
   /** @type {Record<string, { api_key?: string, base_url?: string }>} */
   const acc = {}
+  /** @type {string[]} */
+  const bareKeys = []
+  const bareSeen = new Set()
+  let unrecognizedLines = 0
 
   const rawLines = (text || '').split(/\r?\n/)
-  let bareLineCount = 0
 
   for (let line of rawLines) {
     line = line.trim()
@@ -116,7 +135,12 @@ export function parseByokPaste(text) {
 
     const eq = line.indexOf('=')
     if (eq <= 0) {
-      bareLineCount += 1
+      if (looksLikeBareKey(line) && !bareSeen.has(line)) {
+        bareSeen.add(line)
+        bareKeys.push(line)
+      } else {
+        unrecognizedLines += 1
+      }
       continue
     }
 
@@ -146,12 +170,12 @@ export function parseByokPaste(text) {
       continue
     }
 
-    bareLineCount += 1
+    unrecognizedLines += 1
   }
 
-  if (bareLineCount > 0) {
+  if (unrecognizedLines > 0) {
     warnings.push(
-      `已跳过 ${bareLineCount} 行未识别内容（请使用 OPENAI_API_KEY=… 或 openai=… 等带变量名/厂商 id 的格式）。`,
+      `已跳过 ${unrecognizedLines} 行无法识别的内容（既不是 NAME=VALUE，也不像 API Key）。`,
     )
   }
 
@@ -174,17 +198,17 @@ export function parseByokPaste(text) {
     })
   }
 
-  if (!entries.length) {
+  if (!entries.length && !bareKeys.length) {
     const hasKeyLikeLine = rawLines.some((ln) => {
       const t = ln.trim()
       return t && !t.startsWith('#') && t.includes('=')
     })
     if (!hasKeyLikeLine && !warnings.length) {
-      warnings.push('请粘贴 .env 片段（例如 OPENAI_API_KEY=sk-…）或 openai=sk-…。')
+      warnings.push('请粘贴 .env 片段（例如 OPENAI_API_KEY=sk-…）或直接粘贴一段 sk-… 裸密钥。')
     } else if (!warnings.some((w) => w.includes('跳过'))) {
       warnings.push('未解析到任何可保存的 API Key（需至少 4 字符的密钥）。')
     }
   }
 
-  return { entries, warnings }
+  return { entries, bareKeys, warnings }
 }

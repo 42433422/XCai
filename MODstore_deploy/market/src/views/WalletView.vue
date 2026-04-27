@@ -341,10 +341,10 @@
               rows="8"
               autocomplete="off"
               spellcheck="false"
-              placeholder="粘贴 .env 片段，例如：&#10;OPENAI_API_KEY=sk-...&#10;OPENAI_BASE_URL=https://api.openai.com&#10;DEEPSEEK_API_KEY=sk-...&#10;或使用简写：moonshot=sk-..."
+              placeholder="粘贴 .env 片段或直接贴密钥，例如：&#10;OPENAI_API_KEY=sk-...&#10;OPENAI_BASE_URL=https://api.openai.com&#10;DEEPSEEK_API_KEY=sk-...&#10;moonshot=sk-...&#10;sk-...（无标签也可，将自动识别厂商）"
             />
             <p class="llm-byok-import__hint">
-              支持环境变量名（与部署文档一致）或 <code class="llm-code llm-code--hint">厂商id=密钥</code>；无标签的裸密钥行会被跳过。
+              支持环境变量名（与部署文档一致）、<code class="llm-code llm-code--hint">厂商id=密钥</code>，或直接粘贴裸密钥——会依次试拉各厂商 <code class="llm-code llm-code--hint">/models</code> 自动匹配归属。
             </p>
             <div class="llm-byok-import__actions">
               <button
@@ -456,6 +456,7 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { parseByokPaste } from '../byokEnvImport'
+import { requestJson } from '../infrastructure/http/client'
 import { llmUiMeta, LLM_OAI_COMPAT_BASE_URL_PROVIDERS } from '../llmModels'
 import { classifyLlmCatalogIssue, hasAnyLlmKey } from '../llmProviderHealth'
 import { llmProviderIconImgSrc } from '../llmIconUrls'
@@ -768,37 +769,70 @@ async function saveByok(provider) {
   }
 }
 
+function detectBareCredential(apiKey) {
+  return requestJson('/api/llm/credentials/detect-bare', {
+    method: 'POST',
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+}
+
 async function importByokBulk() {
   if (byokImportDisabled.value) return
   byokImportBusy.value = true
   llmErr.value = ''
   try {
-    const { entries, warnings } = parseByokPaste(byokBulkPaste.value)
-    if (!entries.length) {
+    const { entries, bareKeys, warnings } = parseByokPaste(byokBulkPaste.value)
+    if (!entries.length && !bareKeys.length) {
       llmNote.value = [...warnings].filter(Boolean).join(' ') || '未解析到可保存项'
       return
     }
-    const settled = await Promise.allSettled(
-      entries.map((e) =>
-        api.llmSaveCredentials(
-          e.provider,
-          e.api_key,
-          LLM_OAI_COMPAT_BASE_URL_PROVIDERS.includes(e.provider) ? e.base_url || null : null,
-        ),
-      ),
-    )
+
     const ok = []
     const fail = []
-    settled.forEach((r, i) => {
-      const id = entries[i].provider
-      if (r.status === 'fulfilled') ok.push(id)
-      else {
-        const msg = r.reason && typeof r.reason === 'object' && r.reason.message ? r.reason.message : String(r.reason || '失败')
-        fail.push(`${id}: ${msg}`)
-      }
-    })
+
+    if (entries.length) {
+      const settled = await Promise.allSettled(
+        entries.map((e) =>
+          api.llmSaveCredentials(
+            e.provider,
+            e.api_key,
+            LLM_OAI_COMPAT_BASE_URL_PROVIDERS.includes(e.provider) ? e.base_url || null : null,
+          ),
+        ),
+      )
+      settled.forEach((r, i) => {
+        const id = entries[i].provider
+        if (r.status === 'fulfilled') ok.push(id)
+        else {
+          const msg = r.reason && typeof r.reason === 'object' && r.reason.message ? r.reason.message : String(r.reason || '失败')
+          fail.push(`${id}: ${msg}`)
+        }
+      })
+    }
+
+    const detected = []
+    if (bareKeys.length) {
+      const settled = await Promise.allSettled(bareKeys.map((k) => detectBareCredential(k)))
+      settled.forEach((r, i) => {
+        const tag = `裸密钥#${i + 1}`
+        if (r.status === 'fulfilled') {
+          const provider = (r.value && r.value.provider) || ''
+          if (provider) {
+            ok.push(provider)
+            detected.push(provider)
+          } else {
+            fail.push(`${tag}: 后端未返回命中厂商`)
+          }
+        } else {
+          const msg = r.reason && typeof r.reason === 'object' && r.reason.message ? r.reason.message : String(r.reason || '失败')
+          fail.push(`${tag}: ${msg}`)
+        }
+      })
+    }
+
     const parts = []
     if (ok.length) parts.push(`已保存 ${ok.length} 个：${ok.join('、')}`)
+    if (detected.length) parts.push(`自动识别命中：${detected.join('、')}`)
     if (fail.length) parts.push(`失败 ${fail.length}：${fail.join('；')}`)
     if (warnings.length) parts.push(warnings.join(' '))
     llmNote.value = parts.filter(Boolean).join('。') || '完成'
