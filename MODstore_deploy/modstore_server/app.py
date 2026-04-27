@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -875,6 +875,78 @@ def _maybe_mount_ui() -> None:
 
 
 _maybe_mount_ui()
+
+
+_payment_gateway = None
+
+
+def _gateway() -> "PaymentGatewayService":
+    global _payment_gateway
+    if _payment_gateway is None:
+        from modstore_server.application.payment_gateway import PaymentGatewayService
+
+        _payment_gateway = PaymentGatewayService()
+    return _payment_gateway
+
+
+_HOP_BY_HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+)
+
+
+@app.middleware("http")
+async def _payment_backend_proxy_middleware(request: Request, call_next):
+    """PAYMENT_BACKEND=java 时，把 /api/payment、/api/wallet、/api/refunds 透传到 Java 支付服务。
+
+    避免 Python SQLite 与 Java PostgreSQL 双源（订单/会员/钱包/退款一律以 Java 为准）。
+    若中间件不在位，前端拿到的 my-plan / orders 都是 Python 本地空表，会员状态会"消失"。
+    """
+    gateway = _gateway()
+    if not gateway.should_proxy_to_java(request.url.path):
+        return await call_next(request)
+    method = request.method
+    target_url = f"{gateway.target_base_url()}{request.url.path}"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+    fwd_headers = {
+        k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS
+    }
+    body_bytes = await request.body() if method not in ("GET", "HEAD") else b""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            up = await client.request(
+                method,
+                target_url,
+                content=body_bytes if body_bytes else None,
+                headers=fwd_headers,
+            )
+    except httpx.HTTPError as exc:
+        from modstore_server.application.payment_gateway import java_payment_unreachable_message
+
+        return JSONResponse(
+            {"ok": False, "message": java_payment_unreachable_message(exc)},
+            status_code=502,
+        )
+    out_headers = {
+        k: v for k, v in up.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS
+    }
+    return Response(
+        content=up.content,
+        status_code=up.status_code,
+        headers=out_headers,
+        media_type=up.headers.get("content-type"),
+    )
 
 
 @app.middleware("http")
