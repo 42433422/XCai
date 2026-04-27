@@ -875,7 +875,7 @@
     </div>
     <Teleport to="body">
       <div
-        v-if="hasWorkflow && activeGear === 'direct'"
+        v-if="hasWorkflow"
         class="wb-direct-tier-fab"
         role="region"
         aria-label="消费档位悬浮控件"
