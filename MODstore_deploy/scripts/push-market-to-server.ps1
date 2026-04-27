@@ -33,5 +33,6 @@ if ($GitPush) {
 
 Write-Host "[push-market] SSH $SshTarget → $RemoteRepo（分支 $Branch）"
 $remote = $RemoteRepo.Replace("'", "'\''")
-$cmd = "set -euo pipefail; cd '$remote' && git rev-parse --git-dir >/dev/null && git fetch origin '$Branch' && (git pull --ff-only origin '$Branch' || git pull origin '$Branch') && cd MODstore_deploy/market && export VITE_PUBLIC_BASE=/market/ && npm ci && npm run build && echo '[ok] dist:' && pwd"
+# clean + reset --hard：清未跟踪、对齐 origin，避免服务器上残留导致 merge/检出失败
+$cmd = "set -euo pipefail; cd '$remote' && git rev-parse --git-dir >/dev/null && git fetch origin '$Branch' && (git clean -fd -- MODstore_deploy/market 2>/dev/null || true) && git reset --hard 'origin/$Branch' && cd MODstore_deploy/market && export VITE_PUBLIC_BASE=/market/ && npm ci && npm run build && echo '[ok] dist:' && pwd"
 ssh -o BatchMode=yes $SshTarget "$cmd"
