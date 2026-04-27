@@ -30,7 +30,7 @@ from modstore_server.email_service import (
     generate_verification_code,
     send_verification_email,
 )
-from modstore_server import catalog_sync
+from modstore_server import account_level_service, catalog_sync
 from modstore_server.models import (
     CatalogItem,
     Entitlement,
@@ -224,12 +224,17 @@ def api_login(body: LoginDTO):
 
 @router.get("/auth/me")
 def api_me(user: User = Depends(_get_current_user)):
+    # 经验值与等级档由前端导航栏 / 设置页直接消费；缺失会导致用户停在 Lv.1
+    exp = int(getattr(user, "experience", 0) or 0)
+    level_profile = account_level_service.build_level_profile(exp).to_dict()
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "is_admin": user.is_admin,
         "created_at": user.created_at.isoformat() if user.created_at else "",
+        "experience": exp,
+        "level_profile": level_profile,
     }
 
 
