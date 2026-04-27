@@ -1,5 +1,5 @@
 import type { Router } from 'vue-router'
-import { DEFAULT_POST_AUTH, safeRedirectPath } from '../authPaths.js'
+import { DEFAULT_POST_AUTH, safeRedirectPath } from '../authPaths'
 import { useAuthStore } from '../stores/auth'
 
 export function installAuthGuards(router: Router): void {
@@ -32,5 +32,6 @@ export function installAuthGuards(router: Router): void {
       if (!user) return { name: 'login' }
       if (!user?.is_admin) return { name: 'home' }
     }
+    return undefined
   })
 }

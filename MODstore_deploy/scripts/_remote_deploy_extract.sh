@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -eu
+DEPLOY_ROOT="/root/成都修茈科技有限公司/MODstore_deploy"
+BACKUP_ENV="/tmp/modstore.env.deploy.bak"
+cp "$DEPLOY_ROOT/.env" "$BACKUP_ENV"
+cd "/root/成都修茈科技有限公司"
+tar xzf /tmp/modstore_deploy_sync.tgz
+cp "$BACKUP_ENV" "$DEPLOY_ROOT/.env"
+rm -f /tmp/modstore_deploy_sync.tgz
+cd "$DEPLOY_ROOT"
+if [ -f scripts/ensure_llm_master_key.py ]; then .venv/bin/python scripts/ensure_llm_master_key.py .env || true; fi
+.venv/bin/pip install -q -e ".[web]"
+cd market
+# package-lock 与本地 workspace 偶发不同步时 npm ci 会失败；生产机用 install 更稳
+npm install
+export VITE_PUBLIC_BASE=/market/
+npm run build
+cd "$DEPLOY_ROOT/java_payment_service"
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-17.0.17.0.10-1.tl3.x86_64
+export PATH="$JAVA_HOME/bin:$PATH"
+mvn -B -q -DskipTests package
+systemctl restart modstore
+systemctl restart modstore-payment
+sleep 2
+systemctl is-active modstore modstore-payment
+curl -sS -o /dev/null -w "api_http=%{http_code}\n" http://127.0.0.1:9999/api/health || true
+curl -sS -o /dev/null -w "payment_http=%{http_code}\n" http://127.0.0.1:8080/actuator/health || true

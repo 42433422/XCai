@@ -1,4 +1,7 @@
-# 推送 main 且变更 market 时，SSH 到生产机 pull + 构建 /market/ 前端（与 Nginx alias 同一 dist）。
+# 在 CI workflow（ci.yml）成功完成后再触发生产部署。
+# 这样 lint/typecheck/unit/coverage/build/e2e 任一失败都会阻断部署。
+# 仍保留 workflow_dispatch 作为应急手动入口。
+#
 # 在仓库 Settings → Secrets and variables → Actions 中配置：
 #   DEPLOY_HOST          例：119.27.178.147
 #   DEPLOY_USER          例：root
@@ -9,10 +12,10 @@
 name: Market live deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
     branches: [main]
-    paths:
-      - "MODstore_deploy/market/**"
   workflow_dispatch:
 
 concurrency:
@@ -22,6 +25,17 @@ concurrency:
 jobs:
   deploy-market-on-server:
     runs-on: ubuntu-latest
+    # workflow_run 触发时仅在 CI 通过、且 head_branch 是 main 时部署；
+    # workflow_dispatch 永远允许（应急入口）。
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.event == 'push'
+        )
+      }}
     steps:
       - name: SSH — git pull + npm ci + build market
         uses: appleboy/ssh-action@v1.2.2

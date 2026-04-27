@@ -13,6 +13,7 @@ import com.modstore.service.AlipayService;
 import com.modstore.service.CurrentUserService;
 import com.modstore.service.EntitlementService;
 import com.modstore.service.OrderService;
+import com.modstore.service.PaymentMetrics;
 import com.modstore.service.SecurityService;
 import com.modstore.service.WalletService;
 import com.modstore.service.WechatPayService;
@@ -44,6 +45,7 @@ public class PaymentController {
     private final EntitlementService entitlementService;
     private final WalletService walletService;
     private final WechatPayService wechatPayService;
+    private final PaymentMetrics paymentMetrics;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** 任一 SVIP 档（含 svip 入门档）算"已是 SVIP"。 */
@@ -109,16 +111,19 @@ public class PaymentController {
     
     @PostMapping("/checkout")
     public Map<String, Object> checkout(@RequestBody Map<String, Object> request) {
+        String payChannel = String.valueOf(request.getOrDefault("pay_channel", "alipay"));
         try {
             String requestId = (String) request.get("request_id");
             Long timestamp = Long.valueOf(String.valueOf(request.get("timestamp")));
             String signature = (String) request.get("signature");
             
             if (securityService.checkReplayAttack(requestId, timestamp)) {
+                paymentMetrics.recordCheckout(payChannel, false, "replay");
                 return Map.of("ok", false, "message", "请求已过期或重复");
             }
             
             if (!securityService.verifySignature(request, signature)) {
+                paymentMetrics.recordCheckout(payChannel, false, "bad_signature");
                 return Map.of("ok", false, "message", "签名验证失败");
             }
 
@@ -143,10 +148,10 @@ public class PaymentController {
 
             String returnUrl = checkoutReturnUrl(outTradeNo);
             Map<String, Object> payResult;
-            String payChannel = String.valueOf(request.getOrDefault("pay_channel", "alipay"));
             if ("wechat".equals(payChannel)) {
                 if (!wechatPayService.configured()) {
                     orderService.updateOrderStatus(outTradeNo, "failed", null, null, null);
+                    paymentMetrics.recordCheckout(payChannel, false, "wechat_not_configured");
                     return Map.of("ok", false, "message", "微信支付未配置，请选择支付宝或联系管理员");
                 }
                 payResult = wechatPayService.createNativePay(outTradeNo, subject, totalAmount);
@@ -162,6 +167,7 @@ public class PaymentController {
                         String.valueOf(payResult.get("type")),
                         payResult.get("qr_code") == null ? null : String.valueOf(payResult.get("qr_code"))
                 );
+                paymentMetrics.recordCheckout(payChannel, true, "created");
                 return Map.of(
                     "ok", true,
                     "order_id", outTradeNo,
@@ -178,13 +184,16 @@ public class PaymentController {
                         rawMsg == null || String.valueOf(rawMsg).isBlank()
                                 ? "支付下单失败（无详细说明）"
                                 : String.valueOf(rawMsg).trim();
+                paymentMetrics.recordCheckout(payChannel, false, "provider_failed");
                 return Map.of("ok", false, "message", failMsg);
             }
         } catch (IllegalArgumentException e) {
             log.warn("下单参数校验失败: {}", e.getMessage());
+            paymentMetrics.recordCheckout(payChannel, false, "validation");
             return Map.of("ok", false, "message", e.getMessage());
         } catch (Exception e) {
             log.error("下单失败", e);
+            paymentMetrics.recordCheckout(payChannel, false, "exception");
             return Map.of("ok", false, "message", "系统内部错误");
         }
     }

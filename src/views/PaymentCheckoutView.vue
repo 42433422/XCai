@@ -82,16 +82,21 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
-import { api } from '../api.js'
+import { api } from '../api'
 
 const route = useRoute()
-const order = ref(null)
+const order = ref<any>(null)
 const loading = ref(true)
 const qrCode = ref('')
-const pollingTimer = ref(null)
+const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
+
+function orderId(): string {
+  const raw = route.params.orderId
+  return Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '')
+}
 
 const qrImageUrl = computed(() => {
   if (!qrCode.value) return ''
@@ -120,7 +125,7 @@ onBeforeUnmount(() => {
 
 async function fetchOrder() {
   try {
-    const res = await api.paymentQuery(route.params.orderId)
+    const res = await api.paymentQuery(orderId())
     order.value = res
 
     if (res.qr_code) {
@@ -140,7 +145,7 @@ async function fetchOrder() {
 
 async function pollOrder() {
   try {
-    const res = await api.paymentQuery(route.params.orderId)
+    const res = await api.paymentQuery(orderId())
     order.value = res
     if (res.qr_code) qrCode.value = String(res.qr_code)
 

@@ -566,13 +566,8 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
             # 标记订单为已发放
             payment_orders.merge_fields(out_trade_no, fulfilled=True)
             logger.info("订单权益已发放: %s user=%s amount=%s", out_trade_no, user_id, total_amount)
-            try:
-                from modstore_server.notification_service import notify_payment_success
-
-                item_name = str(order.get("subject") or "订单")
-                notify_payment_success(user_id, out_trade_no, total_amount, item_name)
-            except Exception:
-                pass
+            # 通知由 ``eventing.subscribers._on_payment_paid`` 订阅 ``payment.paid``
+            # 后处理。本模块只发布领域事件，不再直接调用 notification_service。
             webhook_dispatcher.publish_event(
                 PAYMENT_PAID,
                 out_trade_no,

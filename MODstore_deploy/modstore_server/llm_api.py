@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import quote
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from modstore_server.llm_catalog import clear_all_catalog_cache, get_models_for_provider, probe_first_matching_provider
 from modstore_server.llm_model_taxonomy import build_models_detailed, category_labels_zh
-from modstore_server.llm_chat_proxy import chat_dispatch
+from modstore_server.llm_chat_proxy import chat_dispatch, chat_dispatch_stream, image_dispatch
 from modstore_server.llm_crypto import encrypt_secret, fernet_configured
+from modstore_server.pptx_export import build_pptx_from_markdown
 from modstore_server.llm_key_resolver import (
     KNOWN_PROVIDERS,
     OAI_COMPAT_OPENAI_STYLE_PROVIDERS,
@@ -545,6 +548,20 @@ class LlmChatDTO(BaseModel):
     conversation_id: Optional[int] = Field(None, ge=1)
 
 
+class LlmImageDTO(BaseModel):
+    provider: str
+    model: str = "gpt-image-1"
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    size: str = Field("1024x1024", max_length=32)
+    n: int = Field(1, ge=1, le=4)
+
+
+class LlmPptxDTO(BaseModel):
+    title: str = Field("AI 生成 PPT", max_length=120)
+    markdown: str = Field(..., min_length=1, max_length=60000)
+    filename: str = Field("ai-presentation.pptx", max_length=160)
+
+
 @router.post("/chat")
 async def llm_chat(
     request: Request,
@@ -634,3 +651,167 @@ async def llm_chat(
         "key_source": key_source,
         "billed": not is_byok,
     }
+
+
+def _sse(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/chat/stream")
+async def llm_chat_stream(
+    request: Request,
+    body: LlmChatDTO,
+    db: Session = Depends(get_db),
+    user: User = Depends(_get_current_user),
+):
+    if body.provider not in KNOWN_PROVIDERS:
+        raise HTTPException(400, "unknown provider")
+    api_key, key_source = resolve_api_key(db, user.id, body.provider)
+    if not api_key:
+        raise HTTPException(
+            400,
+            f"供应商「{body.provider}」未配置可用 API Key（平台环境变量或 BYOK）。",
+        )
+    is_byok = key_source == "user_override"
+    base = resolve_base_url(db, user.id, body.provider) if body.provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS else None
+    msgs = [{"role": m.role, "content": m.content} for m in body.messages]
+    if not msgs:
+        raise HTTPException(400, "messages 不能为空")
+    model = body.model.strip()
+    request_id = new_request_id()
+    enforce_risk_limits(db, user.id, body.provider, model, msgs, request)
+    wallet = JavaWalletClient()
+    if is_byok:
+        hold = WalletHold(hold_no=f"byok-{request_id}", amount=Decimal("0"), enabled=False)
+    else:
+        preauth_amount = estimate_preauthorization(db, body.provider, model, msgs, body.max_tokens)
+        hold = await wallet.preauthorize(authorization_header(request), preauth_amount, body.provider, model, request_id)
+
+    async def gen():
+        parts: List[str] = []
+        upstream_usage: Dict[str, Any] = {}
+        try:
+            yield _sse("meta", {"ok": True, "request_id": request_id, "hold_no": hold.hold_no, "key_source": key_source, "billed": not is_byok})
+            async for ev in chat_dispatch_stream(
+                body.provider,
+                api_key=api_key,
+                base_url=base,
+                model=model,
+                messages=msgs,
+                max_tokens=body.max_tokens,
+            ):
+                if ev.get("type") == "error":
+                    err = ev.get("error") or "upstream error"
+                    save_failure_log(db, user_id=user.id, provider=body.provider, model=model, error=str(err), hold_no=hold.hold_no)
+                    try:
+                        await wallet.release(authorization_header(request), hold, str(err), request_id)
+                    except Exception:
+                        logger.exception("failed to release LLM wallet hold after stream upstream error")
+                    yield _sse("error", {"ok": False, "error": str(err), "status": ev.get("status")})
+                    return
+                if ev.get("type") == "usage":
+                    upstream_usage = ev.get("usage") or {}
+                    continue
+                if ev.get("type") == "delta":
+                    delta = str(ev.get("delta") or "")
+                    if delta:
+                        parts.append(delta)
+                        yield _sse("delta", {"delta": delta})
+            content = "".join(parts)
+            usage = usage_from_response(upstream_usage, msgs, content)
+            if is_byok:
+                charge = Decimal("0")
+            else:
+                charge = calculate_charge(db, body.provider, model, usage)
+                await wallet.settle(authorization_header(request), hold, charge, request_id)
+            conversation_id = save_success_log(
+                db,
+                user_id=user.id,
+                provider=body.provider,
+                model=model,
+                messages=msgs,
+                content=content,
+                usage=usage,
+                charge=charge,
+                hold_no=hold.hold_no,
+                conversation_id=body.conversation_id,
+            )
+            yield _sse(
+                "done",
+                {
+                    "ok": True,
+                    "content": content,
+                    "conversation_id": conversation_id,
+                    "usage": usage.__dict__,
+                    "charge_amount": float(charge),
+                    "hold_no": hold.hold_no,
+                    "key_source": key_source,
+                    "billed": not is_byok,
+                },
+            )
+        except Exception as exc:
+            try:
+                save_failure_log(db, user_id=user.id, provider=body.provider, model=model, error=str(exc), hold_no=hold.hold_no)
+                await wallet.release(authorization_header(request), hold, str(exc), request_id)
+            except Exception:
+                logger.exception("failed to release LLM wallet hold after unexpected stream error")
+            yield _sse("error", {"ok": False, "error": str(exc)})
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/image")
+async def llm_image(
+    body: LlmImageDTO,
+    db: Session = Depends(get_db),
+    user: User = Depends(_get_current_user),
+):
+    if body.provider not in KNOWN_PROVIDERS:
+        raise HTTPException(400, "unknown provider")
+    api_key, key_source = resolve_api_key(db, user.id, body.provider)
+    if not api_key:
+        raise HTTPException(400, f"供应商「{body.provider}」未配置可用 API Key。")
+    base = resolve_base_url(db, user.id, body.provider) if body.provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS else None
+    result = await image_dispatch(
+        body.provider,
+        api_key=api_key,
+        base_url=base,
+        model=body.model.strip() or "gpt-image-1",
+        prompt=body.prompt.strip(),
+        size=body.size.strip() or "1024x1024",
+        n=body.n,
+    )
+    if not result.get("ok"):
+        raise HTTPException(502, result.get("error") or "image upstream error")
+    return {
+        "ok": True,
+        "images": result.get("images") or [],
+        "provider": body.provider,
+        "model": body.model,
+        "key_source": key_source,
+    }
+
+
+@router.post("/pptx")
+async def llm_pptx(body: LlmPptxDTO, user: User = Depends(_get_current_user)):
+    # 仅要求登录，内容来自用户当前生成的大纲；不额外消耗模型。
+    try:
+        blob = build_pptx_from_markdown(body.markdown, title=body.title)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    filename = (body.filename or "ai-presentation.pptx").strip().replace("\\", "_").replace("/", "_")
+    if not filename.lower().endswith(".pptx"):
+        filename += ".pptx"
+    quoted = quote(filename)
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+    )

@@ -14,6 +14,9 @@
         <button type="button" class="mode-tab" :class="{ 'mode-tab--active': viewMode === 'repository' }" @click="setViewMode('repository')">
           专注Mod库
         </button>
+        <button type="button" class="mode-tab" :class="{ 'mode-tab--active': viewMode === 'integrations' }" @click="setViewMode('integrations')">
+          API 连接器
+        </button>
       </div>
       <div v-if="viewMode === 'hybrid'" class="panel-tabs" role="tablist" aria-label="同屏面板切换">
         <button type="button" class="panel-tab" :class="{ 'panel-tab--active': hybridPanel === 'workflow' && hybridSideVisible }" @click="toggleHybridPanel('workflow')">
@@ -38,6 +41,7 @@
     <section v-else class="focus-layout">
       <EmployeePanel v-if="viewMode === 'employee'" />
       <WorkflowPanel v-else-if="viewMode === 'workflow'" />
+      <OpenApiConnectorsPanel v-else-if="viewMode === 'integrations'" />
       <RepositoryPanel v-else />
     </section>
   </div>
@@ -47,13 +51,14 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import EmployeePanel from '../components/workbench/EmployeePanel.vue'
+import OpenApiConnectorsPanel from '../components/workbench/OpenApiConnectorsPanel.vue'
 import RepositoryPanel from '../components/workbench/RepositoryPanel.vue'
 import WorkflowPanel from '../components/workbench/WorkflowPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
 
-const allowed = new Set(['hybrid', 'employee', 'workflow', 'repository'])
+const allowed = new Set(['hybrid', 'employee', 'workflow', 'repository', 'integrations'])
 const routeFocus = computed(() => {
   const raw = String(route.query.focus || '').trim().toLowerCase()
   return allowed.has(raw) ? raw : 'hybrid'

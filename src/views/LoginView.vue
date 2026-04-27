@@ -24,7 +24,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { api } from '../api'
@@ -42,10 +42,11 @@ async function doLogin() {
   try {
     const res = await api.login(username.value, password.value)
     localStorage.setItem('modstore_token', res.token)
-    const redirect = route.query.redirect || '/'
-    window.location.href = redirect
-  } catch (e) {
-    err.value = e.message
+    const rawRedirect = route.query.redirect
+    const redirect = Array.isArray(rawRedirect) ? rawRedirect[0] || '/' : rawRedirect || '/'
+    window.location.href = String(redirect)
+  } catch (e: any) {
+    err.value = e?.message ?? String(e)
   } finally {
     loading.value = false
   }

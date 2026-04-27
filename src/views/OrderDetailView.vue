@@ -53,18 +53,23 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api } from '../api.js'
+import { api } from '../api'
 
 const route = useRoute()
-const order = ref(null)
+const order = ref<any>(null)
 const loading = ref(true)
+
+function orderId(): string {
+  const raw = route.params.orderId
+  return Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '')
+}
 
 onMounted(async () => {
   try {
-    const res = await api.paymentQuery(route.params.orderId)
+    const res = await api.paymentQuery(orderId())
     order.value = res
   } catch {
     order.value = null
@@ -73,14 +78,14 @@ onMounted(async () => {
   }
 })
 
-function statusText(status) {
-  const map = {
+function statusText(status: string | null | undefined): string {
+  const map: Record<string, string> = {
     pending: '待支付',
     paid: '已支付',
     failed: '支付失败',
     closed: '已关闭',
   }
-  return map[status] || status || '未知'
+  return map[status || ''] || status || '未知'
 }
 
 function formatTime(iso) {

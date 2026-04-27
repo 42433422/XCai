@@ -1,62 +1,40 @@
-"""向量数据库：用于 MOD/员工包的语义检索与智能推荐。"""
+"""向量数据库：用于 MOD/员工包的语义检索与智能推荐。
+
+底层共享 ``modstore_server.vector_engine`` 的 ``PersistentClient`` 单例
+（``MODSTORE_VECTOR_DB_DIR``）。集合 ``catalog_embeddings`` 仍使用 Chroma 自带 embedding，
+保留 "开箱即用" 行为，不强依赖 ``MODSTORE_EMBEDDING_API_KEY``。
+"""
 
 from __future__ import annotations
 
 import hashlib
-import os
 import threading
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from modstore_server import vector_engine
 
 _lock = threading.Lock()
 
 
-def _vector_db_dir() -> Path:
-    raw = (os.environ.get("MODSTORE_VECTOR_DB_DIR") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return Path(__file__).resolve().parent / "vector_data"
-
-
-_client = None
-
-
 def _build_embedding_text(text: str) -> str:
-    """将文本转为用于嵌入的纯文本格式。"""
     return (text or "").strip().replace("\n", " ").replace("\r", " ")
 
 
 def get_vector_client():
-    """懒加载向量数据库客户端（chromadb 持久化模式）。"""
-    global _client
-    if _client is not None:
-        return _client
-
-    import chromadb
-
-    db_dir = _vector_db_dir()
-    db_dir.mkdir(parents=True, exist_ok=True)
-
-    settings = chromadb.Settings(
-        anonymized_telemetry=False,
-        is_persistent=True,
-        persist_directory=str(db_dir),
-    )
-    _client = chromadb.Client(settings)
-    return _client
+    """复用统一引擎的 ``chromadb.PersistentClient`` 单例。"""
+    return vector_engine.get_client()
 
 
 def _collection():
-    """获取或创建 catalog 向量集合。"""
+    """获取或创建 catalog 向量集合（保留 Chroma 默认 embedding function）。"""
     client = get_vector_client()
     try:
-        col = client.get_collection(name="catalog_embeddings")
-    except Exception:
-        col = client.create_collection(
+        return client.get_collection(name="catalog_embeddings")
+    except Exception:  # noqa: BLE001
+        return client.create_collection(
             name="catalog_embeddings",
             metadata={"hnsw:space": "cosine"},
         )
-    return col
 
 
 def insert_embedding(

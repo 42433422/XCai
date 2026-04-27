@@ -14,6 +14,10 @@ export function replace(path: string) {
   return router.replace(path)
 }
 
+export function hardReplace(path: string): void {
+  window.location.assign(appHref(path))
+}
+
 export function redirectAfterAuth(): string {
   const params = new URLSearchParams(window.location.search || '')
   const raw = params.get('redirect')

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { api } from '../../api'
-import { appHref, navigate, redirectAfterAuth, replace } from '../navigation'
+import { appHref, hardReplace, navigate, redirectAfterAuth } from '../navigation'
 import '../AuthReact.css'
 
 export default function LoginByEmailPage() {
@@ -64,7 +64,7 @@ export default function LoginByEmailPage() {
     setLoading(true)
     try {
       await api.loginWithCode(email, code)
-      await replace(redirectAfterAuth())
+      hardReplace(redirectAfterAuth())
     } catch (e: any) {
       setErr(e?.message || String(e))
     } finally {

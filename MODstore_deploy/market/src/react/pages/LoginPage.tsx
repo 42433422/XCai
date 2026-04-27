@@ -1,6 +1,6 @@
 import { FormEvent, useState } from 'react'
 import { api } from '../../api'
-import { appHref, navigate, redirectAfterAuth, replace } from '../navigation'
+import { appHref, hardReplace, navigate, redirectAfterAuth } from '../navigation'
 import '../AuthReact.css'
 
 export default function LoginPage() {
@@ -15,7 +15,7 @@ export default function LoginPage() {
     setErr('')
     try {
       await api.login(username, password)
-      await replace(redirectAfterAuth())
+      hardReplace(redirectAfterAuth())
     } catch (e: any) {
       setErr(e?.message || String(e))
     } finally {

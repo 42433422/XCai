@@ -61,27 +61,30 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
+import { useWalletStore } from '../stores/wallet'
 
 const router = useRouter()
-const balance = ref(null)
-const transactions = ref([])
+const walletStore = useWalletStore()
+const { balance } = storeToRefs(walletStore)
+const transactions = ref<any[]>([])
 const txLoading = ref(true)
-const payAmount = ref(null)
+const payAmount = ref<number | null>(null)
 const payNote = ref('')
 const paying = ref(false)
 const payErr = ref('')
 const payHint = ref('')
 
 onMounted(async () => {
-  await Promise.all([loadBalance(), loadTransactions()])
+  await Promise.all([walletStore.refreshBalance(), loadTransactions()])
 })
 
-function txnTypeLabel(type) {
-  const m = {
+function txnTypeLabel(type: string): string {
+  const m: Record<string, string> = {
     recharge: '管理员充值',
     alipay_wallet: '支付宝充值',
     alipay_recharge: '支付宝入账',
@@ -89,15 +92,6 @@ function txnTypeLabel(type) {
     purchase: '购买',
   }
   return m[type] || type || '—'
-}
-
-async function loadBalance() {
-  try {
-    const res = await api.balance()
-    balance.value = res.balance
-  } catch {
-    balance.value = null
-  }
 }
 
 async function loadTransactions() {
@@ -148,14 +142,14 @@ async function startAlipayRecharge() {
       return
     }
     payErr.value = '未知的支付类型'
-  } catch (e) {
-    payErr.value = e.message || String(e)
+  } catch (e: any) {
+    payErr.value = e?.message || String(e)
   } finally {
     paying.value = false
   }
 }
 
-function formatDate(iso) {
+function formatDate(iso: string | null | undefined): string {
   if (!iso) return ''
   return new Date(iso).toLocaleString('zh-CN')
 }

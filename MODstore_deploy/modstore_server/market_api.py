@@ -31,6 +31,7 @@ from modstore_server.email_service import (
     send_verification_email,
 )
 from modstore_server import account_level_service, catalog_sync
+from modstore_server.api.deps import get_current_user, require_admin
 from modstore_server.models import (
     CatalogItem,
     Entitlement,
@@ -47,28 +48,12 @@ from modstore_server.models import (
 
 router = APIRouter(prefix="/api", tags=["market"])
 
-# ── Auth helpers ──────────────────────────────────────────────
-
-
-def _get_current_user(authorization: Optional[str] = Header(None)) -> User:
-    raw = (authorization or "").strip()
-    if not raw.startswith("Bearer "):
-        raise HTTPException(401, "缺少认证凭证")
-    token = raw[7:]
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(401, "凭证无效或已过期")
-    user_id = int(payload["sub"])
-    user = get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(401, "用户不存在")
-    return user
-
-
-def _require_admin(user: User = Depends(_get_current_user)) -> User:
-    if not user.is_admin:
-        raise HTTPException(403, "需要管理员权限")
-    return user
+# ── Auth helpers (legacy aliases) ───────────────────────────────
+# 共享认证依赖来自 ``api/deps``，这里仅保留模块级别的别名以避免大批量
+# Depends 重写。``test_neuro_ddd_boundaries`` 锁定本文件不再 *自己* 实现
+# auth helper，详见 ``application/auth.py``。
+_get_current_user = get_current_user
+_require_admin = require_admin
 
 
 # ── DTOs ─────────────────────────────────────────────────────

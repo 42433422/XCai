@@ -30,22 +30,27 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
 
 const route = useRoute()
-const item = ref(null)
+const item = ref<any>(null)
 const loading = ref(true)
 const err = ref('')
 const buying = ref(false)
 
+function routeId(): string {
+  const raw = route.params.id
+  return Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '')
+}
+
 onMounted(async () => {
   try {
-    item.value = await api.catalogDetail(route.params.id)
-  } catch (e) {
-    err.value = e.message
+    item.value = await api.catalogDetail(routeId())
+  } catch (e: any) {
+    err.value = e?.message ?? String(e)
   } finally {
     loading.value = false
   }
@@ -53,16 +58,16 @@ onMounted(async () => {
 
 async function doBuy() {
   if (!localStorage.getItem('modstore_token')) {
-    window.location.href = `/login?redirect=/catalog/${route.params.id}`
+    window.location.href = `/login?redirect=/catalog/${routeId()}`
     return
   }
   buying.value = true
   try {
-    const res = await api.buyItem(route.params.id)
+    const res = await api.buyItem(routeId())
     alert(res.message)
-    item.value = await api.catalogDetail(route.params.id)
-  } catch (e) {
-    alert(e.message)
+    item.value = await api.catalogDetail(routeId())
+  } catch (e: any) {
+    alert(e?.message ?? String(e))
   } finally {
     buying.value = false
   }
@@ -70,9 +75,9 @@ async function doBuy() {
 
 async function doDownload() {
   try {
-    await api.downloadItem(route.params.id)
-  } catch (e) {
-    alert(e.message)
+    await api.downloadItem(routeId())
+  } catch (e: any) {
+    alert(e?.message ?? String(e))
   }
 }
 </script>

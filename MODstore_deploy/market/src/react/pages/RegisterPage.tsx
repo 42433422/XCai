@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../api'
-import { appHref, navigate, replace } from '../navigation'
+import { appHref, hardReplace, navigate } from '../navigation'
 import '../AuthReact.css'
 
 export default function RegisterPage() {
@@ -76,7 +76,7 @@ export default function RegisterPage() {
         return
       }
       await api.register(username, password, emailTrimmed, code)
-      await replace('/workbench')
+      hardReplace('/workbench')
     } catch (e: any) {
       setErr(e?.message || String(e))
     } finally {

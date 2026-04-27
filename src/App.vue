@@ -22,7 +22,7 @@
             <template v-if="isLoggedIn">
               <router-link to="/my-store" class="nav-link">我的商店</router-link>
               <router-link to="/wallet" class="nav-link">钱包</router-link>
-              <span class="nav-balance" v-if="balance !== null">¥{{ balance.toFixed(2) }}</span>
+              <span v-if="balance !== null" class="nav-balance">¥{{ balance.toFixed(2) }}</span>
             </template>
           </template>
 
@@ -42,30 +42,27 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+<script setup lang="ts">
+import { ref, onMounted, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
-import { api } from './api'
+import { useAuthStore } from './stores/auth'
+import { useWalletStore } from './stores/wallet'
 
 const router = useRouter()
-const isLoggedIn = ref(false)
-const isAdmin = ref(false)
-const balance = ref(null)
-const currentMode = ref('client')
+const authStore = useAuthStore()
+const walletStore = useWalletStore()
+
+const { isLoggedIn, isAdmin, currentMode } = storeToRefs(authStore)
+const { balance } = storeToRefs(walletStore)
+
 const isHome = ref(true)
 
 onMounted(async () => {
   checkHome()
-  const token = localStorage.getItem('modstore_token')
-  if (token) {
-    isLoggedIn.value = true
-    try {
-      const me = await api.me()
-      isAdmin.value = me.is_admin === true
-      loadBalance()
-    } catch {
-      isLoggedIn.value = false
-    }
+  await authStore.init()
+  if (authStore.isLoggedIn) {
+    void walletStore.refreshBalance()
   }
 })
 
@@ -73,37 +70,25 @@ router.afterEach(() => {
   checkHome()
 })
 
-function checkHome() {
+function checkHome(): void {
   isHome.value = router.currentRoute.value.path === '/'
 }
 
 watch(currentMode, (mode) => {
   if (mode === 'admin') {
-    router.push('/admin/database')
+    void router.push('/admin/database')
   } else {
-    router.push('/')
+    void router.push('/')
   }
 })
 
-function switchMode(mode) {
-  currentMode.value = mode
+function switchMode(mode: 'client' | 'admin'): void {
+  authStore.setMode(mode)
 }
 
-async function loadBalance() {
-  try {
-    const res = await api.balance()
-    balance.value = res.balance
-  } catch {
-    balance.value = null
-  }
-}
-
-async function doLogout() {
-  localStorage.removeItem('modstore_token')
-  isLoggedIn.value = false
-  isAdmin.value = false
-  balance.value = null
-  currentMode.value = 'client'
+async function doLogout(): Promise<void> {
+  authStore.logout()
+  walletStore.clear()
   await router.push('/')
 }
 </script>

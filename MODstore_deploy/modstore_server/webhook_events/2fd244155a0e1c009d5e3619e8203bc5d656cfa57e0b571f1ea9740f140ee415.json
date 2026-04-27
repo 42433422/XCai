@@ -1,0 +1,27 @@
+{
+  "event": {
+    "id": "refund.rejected:RF-PYTEST-81d0eeb4d3",
+    "type": "refund.rejected",
+    "version": 1,
+    "source": "modstore-python",
+    "aggregate_id": "RF-PYTEST-81d0eeb4d3",
+    "created_at": 1777217571,
+    "data": {
+      "refund_id": 36,
+      "user_id": 286,
+      "order_no": "RF-PYTEST-81d0eeb4d3",
+      "amount": 9.9,
+      "reason": "pytest 退款原因",
+      "status": "rejected",
+      "admin_note": "",
+      "created_at": "2026-04-26T12:10:10.810271",
+      "updated_at": "2026-04-26T15:32:51.305343"
+    }
+  },
+  "result": {
+    "ok": false,
+    "skipped": true,
+    "message": "MODSTORE_WEBHOOK_URL is not configured"
+  },
+  "updated_at": 1777217571
+}

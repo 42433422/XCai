@@ -52,6 +52,10 @@
         <div class="wb-gear-viewport">
           <div class="wb-gear-track" :style="{ transform: `translateY(-${gearIndex * (100 / gearScenes.length)}%)` }">
             <section class="wb-gear-scene wb-direct-scene" aria-label="一档直接聊天" :style="directFontPxStyle">
+              <div v-if="!directMessages.length" class="wb-direct-empty-title">
+                <h1 class="wb-direct-title">{{ activeBot ? activeBot.name : '有什么想问的？' }}</h1>
+                <p class="wb-direct-sub">{{ activeBot?.desc || '像聊天一样提问，我直接帮你分析、总结和给出可执行答案。' }}</p>
+              </div>
               <div class="wb-direct-shell">
                 <div
                   class="wb-direct-main"
@@ -80,41 +84,18 @@
                       <p class="wb-direct-dropzone__sub">支持 PDF / Word / Excel / 文本，图片可粘贴或拖入</p>
                     </div>
                   </div>
-                  <header class="wb-direct-topbar">
+                  <header v-if="activeBot" class="wb-direct-topbar">
                     <div class="wb-direct-topbar__l">
-                      <span v-if="activeBot" class="wb-direct-bot-chip">
+                      <span class="wb-direct-bot-chip">
                         <span aria-hidden="true">{{ activeBot.icon }}</span>
                         <span class="wb-direct-bot-chip__name">@{{ activeBot.name }}</span>
                         <button type="button" class="wb-direct-bot-chip__x" aria-label="切回通用助手" @click="clearActiveBot">×</button>
                       </span>
-                      <button type="button" class="wb-direct-topbtn" @click="showAgentMarket = true">
-                        <span aria-hidden="true">🤖</span> 智能体广场
-                      </button>
-                      <button type="button" class="wb-direct-topbtn" @click="showMediaGen = true">
-                        <span aria-hidden="true">🎨</span> AI 创作
-                      </button>
-                      <button type="button" class="wb-direct-topbtn" @click="showVoicePhone = true">
-                        <span aria-hidden="true">📞</span> 语音电话
-                      </button>
-                    </div>
-                    <div class="wb-direct-topbar__r">
-                      <BalanceBadge
-                        :balance="balanceValue"
-                        :member-plan="memberPlan"
-                        :member-expire-at="memberExpireAt"
-                        :invited="!!inviteToast"
-                        :invited-text="inviteToast"
-                        @open-balance="openBalance"
-                        @upgrade="openUpgrade"
-                        @invite="openInvite"
-                      />
-                      <button type="button" class="wb-direct-topbtn" aria-label="个性化设置" title="个性化设置" @click="showPersonalSettings = true">
-                        <span aria-hidden="true">⚙️</span>
-                      </button>
                     </div>
                   </header>
 
                   <div
+                    v-if="directMessages.length"
                     class="wb-direct-hero"
                     :class="{ 'wb-direct-hero--compact': directMessages.length }"
                   >
@@ -258,6 +239,7 @@
                         <span class="wb-direct-file-chip__dot" aria-hidden="true">
                           <span v-if="f.status === 'uploading'" class="wb-direct-file-chip__spinner" />
                           <span v-else-if="f.status === 'ready'" class="wb-direct-file-chip__check">✓</span>
+                          <span v-else-if="f.status === 'inline'" class="wb-direct-file-chip__check" style="color:rgba(251,191,36,0.9)">✎</span>
                           <span v-else-if="f.status === 'error' || f.status === 'skipped'" class="wb-direct-file-chip__warn">!</span>
                         </span>
                         <span class="wb-direct-file-chip__name">{{ f.name }}</span>
@@ -276,24 +258,9 @@
                     </p>
                   </div>
                   <p v-if="directError" class="wb-direct-error" role="alert">{{ directError }}</p>
-                  <div v-if="!directMessages.length" class="wb-direct-suggestions" aria-label="建议问题">
-                    <button
-                      v-for="item in directSuggestions"
-                      :key="item"
-                      type="button"
-                      class="wb-direct-suggestion"
-                      @click="() => void sendDirectChat(item)"
-                    >{{ item }}</button>
-                  </div>
                 </div>
               </div>
 
-              <PersonalSettings
-                :open="showPersonalSettings"
-                :model-value="personalSettings"
-                @update:model-value="onPersonalSettingsUpdate"
-                @close="showPersonalSettings = false"
-              />
               <AgentMarket
                 :open="showAgentMarket"
                 :bots="allBots"
@@ -1061,8 +1028,6 @@ import MessageBody from '../components/workbench/MessageBody.vue'
 import MessageActions from '../components/workbench/MessageActions.vue'
 import VoicePhoneModal from '../components/workbench/VoicePhoneModal.vue'
 import AgentMarket from '../components/workbench/AgentMarket.vue'
-import PersonalSettings from '../components/workbench/PersonalSettings.vue'
-import BalanceBadge from '../components/workbench/BalanceBadge.vue'
 import MediaGenPanel from '../components/workbench/MediaGenPanel.vue'
 import type { AgentBot } from '../utils/agentBots'
 import {
@@ -1078,7 +1043,6 @@ import type { PersonalSettings as PersonalSettingsValue } from '../utils/persona
 import {
   defaultPersonalSettings,
   loadPersonalSettings,
-  savePersonalSettings,
   applyThemeToDocument,
 } from '../utils/personalSettings'
 import { api } from '../api'
@@ -1192,7 +1156,6 @@ let currentStreamHandle: StreamHandle | null = null
 const editingMessageId = ref<string>('')
 const editingDraft = ref<string>('')
 const personalSettings = ref<PersonalSettingsValue>(defaultPersonalSettings())
-const showPersonalSettings = ref(false)
 const showAgentMarket = ref(false)
 const showVoicePhone = ref(false)
 const showMediaGen = ref(false)
@@ -1203,10 +1166,6 @@ const activeBot = computed<AgentBot | null>(
 )
 const speakingMessageId = ref<string>('')
 let phoneSynth: SpeechSynthesis | null = null
-const balanceValue = ref<number | string | null>(null)
-const memberPlan = ref<string>('')
-const memberExpireAt = ref<string>('')
-const inviteToast = ref<string>('')
 
 /** 与后端 knowledge_ingest.SUPPORTED_EXTENSIONS / MAX_UPLOAD_BYTES 保持一致 */
 const DIRECT_KB_SUPPORTED_EXT = new Set(['txt', 'md', 'json', 'csv', 'pdf', 'docx', 'xlsx'])
@@ -1224,21 +1183,17 @@ const directAttachHint = computed(() => {
   if (!list.length) return ''
   const ready = list.filter((f) => f.status === 'ready').length
   const uploading = list.filter((f) => f.status === 'uploading').length
+  const inlined = list.filter((f) => f.status === 'inline').length
   const skipped = list.filter((f) => f.status === 'skipped').length
   const errored = list.filter((f) => f.status === 'error').length
-  const parts = []
+  const parts: string[] = []
   if (uploading) parts.push(`${uploading} 个上传中`)
   if (ready) parts.push(`${ready} 个已纳入资料库（提问时按相关度自动召回）`)
+  if (inlined) parts.push(`${inlined} 个已提取文本，将直接注入模型上下文`)
   if (skipped) parts.push(`${skipped} 个未受支持，仅附文件名给模型参考`)
   if (errored) parts.push(`${errored} 个上传失败，仅附文件名给模型参考`)
   return parts.join(' · ')
 })
-const directSuggestions = computed<string[]>(() => {
-  const list = personalSettings.value?.suggestions || []
-  if (Array.isArray(list) && list.length) return list
-  return ['帮我把今天的工作拆成步骤', '帮我分析一个自动化流程', '帮我写一段客户沟通话术']
-})
-
 const CONSUMPTION_TIER_STORAGE_KEY = 'workbench_consumption_tier'
 
 function readStoredConsumptionTier(): number {
@@ -1373,6 +1328,7 @@ function directFileChipTitle(f) {
   if (!f) return ''
   if (f.status === 'uploading') return `${f.name}：上传中…`
   if (f.status === 'ready') return `${f.name}：已纳入资料库，提问时会按相关度自动召回片段`
+  if (f.status === 'inline') return `${f.name}：已提取文本，将直接注入模型上下文（嵌入服务暂时不可用）`
   if (f.status === 'skipped') return `${f.name}：${f.error || '该格式暂不解析；将仅附文件名供模型参考'}`
   if (f.status === 'error') return `${f.name}：${f.error || '上传失败'}（仅附文件名给模型参考）`
   return f.name
@@ -1387,6 +1343,8 @@ function directAttachmentNote(files) {
         ? '已入库'
         : f.status === 'uploading'
         ? '上传中'
+        : f.status === 'inline'
+        ? '已内嵌文本'
         : f.status === 'error'
         ? '上传失败'
         : '未解析'
@@ -1444,6 +1402,22 @@ async function uploadDirectAttachedFile(item) {
   } catch (e) {
     const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
     if (idx < 0) return
+    // Fallback: try to extract text so the content can still be sent inline to the LLM
+    try {
+      const extractRes = await api.knowledgeExtractText(item.file)
+      const extractedText = String(extractRes?.text || '')
+      if (extractedText) {
+        directAttachedFiles.value[idx] = {
+          ...directAttachedFiles.value[idx],
+          status: 'inline',
+          extractedText,
+          error: '',
+        }
+        return
+      }
+    } catch {
+      /* extract failed as well; fall through to error state */
+    }
     directAttachedFiles.value[idx] = {
       ...directAttachedFiles.value[idx],
       status: 'error',
@@ -1572,7 +1546,11 @@ function updateAssistantMessage(id: string, mutator: (m: ChatMessage) => void) {
   })
 }
 
-function buildSystemPrompt(activeBotPersona: string, knowledgePack: string): string {
+function buildSystemPrompt(
+  activeBotPersona: string,
+  knowledgePack: string,
+  inlineFiles?: Array<{ name: string; text: string }>,
+): string {
   const parts: string[] = []
   if (activeBotPersona) {
     parts.push(activeBotPersona)
@@ -1581,6 +1559,14 @@ function buildSystemPrompt(activeBotPersona: string, knowledgePack: string): str
   }
   if (personalSettings.value.memory && personalSettings.value.memory.trim()) {
     parts.push(`关于用户的长期记忆（请在回答中合理利用，但不要每次都重复念出）：\n${personalSettings.value.memory.trim()}`)
+  }
+  if (inlineFiles && inlineFiles.length > 0) {
+    const blocks = inlineFiles
+      .map((f) => `### 附件全文：${f.name}\n\n${f.text}`)
+      .join('\n\n---\n\n')
+    parts.push(
+      `以下是用户直接上传的附件全文（嵌入服务暂时不可用，文本已直接注入；请优先据此回答）：\n\n${blocks}`,
+    )
   }
   if (knowledgePack) {
     parts.push(
@@ -1597,7 +1583,12 @@ function rebuildContextMessages(forSendUpToIndex?: number): Array<{ role: string
   return msgs.slice(0, sliceEnd).map((m) => ({ role: m.role, content: m.content }))
 }
 
-async function runDirectChatTurn(opts: { userMsg?: ChatMessage; assistantId: string; userText: string }) {
+async function runDirectChatTurn(opts: {
+  userMsg?: ChatMessage
+  assistantId: string
+  userText: string
+  inlineFiles?: Array<{ name: string; text: string }>
+}) {
   directError.value = ''
   directLoading.value = true
   let knowledgePack = ''
@@ -1645,7 +1636,7 @@ async function runDirectChatTurn(opts: { userMsg?: ChatMessage; assistantId: str
       }
     }
     const { provider, model } = await resolveChatProviderModel()
-    const sys = buildSystemPrompt(activeBot.value?.persona || '', knowledgePack)
+    const sys = buildSystemPrompt(activeBot.value?.persona || '', knowledgePack, opts.inlineFiles)
     const ctx = directMessages.value
       .filter((m) => m.id !== opts.assistantId)
       .map((m) => ({ role: m.role, content: m.content }))
@@ -1717,11 +1708,15 @@ async function sendDirectChat(text = '') {
     skills: [],
     attachments: filesSnapshot.map((f) => ({ name: f.name, size: f.size, status: f.status, docId: f.docId })),
   })
+  const inlineFiles = filesSnapshot
+    .filter((f: any) => f.status === 'inline' && f.extractedText)
+    .map((f: any) => ({ name: f.name, text: f.extractedText as string }))
+
   const placeholder = makeMessage('assistant', '', { pending: true })
   appendUserAndAssistant(userMsg, placeholder)
   directAttachedFiles.value = []
 
-  await runDirectChatTurn({ userMsg, assistantId: placeholder.id, userText })
+  await runDirectChatTurn({ userMsg, assistantId: placeholder.id, userText, inlineFiles })
 }
 
 function stopGeneration() {
@@ -2049,69 +2044,9 @@ function clearActiveBot() {
   saveActiveBotId('')
 }
 
-function onPersonalSettingsUpdate(v: PersonalSettingsValue) {
-  personalSettings.value = v
-  savePersonalSettings(v)
-  applyThemeToDocument(v.theme)
-}
-
 const directFontPxStyle = computed(() => ({
   '--wb-direct-font-px': `${personalSettings.value.fontPx}px`,
 }))
-
-async function refreshBalance() {
-  if (!getAccessToken()) {
-    balanceValue.value = null
-    return
-  }
-  try {
-    const res: any = await api.balance()
-    balanceValue.value =
-      typeof res?.balance === 'number' ? res.balance : typeof res?.amount === 'number' ? res.amount : (res?.balance ?? null)
-  } catch {
-    /* ignore */
-  }
-  try {
-    const plan: any = await api.paymentMyPlan()
-    memberPlan.value = String(
-      plan?.plan_id ||
-      plan?.tier ||
-      plan?.membership?.tier ||
-      plan?.plan?.tier ||
-      plan?.plan?.id ||
-      '',
-    ).toLowerCase()
-    const expiresAt = plan?.expire_at || plan?.expires_at || plan?.plan?.expires_at || ''
-    memberExpireAt.value = expiresAt ? new Date(expiresAt).toLocaleDateString() : ''
-  } catch {
-    /* ignore */
-  }
-}
-
-function openBalance() {
-  void router.push({ name: 'wallet' }).catch(() => {
-    void router.push('/wallet').catch(() => undefined)
-  })
-}
-
-function openUpgrade() {
-  void router.push({ name: 'plans' }).catch(() => {
-    void router.push('/plans').catch(() => undefined)
-  })
-}
-
-async function openInvite() {
-  const url = `${location.origin}/?invite=${encodeURIComponent(getAccessToken() ? 'me' : 'guest')}`
-  try {
-    await navigator.clipboard.writeText(url)
-    inviteToast.value = '邀请链接已复制'
-    window.setTimeout(() => {
-      inviteToast.value = ''
-    }, 2400)
-  } catch {
-    inviteToast.value = url
-  }
-}
 
 const mediaGenRunner = {
   async generateImages(prompt: string, opts: { size: string; style: string; count: number }) {
@@ -2738,7 +2673,6 @@ onMounted(async () => {
       saveActiveId(activeConversationId.value)
     }
   } catch { /* ignore */ }
-  void refreshBalance()
 })
 
 onBeforeUnmount(() => {
@@ -3855,9 +3789,10 @@ function onComposerKeydown(e) {
 
 .wb-gear-stop__label,
 .wb-gear-thumb__label {
-  font-size: 0.45rem;
+  font-size: 0.56rem;
   font-weight: 700;
   line-height: 1;
+  letter-spacing: 0;
 }
 
 .wb-gear-thumb {
@@ -3923,8 +3858,10 @@ function onComposerKeydown(e) {
 .wb-direct-scene {
   position: relative;
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
+  align-items: center;
   justify-content: stretch;
+  gap: clamp(0.9rem, 2.4vh, 1.4rem);
   text-align: left;
   font-size: var(--wb-direct-font-px, 15px);
 }
@@ -3937,10 +3874,10 @@ function onComposerKeydown(e) {
   width: 100%;
   max-width: min(78rem, 100%);
   margin: 0 auto;
-  border-radius: 1.1rem;
-  background: rgba(2, 6, 23, 0.32);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  overflow: hidden;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  overflow: visible;
   position: relative;
 }
 
@@ -4354,6 +4291,8 @@ function onComposerKeydown(e) {
 }
 
 .wb-direct-hero {
+  position: relative;
+  z-index: 1;
   width: min(42rem, 100%);
   text-align: center;
   transform-origin: left top;
@@ -4364,6 +4303,31 @@ function onComposerKeydown(e) {
     opacity 0.3s ease,
     margin 0.46s cubic-bezier(0.22, 1, 0.36, 1);
   animation: wb-direct-hero-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wb-direct-empty-title {
+  position: relative;
+  z-index: 2;
+  width: min(42rem, 100%);
+  flex: 0 0 auto;
+  margin-top: clamp(0.4rem, 3vh, 2.2rem);
+  text-align: center;
+}
+
+.wb-direct-main--empty .wb-direct-hero {
+  flex: 0 0 auto;
+  margin-bottom: clamp(0.9rem, 2.4vh, 1.4rem);
+  opacity: 1;
+  visibility: visible;
+}
+
+.wb-direct-main--empty .wb-direct-title {
+  color: #f8fafc;
+  text-shadow: 0 14px 42px rgba(15, 23, 42, 0.72);
+}
+
+.wb-direct-main--empty .wb-direct-sub {
+  color: rgba(226, 232, 240, 0.68);
 }
 
 .wb-direct-hero--compact {
@@ -4594,6 +4558,11 @@ function onComposerKeydown(e) {
 .wb-direct-file-chip--uploading {
   border-color: rgba(165, 180, 252, 0.45);
   background: rgba(79, 70, 229, 0.18);
+}
+
+.wb-direct-file-chip--inline {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(120, 53, 15, 0.22);
 }
 
 .wb-direct-file-chip--error,

@@ -1,0 +1,184 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-modstore}
+      POSTGRES_USER: ${POSTGRES_USER:-modstore}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-modstore}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-modstore} -d ${POSTGRES_DB:-modstore}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-modstore-redis}"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-modstore-redis}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-modstore}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-modstore-rabbit}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  payment-service:
+    build:
+      context: ./java_payment_service
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      JAVA_DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-modstore}
+      DATABASE_USER: ${POSTGRES_USER:-modstore}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-modstore}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-modstore-redis}@redis:6379
+      RABBITMQ_URL: amqp://rabbitmq:5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-modstore}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-modstore-rabbit}
+      MODSTORE_JWT_SECRET: ${MODSTORE_JWT_SECRET:-modstore-dev-secret-change-in-prod-32bytes}
+      PAYMENT_SECRET_KEY: ${PAYMENT_SECRET_KEY:-default_secret_key}
+      MODSTORE_PUBLIC_ORIGIN: ${MODSTORE_PUBLIC_ORIGIN:-http://localhost:8765}
+      MODSTORE_WEBHOOK_URL: ${MODSTORE_WEBHOOK_URL:-}
+      MODSTORE_WEBHOOK_SECRET: ${MODSTORE_WEBHOOK_SECRET:-}
+      FLYWAY_ENABLED: ${FLYWAY_ENABLED:-true}
+      JPA_DDL_AUTO: ${JPA_DDL_AUTO:-validate}
+    ports:
+      - "${JAVA_PAYMENT_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-modstore}:${POSTGRES_PASSWORD:-modstore}@postgres:5432/${POSTGRES_DB:-modstore}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-modstore-redis}@redis:6379
+      PAYMENT_BACKEND: ${PAYMENT_BACKEND:-python}
+      JAVA_PAYMENT_SERVICE_URL: http://payment-service:8080
+      PAYMENT_PROXY_CONNECT_TIMEOUT_SECONDS: ${PAYMENT_PROXY_CONNECT_TIMEOUT_SECONDS:-5}
+      PAYMENT_PROXY_READ_TIMEOUT_SECONDS: ${PAYMENT_PROXY_READ_TIMEOUT_SECONDS:-30}
+      MODSTORE_JWT_SECRET: ${MODSTORE_JWT_SECRET:-modstore-dev-secret-change-in-prod-32bytes}
+      MODSTORE_ADMIN_RECHARGE_TOKEN: ${MODSTORE_ADMIN_RECHARGE_TOKEN:-dev-admin-token}
+      MODSTORE_EMAIL_DEBUG: ${MODSTORE_EMAIL_DEBUG:-1}
+      MODSTORE_PUBLIC_ORIGIN: ${MODSTORE_PUBLIC_ORIGIN:-http://localhost:8765}
+      MODSTORE_MARKET_PREFIX: ${MODSTORE_MARKET_PREFIX:-/market}
+      MODSTORE_WEBHOOK_URL: ${MODSTORE_WEBHOOK_URL:-}
+      MODSTORE_WEBHOOK_SECRET: ${MODSTORE_WEBHOOK_SECRET:-}
+      MODSTORE_WEBHOOK_EVENTS_DIR: /data/webhook_events
+      MODSTORE_PAYMENT_ORDERS_DIR: /data/payment_orders
+      MODSTORE_VECTOR_DB_DIR: /data/chroma
+      MODSTORE_VECTOR_BACKEND: ${MODSTORE_VECTOR_BACKEND:-chroma}
+    ports:
+      - "${MODSTORE_API_PORT:-8765}:8765"
+    volumes:
+      - modstore_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3)\nPY"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  market:
+    build:
+      context: ./market
+    profiles: ["app"]
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${MODSTORE_MARKET_PORT:-4173}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["monitoring", "app"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["monitoring", "app"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  loadtest:
+    image: grafana/k6:0.54.0
+    profiles: ["loadtest"]
+    depends_on:
+      market:
+        condition: service_healthy
+    environment:
+      BASE_URL: ${LOADTEST_BASE_URL:-http://market}
+      WS_URL: ${LOADTEST_WS_URL:-ws://market}
+      K6_STAGE: ${K6_STAGE:-smoke}
+    volumes:
+      - ./perf:/scripts:ro
+    entrypoint: ["k6"]
+    command: ["run", "/scripts/full_link_smoke.js"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  modstore_data:
+  prometheus_data:
+  grafana_data:

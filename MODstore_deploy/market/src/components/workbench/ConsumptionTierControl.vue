@@ -174,12 +174,17 @@ function onKeydown(e: KeyboardEvent) {
 
 <style scoped>
 .ctc {
+  --ctc-thumb-size: 1.55rem;
+  --ctc-thumb-gutter: calc(var(--ctc-thumb-size) / 2);
+
   position: relative;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
   width: 100%;
   max-width: 22rem;
+  padding-inline: var(--ctc-thumb-gutter);
   user-select: none;
 }
 
@@ -265,8 +270,8 @@ function onKeydown(e: KeyboardEvent) {
 .ctc__thumb {
   position: absolute;
   top: 50%;
-  width: 1.55rem;
-  height: 1.55rem;
+  width: var(--ctc-thumb-size);
+  height: var(--ctc-thumb-size);
   display: grid;
   place-items: center;
   border-radius: 999px;

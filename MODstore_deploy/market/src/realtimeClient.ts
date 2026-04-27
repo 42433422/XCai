@@ -79,7 +79,7 @@ export function connectRealtime(onNotification?: OnNotification) {
 
 function scheduleReconnect() {
   if (retryTimer) return
-  retryTimer = window.setTimeout(() => {
+  retryTimer = setTimeout(() => {
     retryTimer = null
     if (!getAccessToken()) return
     if (notifHandler) {
