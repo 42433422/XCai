@@ -42,7 +42,7 @@
       <div class="stat-card">
         <div class="stat-label">累计经验</div>
         <div class="stat-value stat-value--num">{{ level.experience.toLocaleString() }}</div>
-        <div class="stat-foot">消费实付 1 元 = 100 经验（充余额不算）</div>
+        <div class="stat-foot">实付 1 元 = 100 经验（含商品 / 会员 / 钱包充值）</div>
       </div>
     </div>
 
@@ -71,7 +71,7 @@
           </div>
         </div>
         <p class="level-hint">
-          每实付 1 元 = 100 经验（仅商品/会员等消费订单，钱包直接充值不计），退款会扣回相应经验。
+          每实付 1 元 = 100 经验（商品 / 会员 / 钱包充值都计入），退款成功会扣回相应经验。
         </p>
       </section>
 
