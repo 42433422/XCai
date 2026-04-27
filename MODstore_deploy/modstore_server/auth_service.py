@@ -15,6 +15,7 @@ from modstore_server.models import User, Wallet, get_session_factory
 _JWT_SECRET = os.environ.get("MODSTORE_JWT_SECRET", "modstore-dev-secret-change-in-prod")
 _JWT_ALGORITHM = "HS256"
 _JWT_EXPIRE_HOURS = 72
+_JWT_REFRESH_EXPIRE_DAYS = int(os.environ.get("MODSTORE_JWT_REFRESH_EXPIRE_DAYS", "30"))
 
 
 def hash_password(raw: str) -> str:
@@ -30,6 +31,7 @@ def create_access_token(user_id: int, username: str) -> str:
     payload = {
         "sub": str(user_id),
         "username": username,
+        "type": "access",
         "exp": expire,
     }
     return jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
@@ -37,9 +39,35 @@ def create_access_token(user_id: int, username: str) -> str:
 
 def decode_access_token(token: str) -> Optional[dict]:
     try:
-        return jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+        payload = jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
+    # 兼容历史 token（无 type 字段）：默认按 access 处理；显式标 refresh 的不走这里。
+    token_type = payload.get("type")
+    if token_type and token_type != "access":
+        return None
+    return payload
+
+
+def create_refresh_token(user_id: int, username: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(days=_JWT_REFRESH_EXPIRE_DAYS)
+    payload = {
+        "sub": str(user_id),
+        "username": username,
+        "type": "refresh",
+        "exp": expire,
+    }
+    return jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+
+
+def decode_refresh_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
+    if payload.get("type") != "refresh":
+        return None
+    return payload
 
 
 def register_user(username: str, password: str, email: str = "") -> User:
