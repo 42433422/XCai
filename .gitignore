@@ -9,11 +9,20 @@ __pycache__/
 .env
 .env.local
 .env.*.local
+*.key
+*.pem
+*.csr
+*.crt
+*_private_key*
+setup-alipay.sh
+_nginx_extract/
 
 # 构建产物
 MODstore_deploy.zip
 MODstore_deploy/market/node_modules/
 MODstore_deploy/market/dist/
+node_modules/
+dist/
 
 # 日志和数据库
 *.log
