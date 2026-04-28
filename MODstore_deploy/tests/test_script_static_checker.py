@@ -46,6 +46,37 @@ def test_blocks_third_party_not_in_allowlist():
     assert validate_script("import pandas\n")
 
 
+def test_allows_common_stdlib_modules():
+    """回归保护：logging/urllib/threading/hashlib/io/itertools 等 stdlib 必须放行。
+
+    历史上 ``workbench_script_runner.py`` 写死过一份很窄的 ``ALLOWED_IMPORTS``，
+    导致 LLM 生成的脚本一旦 ``import logging`` 就被拦掉。新 checker 用
+    ``sys.stdlib_module_names`` 取代该硬编码白名单，所有 stdlib 模块除高危项
+    （subprocess/ctypes/multiprocessing）外都默认通过。
+    """
+    safe_stdlib_imports = [
+        "import logging",
+        "import logging.handlers",
+        "from logging import getLogger",
+        "import threading",
+        "import io",
+        "import urllib.parse",
+        "import urllib.request",
+        "import collections",
+        "import itertools",
+        "import functools",
+        "import hashlib",
+        "import base64",
+        "import time",
+        "import random",
+        "import argparse",
+        "import typing",
+    ]
+    for snippet in safe_stdlib_imports:
+        errs = validate_script(snippet + "\n")
+        assert not errs, f"{snippet!r} should be allowed but got: {errs}"
+
+
 def test_allows_modstore_runtime():
     code = "from modstore_runtime import ai, kb_search, employee_run\n"
     assert not validate_script(code)
