@@ -878,6 +878,8 @@ for _m in (
     "modstore_server.knowledge_v2_api",
     "modstore_server.realtime_ws",
     "modstore_server.workflow_api",
+    "modstore_server.script_workflow_api",
+    "modstore_server.runtime_allowlist_api",
     "modstore_server.workbench_api",
     "modstore_server.employee_api",
     "modstore_server.analytics_api",

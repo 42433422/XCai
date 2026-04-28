@@ -300,7 +300,42 @@ export const api: any = {
       body: JSON.stringify({ workflow_index: workflowIndex, industry: opts.industry || '通用', price: opts.price ?? 0, release_channel: opts.release_channel || 'stable' }),
     }),
 
+  // ----- 脚本即工作流（替代节点图）-----
+  listScriptWorkflows: (status: string = '') =>
+    req(`/api/script-workflows${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  getScriptWorkflow: (id: number | string) => req(`/api/script-workflows/${id}`),
+  updateScriptWorkflow: (id: number | string, body: any) =>
+    req(`/api/script-workflows/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteScriptWorkflow: (id: number | string) =>
+    req(`/api/script-workflows/${id}`, { method: 'DELETE' }),
+  sandboxRunScriptWorkflow: (id: number | string, files: File[]) => {
+    const fd = new FormData()
+    files.forEach((f) => fd.append('files', f))
+    return req(`/api/script-workflows/${id}/sandbox-run`, { method: 'POST', body: fd })
+  },
+  runScriptWorkflow: (id: number | string, files: File[]) => {
+    const fd = new FormData()
+    files.forEach((f) => fd.append('files', f))
+    return req(`/api/script-workflows/${id}/run`, { method: 'POST', body: fd })
+  },
+  activateScriptWorkflow: (id: number | string) =>
+    req(`/api/script-workflows/${id}/activate`, { method: 'POST' }),
+  deactivateScriptWorkflow: (id: number | string) =>
+    req(`/api/script-workflows/${id}/deactivate`, { method: 'POST' }),
+  listScriptWorkflowRuns: (id: number | string, mode: string = '') =>
+    req(`/api/script-workflows/${id}/runs${mode ? `?mode=${encodeURIComponent(mode)}` : ''}`),
+  listScriptWorkflowVersions: (id: number | string) =>
+    req(`/api/script-workflows/${id}/versions`),
+  commitScriptWorkflowSession: (sid: string, body: { name: string; schema_in?: any }) =>
+    req(`/api/script-workflows/sessions/${encodeURIComponent(sid)}/commit`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getScriptWorkflowSession: (sid: string) =>
+    req(`/api/script-workflows/sessions/${encodeURIComponent(sid)}`),
+
   listWorkflows: () => req('/api/workflow/'),
+  listEmployeeEligibleWorkflows: () => req('/api/workflow/employee-eligible'),
   listWorkflowsByEmployee: (employeeId: string) => req(`/api/workflow/by-employee?employee_id=${encodeURIComponent(employeeId)}`),
   getWorkflow: (id: string | number) => req(`/api/workflow/${id}`),
   createWorkflow: (name: string, description: string) => req('/api/workflow/', { method: 'POST', body: JSON.stringify({ name, description }) }),
@@ -489,13 +524,21 @@ export const api: any = {
   },
   workbenchResearchContext: (body: unknown) => req('/api/workbench/research-context', { method: 'POST', body: JSON.stringify(body) }),
   workbenchStartSession: (body: unknown) => req('/api/workbench/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  workbenchStartScriptSession: (metadata: unknown, files: File[]) => {
+    const fd = new FormData()
+    fd.append('metadata', JSON.stringify(metadata || {}))
+    for (const f of files || []) fd.append('files', f)
+    return req('/api/workbench/script-sessions', { method: 'POST', body: fd })
+  },
   workbenchGetSession: (sessionId: string) => req(`/api/workbench/sessions/${encodeURIComponent(sessionId)}`),
 
   knowledgeStatus: () => req('/api/knowledge/status'),
   knowledgeListDocuments: () => req('/api/knowledge/documents'),
-  knowledgeUploadDocument: (file: File) => {
+  knowledgeUploadDocument: (file: File, opts?: { embeddingProvider?: string; embeddingModel?: string }) => {
     const form = new FormData()
     form.append('file', file)
+    if (opts?.embeddingProvider) form.append('embedding_provider', opts.embeddingProvider)
+    if (opts?.embeddingModel) form.append('embedding_model', opts.embeddingModel)
     return req('/api/knowledge/documents', { method: 'POST', body: form })
   },
   knowledgeDeleteDocument: (docId: string) => req(`/api/knowledge/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' }),
@@ -504,8 +547,16 @@ export const api: any = {
     form.append('file', file)
     return req('/api/knowledge/extract-text', { method: 'POST', body: form })
   },
-  knowledgeSearch: (query: string, limit = 6) =>
-    req('/api/knowledge/search', { method: 'POST', body: JSON.stringify({ query, limit }) }),
+  knowledgeSearch: (query: string, limit = 6, opts?: { embeddingProvider?: string; embeddingModel?: string }) =>
+    req('/api/knowledge/search', {
+      method: 'POST',
+      body: JSON.stringify({
+        query,
+        limit,
+        embedding_provider: opts?.embeddingProvider,
+        embedding_model: opts?.embeddingModel,
+      }),
+    }),
 
   // v2: 集合 + 共享 + 跨上下文检索
   knowledgeV2Status: () => req('/api/knowledge/v2/status'),
@@ -538,9 +589,11 @@ export const api: any = {
     req(`/api/knowledge/v2/collections/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
   knowledgeV2ListDocuments: (id: number) =>
     req(`/api/knowledge/v2/collections/${encodeURIComponent(String(id))}/documents`),
-  knowledgeV2UploadDocument: (id: number, file: File) => {
+  knowledgeV2UploadDocument: (id: number, file: File, opts?: { embeddingProvider?: string; embeddingModel?: string }) => {
     const form = new FormData()
     form.append('file', file)
+    if (opts?.embeddingProvider) form.append('embedding_provider', opts.embeddingProvider)
+    if (opts?.embeddingModel) form.append('embedding_model', opts.embeddingModel)
     return req(
       `/api/knowledge/v2/collections/${encodeURIComponent(String(id))}/documents`,
       { method: 'POST', body: form },
@@ -572,6 +625,8 @@ export const api: any = {
     workflow_id?: number | null
     org_id?: string | null
     collection_ids?: number[]
+    embedding_provider?: string | null
+    embedding_model?: string | null
   }) => req('/api/knowledge/v2/retrieve', { method: 'POST', body: JSON.stringify(body) }),
 
   openApiListConnectors: () => req('/api/openapi-connectors/'),

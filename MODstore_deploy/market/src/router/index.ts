@@ -42,6 +42,31 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/workflow/v2/WorkflowFlowEditorPage.vue'),
     meta: { auth: true },
   },
+  // ===== 脚本即工作流（替代节点图）=====
+  {
+    path: '/script-workflows',
+    name: 'script-workflows',
+    component: () => import('../views/ScriptWorkflowListView.vue'),
+    meta: { auth: true },
+  },
+  {
+    path: '/script-workflows/new',
+    name: 'script-workflow-new',
+    component: () => import('../views/ScriptWorkflowComposerView.vue'),
+    meta: { auth: true },
+  },
+  {
+    path: '/script-workflows/:id',
+    name: 'script-workflow-detail',
+    component: () => import('../views/ScriptWorkflowDetailView.vue'),
+    meta: { auth: true },
+  },
+  {
+    path: '/script-workflows/:id/edit',
+    name: 'script-workflow-edit',
+    component: () => import('../views/ScriptWorkflowComposerView.vue'),
+    meta: { auth: true },
+  },
   {
     path: '/workbench',
     component: () => import('../views/WorkbenchView.vue'),

@@ -18,6 +18,7 @@ from modstore_server.models import (
     WorkflowNode,
     WorkflowEdge,
     WorkflowExecution,
+    WorkflowSandboxRun,
     WorkflowTrigger,
     WorkflowVersion,
     User,
@@ -27,6 +28,11 @@ from modstore_server.models import (
 from modstore_server.api.deps import _get_current_user
 from modstore_server.infrastructure.db import get_db
 from modstore_server.quota_middleware import consume_quota, require_quota
+from modstore_server.workflow_sandbox_state import (
+    record_workflow_sandbox_run,
+    sandbox_status_for_workflow,
+    workflow_graph_fingerprint,
+)
 
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 
@@ -196,6 +202,23 @@ def _parse_positive_int(v: Any) -> int:
     return n if n > 0 else 0
 
 
+def _workflow_summary(db: Session, workflow: Workflow, user_id: int) -> Dict[str, Any]:
+    sandbox_status = sandbox_status_for_workflow(db, workflow, user_id=user_id)
+    return {
+        "id": workflow.id,
+        "name": workflow.name,
+        "description": workflow.description,
+        "is_active": workflow.is_active,
+        "created_at": workflow.created_at.isoformat(),
+        "updated_at": workflow.updated_at.isoformat(),
+        "graph_fingerprint": sandbox_status["graph_fingerprint"],
+        "sandbox_status": sandbox_status,
+        "sandbox_passed_for_current_graph": sandbox_status[
+            "sandbox_passed_for_current_graph"
+        ],
+    }
+
+
 def _employee_id_matches(candidate_id: str, target_employee_id: str) -> bool:
     """
     兼容 employee_id 命名差异：
@@ -261,17 +284,23 @@ async def list_workflows(
     if is_active is not None:
         query = query.filter(Workflow.is_active == is_active)
     workflows = query.all()
-    return [
-        {
-            "id": w.id,
-            "name": w.name,
-            "description": w.description,
-            "is_active": w.is_active,
-            "created_at": w.created_at.isoformat(),
-            "updated_at": w.updated_at.isoformat(),
-        }
-        for w in workflows
-    ]
+    return [_workflow_summary(db, w, user.id) for w in workflows]
+
+
+@router.get("/employee-eligible", summary="获取员工可绑定的工作流")
+async def list_employee_eligible_workflows(
+    db: Session = Depends(get_db),
+    user: User = Depends(_get_current_user),
+):
+    workflows = (
+        db.query(Workflow)
+        .filter(Workflow.user_id == user.id, Workflow.is_active == True)  # noqa: E712
+        .order_by(Workflow.updated_at.desc(), Workflow.id.desc())
+        .all()
+    )
+    rows = [_workflow_summary(db, w, user.id) for w in workflows]
+    eligible = [r for r in rows if r.get("sandbox_passed_for_current_graph")]
+    return {"workflows": eligible, "all_workflows": rows, "total": len(eligible)}
 
 
 @router.get("/by-employee", summary="按员工查询关联工作流")
@@ -388,6 +417,8 @@ async def get_workflow(
         "is_active": workflow.is_active,
         "created_at": workflow.created_at.isoformat(),
         "updated_at": workflow.updated_at.isoformat(),
+        "graph_fingerprint": workflow_graph_fingerprint(db, workflow_id),
+        "sandbox_status": sandbox_status_for_workflow(db, workflow, user_id=user.id),
         "nodes": [
             {
                 "id": n.id,
@@ -469,6 +500,9 @@ async def delete_workflow(
     # 删除工作流执行记录
     db.query(WorkflowExecution).filter(
         WorkflowExecution.workflow_id == workflow_id
+    ).delete()
+    db.query(WorkflowSandboxRun).filter(
+        WorkflowSandboxRun.workflow_id == workflow_id
     ).delete()
     # 删除工作流
     db.delete(workflow)
@@ -654,7 +688,11 @@ async def validate_workflow_endpoint(
     return report
 
 
-@router.post("/{workflow_id}/sandbox-run", summary="沙盒运行（全链路追踪，可选 Mock 员工）")
+@router.post(
+    "/{workflow_id}/sandbox-run",
+    summary="[已弃用] 节点图沙盒运行；新工作流请用 /api/script-workflows/{id}/sandbox-run",
+    deprecated=True,
+)
 async def sandbox_run_workflow(
     workflow_id: int,
     body: SandboxRunBody,
@@ -662,8 +700,12 @@ async def sandbox_run_workflow(
     user: User = Depends(_get_current_user),
 ):
     """
-    沙盒测试：不写 workflow_executions；返回每步变量快照、出边条件命中、耗时。
-    默认 mock_employees=true，避免调试时触发真实员工与外部依赖。
+    [已弃用] 节点图工作流沙箱测试。
+
+    新生工作流请走"脚本即工作流"路径：``POST /api/script-workflows/sessions``
+    启动 agent loop，自动验收通过后再 ``POST .../sandbox-run`` 用真实数据手动跑。
+
+    此端点仍支持已存在节点图工作流的临时调试，但不再演进。
     """
     from modstore_server.workflow_engine import run_workflow_sandbox
 
@@ -680,6 +722,25 @@ async def sandbox_run_workflow(
         validate_only=body.validate_only,
         user_id=user.id,
     )
+    if not body.validate_only:
+        row = record_workflow_sandbox_run(
+            db,
+            workflow_id=workflow_id,
+            user_id=user.id,
+            report=report,
+            validate_only=body.validate_only,
+            mock_employees=body.mock_employees,
+        )
+        status = sandbox_status_for_workflow(db, workflow, user_id=user.id)
+        report = {
+            **report,
+            "sandbox_run_id": int(row.id),
+            "graph_fingerprint": row.graph_fingerprint,
+            "sandbox_status": status,
+            "sandbox_passed_for_current_graph": status[
+                "sandbox_passed_for_current_graph"
+            ],
+        }
     if not report.get("ok") and not body.validate_only:
         raise HTTPException(
             400,
@@ -687,6 +748,7 @@ async def sandbox_run_workflow(
                 "errors": report.get("errors"),
                 "warnings": report.get("warnings"),
                 "mode": "real" if not body.mock_employees else "mock",
+                "sandbox_status": report.get("sandbox_status"),
             },
         )
     return report

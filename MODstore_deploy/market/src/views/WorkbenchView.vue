@@ -42,6 +42,13 @@
           >
             统一工作台
           </router-link>
+          <router-link
+            :to="{ name: 'script-workflows' }"
+            class="workbench-tab"
+            active-class="workbench-tab--active"
+          >
+            脚本工作流
+          </router-link>
         </nav>
       </div>
     </header>
