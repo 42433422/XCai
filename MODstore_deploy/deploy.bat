@@ -23,7 +23,7 @@ echo [OK] Python 已安装
 
 echo.
 echo [2/4] 安装依赖...
-pip install fastapi "uvicorn[standard]" python-multipart httpx sqlalchemy PyJWT bcrypt python-dotenv python-alipay-sdk -q
+python -m pip install -q -e ".[web,knowledge]"
 if errorlevel 1 (
     echo [错误] 依赖安装失败
     pause
@@ -47,6 +47,22 @@ if errorlevel 1 (
         echo [OK] 前端构建完成
     )
     popd
+)
+
+echo.
+echo [3.5/4] 自检邮件服务...
+for /f "delims=" %%i in ('python -c "from modstore_server.email_service import email_status; print(email_status()['mode'])"') do set EMAIL_MODE=%%i
+if "%EMAIL_MODE%"=="smtp" (
+    echo [OK] 邮件服务已配置 ^(SMTP^)
+) else if "%EMAIL_MODE%"=="debug" (
+    echo [提示] MODSTORE_EMAIL_DEBUG=1，验证码会打印到控制台而非真实发信
+) else (
+    echo [警告] 邮件服务未配置或仍是占位符（如 your-qq-smtp-auth-code / CHANGE_ME）
+    echo   - 注册 / 找回密码 / 验证码登录会失败
+    echo   解决方案三选一：
+    echo     A. 编辑 .env 把 MODSTORE_SMTP_USER/MODSTORE_SMTP_PASSWORD 改为真实凭证
+    echo     B. 临时调试：set MODSTORE_EMAIL_DEBUG=1 然后重启
+    echo     C. 直接启动后用 POST /api/admin/email/test 验证 SMTP
 )
 
 echo.
