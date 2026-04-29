@@ -5,7 +5,7 @@
   monkeypatch 替换为 ``tmp_path``）
 - :func:`validate_script` —— 现在 delegate 到
   :mod:`modstore_server.script_agent.static_checker`
-- :func:`_fallback_script` —— 内置 Excel 汇总兜底
+- :func:`_fallback_script` —— 仅测试/文档用；生产路径在 LLM 不可用时返回明确错误
 - :func:`run_script_job` —— ``await`` 即跑通："生成 → 静检 → 沙箱执行"
 
 Phase 2 起 ``script_agent.agent_loop`` 会承担多轮迭代修复，
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from sqlalchemy.orm import Session
 
@@ -79,6 +79,11 @@ def validate_script(code: str) -> List[str]:
     return _validate(code)
 
 
+class _ScriptGenResult(NamedTuple):
+    code: str
+    errors: List[str]
+
+
 async def _generate_script(
     *,
     db: Optional[Session],
@@ -87,12 +92,21 @@ async def _generate_script(
     input_files: List[Path],
     provider: Optional[str],
     model: Optional[str],
-) -> str:
-    if db is None or not provider or not model:
-        return _fallback_script()
+) -> _ScriptGenResult:
+    if db is None or not (provider or "").strip() or not (model or "").strip():
+        return _ScriptGenResult(
+            "",
+            [
+                "请配置 LLM 供应商与模型（工作台自选或用户默认 LLM 设置），"
+                "否则无法使用 AI 生成脚本"
+            ],
+        )
     key, _src = resolve_api_key(db, user_id, provider)
     if not key:
-        return _fallback_script()
+        return _ScriptGenResult(
+            "",
+            ["该供应商未配置可用 API Key（平台或 BYOK），无法调用 AI 生成脚本"],
+        )
     base = resolve_base_url(db, user_id, provider)
     files_text = "\n".join(f"- {p.name}" for p in input_files)
     sys_prompt = (
@@ -115,9 +129,12 @@ async def _generate_script(
         max_tokens=4096,
     )
     if not res.get("ok"):
-        return _fallback_script()
+        err = str(res.get("error") or "").strip() or "LLM 调用失败"
+        return _ScriptGenResult("", [f"LLM 调用失败：{err[:800]}"])
     code = _extract_code(str(res.get("content") or ""))
-    return code or _fallback_script()
+    if not code.strip():
+        return _ScriptGenResult("", ["模型未返回有效 Python 代码（解析后为空）"])
+    return _ScriptGenResult(code, [])
 
 
 async def run_script_job(
@@ -132,7 +149,7 @@ async def run_script_job(
 ) -> Dict[str, Any]:
     """一次性 "生成→校验→沙箱执行"，向后兼容 ``workbench_api`` 调用。"""
     fake_input_files = [Path(str((f or {}).get("filename") or "input.bin")) for f in files or []]
-    code = await _generate_script(
+    gen = await _generate_script(
         db=db,
         user_id=user_id,
         brief=brief,
@@ -140,7 +157,19 @@ async def run_script_job(
         provider=provider,
         model=model,
     )
+    if gen.errors:
+        return {
+            "ok": False,
+            "work_dir": "",
+            "script": gen.code,
+            "stdout": "",
+            "stderr": "",
+            "returncode": -1,
+            "outputs": [],
+            "errors": gen.errors,
+        }
 
+    code = gen.code
     errors = validate_script(code)
     if errors:
         return {

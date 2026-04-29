@@ -190,7 +190,12 @@
             <pre>stdout: {{ tail(lastSandboxRun.stdout_tail, 1200) }}</pre>
             <pre v-if="lastSandboxRun.stderr_tail">stderr: {{ tail(lastSandboxRun.stderr_tail, 1200) }}</pre>
             <ul v-if="lastSandboxRun.outputs?.length">
-              <li v-for="o in lastSandboxRun.outputs" :key="o.filename">{{ o.filename }}</li>
+              <li v-for="o in lastSandboxRun.outputs" :key="o.filename">
+                {{ o.filename }}
+                <button type="button" class="swc-download" @click="() => downloadSandboxOutput(o)">
+                  下载
+                </button>
+              </li>
             </ul>
             <button v-if="canActivate" class="swc-activate" @click="activate">满意，启用此工作流</button>
           </div>
@@ -513,6 +518,27 @@ async function runManualSandbox() {
   }
 }
 
+async function downloadSandboxOutput(output: any) {
+  if (!workflowId.value || !lastSandboxRun.value?.id || !output?.filename) return
+  try {
+    const blob = await api.downloadScriptWorkflowRunFile(
+      workflowId.value,
+      lastSandboxRun.value.id,
+      String(output.filename),
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = String(output.filename)
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 4000)
+  } catch (e: any) {
+    alert('下载失败：' + (e.message || e))
+  }
+}
+
 async function activate() {
   if (!workflowId.value) return
   try {
@@ -539,6 +565,8 @@ onMounted(async () => {
       committed.value = true
       stage.value = 'sandbox'
       tab.value = 'sandbox'
+      const runRows: any[] = await api.listScriptWorkflowRuns(wf.id).catch(() => [])
+      lastSandboxRun.value = Array.isArray(runRows) && runRows.length ? runRows[0] : null
       events.value = [
         { type: 'context', iteration: 0, payload: { existing: true } },
         { type: 'done', iteration: 0, payload: { code: wf.script_text, outcome: { ok: true, final_code: wf.script_text } } },
@@ -627,6 +655,7 @@ onMounted(async () => {
 .swc-sandbox-result .ok { color: #57c785; }
 .swc-sandbox-result .bad { color: #f57878; }
 .swc-sandbox-result pre { background: #0b0e14; padding: 8px; border-radius: 4px; font-size: 11px; max-height: 200px; overflow-x: auto; margin: 8px 0; }
+.swc-download { margin: 0 0 0 8px !important; padding: 3px 8px !important; font-size: 12px; }
 .swc-activate { background: #57c785 !important; color: #0b0e14 !important; font-weight: 600; padding: 10px 20px !important; }
 
 .swc-commit-bar { display: flex; gap: 12px; padding: 12px 16px; border-top: 1px solid #2c333f; background: #161a22; }

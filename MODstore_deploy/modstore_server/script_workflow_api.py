@@ -28,6 +28,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import (
@@ -39,7 +40,7 @@ from fastapi import (
     Query,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -775,6 +776,51 @@ async def list_runs(
         q = q.filter(ScriptWorkflowRun.mode == mode)
     rows = q.order_by(ScriptWorkflowRun.started_at.desc()).limit(limit).offset(offset).all()
     return [_serialize_run(r) for r in rows]
+
+
+@router.get(
+    "/{workflow_id}/runs/{run_id}/files/{filename}",
+    summary="下载脚本工作流单次运行产物",
+)
+async def download_run_file(
+    workflow_id: int,
+    run_id: int,
+    filename: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(_get_current_user),
+):
+    _load_workflow(db, workflow_id, user)
+    run = (
+        db.query(ScriptWorkflowRun)
+        .filter(
+            ScriptWorkflowRun.id == run_id,
+            ScriptWorkflowRun.workflow_id == workflow_id,
+        )
+        .first()
+    )
+    if not run:
+        raise HTTPException(404, "运行记录不存在")
+    try:
+        outputs = json.loads(run.outputs_meta_json or "[]")
+    except json.JSONDecodeError:
+        outputs = []
+    for item in outputs:
+        if not isinstance(item, dict):
+            continue
+        if item.get("filename") != filename:
+            continue
+        path = Path(str(item.get("path") or "")).resolve()
+        try:
+            expected_parent = path.parent.parent
+            if (
+                path.is_file()
+                and path.parent.name == "outputs"
+                and expected_parent.name.startswith(f"u{user.id}_")
+            ):
+                return FileResponse(path, filename=filename)
+        except Exception:
+            pass
+    raise HTTPException(404, "产物文件不存在")
 
 
 @router.get("/{workflow_id}/versions", summary="历史版本")

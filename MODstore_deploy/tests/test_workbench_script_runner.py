@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-
 from modstore_server.workbench_script_runner import run_script_job, validate_script
 
 
@@ -12,7 +10,7 @@ def test_validate_script_blocks_dangerous_import():
     assert "subprocess" in ";".join(errors)
 
 
-def test_run_script_job_fallback_generates_output(tmp_path, monkeypatch):
+def test_run_script_job_requires_llm_when_no_provider(tmp_path, monkeypatch):
     import modstore_server.workbench_script_runner as runner
 
     monkeypatch.setattr(runner, "SCRIPT_ROOT", tmp_path)
@@ -27,9 +25,10 @@ def test_run_script_job_fallback_generates_output(tmp_path, monkeypatch):
             model=None,
         )
     )
-    assert result["ok"] is True
-    assert result["outputs"]
-    assert Path(result["outputs"][0]["path"]).is_file()
+    assert result["ok"] is False
+    assert result["outputs"] == []
+    assert result["errors"]
+    assert "LLM" in "".join(result["errors"]) or "供应商" in "".join(result["errors"])
 
 
 def _xlsx_bytes() -> bytes:

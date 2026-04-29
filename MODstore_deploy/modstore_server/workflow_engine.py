@@ -63,6 +63,9 @@ class WorkflowEngine:
             "condition": self._execute_condition_node,
             "openapi_operation": self._execute_openapi_operation_node,
             "knowledge_search": self._execute_knowledge_search_node,
+            "webhook_trigger": self._execute_webhook_trigger_node,
+            "cron_trigger": self._execute_cron_trigger_node,
+            "variable_set": self._execute_variable_set_node,
         }
 
     def register_executor(self, node_type: str, executor):
@@ -543,6 +546,33 @@ class WorkflowEngine:
         logger.info("执行条件节点: %s", node.name)
         return {}
 
+    def _execute_webhook_trigger_node(
+        self, node: WorkflowNode, data: Dict[str, Any], config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """触发器节点：运行时由 HTTP/cron 调度；图内执行仅保证 payload 变量存在。"""
+        logger.info("执行 Webhook 触发器节点（图内占位）: %s", node.name)
+        payload_var = str(config.get("payload_var") or "webhook_payload").strip() or "webhook_payload"
+        return {payload_var: data.get(payload_var, {})}
+
+    def _execute_cron_trigger_node(
+        self, node: WorkflowNode, data: Dict[str, Any], config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """定时触发器：调度由 workflow_scheduler 负责；图内执行为空增量。"""
+        logger.info("执行 Cron 触发器节点（图内占位）: %s", node.name)
+        return {}
+
+    def _execute_variable_set_node(
+        self, node: WorkflowNode, data: Dict[str, Any], config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """向上下文写入变量（支持 ``{{ var }}`` 模板）。"""
+        logger.info("执行变量赋值节点: %s", node.name)
+        name = str(config.get("name") or "").strip()
+        if not name:
+            raise ValueError("variable_set 节点缺少 name")
+        ctx = {"nodes": data, "global": data, "result": data}
+        resolved = resolve_value(config.get("value"), ctx)
+        return {name: resolved}
+
     def _evaluate_condition(self, condition: str, data: Dict[str, Any]) -> bool:
         return eval_condition(condition, data)
 
@@ -643,6 +673,20 @@ class WorkflowValidator:
                 cids = config.get("collection_ids")
                 if cids is not None and not isinstance(cids, list):
                     errors.append(f"知识检索节点 {node.name} 的 collection_ids 必须是数组")
+            elif node.node_type == "variable_set":
+                try:
+                    config = json.loads(node.config) if node.config else {}
+                except (TypeError, ValueError):
+                    config = {}
+                if not str(config.get("name") or "").strip():
+                    errors.append(f"变量赋值节点 {node.name} 缺少 name 配置")
+            elif node.node_type == "cron_trigger":
+                try:
+                    config = json.loads(node.config) if node.config else {}
+                except (TypeError, ValueError):
+                    config = {}
+                if not str(config.get("cron") or "").strip():
+                    errors.append(f"定时触发器节点 {node.name} 缺少 cron 配置")
         node_ids = {node.id for node in nodes}
         for edge in edges:
             if edge.source_node_id not in node_ids:

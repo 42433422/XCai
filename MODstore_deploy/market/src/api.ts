@@ -324,6 +324,16 @@ export const api: any = {
     req(`/api/script-workflows/${id}/deactivate`, { method: 'POST' }),
   listScriptWorkflowRuns: (id: number | string, mode: string = '') =>
     req(`/api/script-workflows/${id}/runs${mode ? `?mode=${encodeURIComponent(mode)}` : ''}`),
+  downloadScriptWorkflowRunFile: async (id: number | string, runId: number | string, filename: string) => {
+    const res = await fetch(
+      `/api/script-workflows/${encodeURIComponent(String(id))}/runs/${encodeURIComponent(String(runId))}/files/${encodeURIComponent(filename)}`,
+      { headers: authHeaders() },
+    )
+    if (!res.ok) {
+      throw new Error(res.statusText || '下载失败')
+    }
+    return res.blob()
+  },
   listScriptWorkflowVersions: (id: number | string) =>
     req(`/api/script-workflows/${id}/versions`),
   commitScriptWorkflowSession: (sid: string, body: { name: string; schema_in?: any }) =>

@@ -2,9 +2,13 @@
   <div class="wb-home">
     <div
       class="wb-home-inner"
-      :class="{ 'wb-home-inner--no-workflow': !hasWorkflow, 'wb-home-inner--gears': hasWorkflow }"
+      :class="{
+        'wb-home-inner--no-workflow': !hasWorkflow,
+        'wb-home-inner--gears': hasWorkflow,
+        'wb-home-inner--make': hasWorkflow && activeGear === 'make',
+      }"
     >
-      <header v-if="!hasWorkflow || activeGear === 'make'" class="wb-hero">
+      <header v-if="!hasWorkflow" class="wb-hero">
         <p v-if="greetingLine" class="wb-hero-kicker">{{ greetingLine }}</p>
         <h1 class="wb-hero-title">今天有什么安排？</h1>
       </header>
@@ -12,6 +16,7 @@
       <div
         v-if="hasWorkflow"
         class="wb-gear-layout"
+        :class="{ 'wb-gear-layout--make': activeGear === 'make' }"
         @wheel.passive="onGearWheel"
       >
         <nav class="wb-gear-rail" aria-label="工作台挡位">
@@ -56,7 +61,10 @@
                 <h1 class="wb-direct-title">{{ activeBot ? activeBot.name : '有什么想问的？' }}</h1>
                 <p class="wb-direct-sub">{{ activeBot?.desc || '像聊天一样提问，我直接帮你分析、总结和给出可执行答案。' }}</p>
               </div>
-              <div class="wb-direct-shell">
+              <div
+                class="wb-direct-shell"
+                :class="{ 'wb-direct-shell--empty': !directMessages.length }"
+              >
                 <div
                   class="wb-direct-main"
                   :class="{
@@ -191,6 +199,7 @@
                         type="file"
                         class="wb-direct-file-input"
                         multiple
+                        :accept="DIRECT_ATTACHMENT_ACCEPT"
                         @change="onDirectFilesChange"
                       />
                       <button
@@ -213,6 +222,111 @@
                         spellcheck="false"
                         @keydown="onDirectKeydown"
                       />
+                      <div class="wb-llm-inline wb-direct-llm-inline" aria-label="一档模型">
+                        <div class="wb-mode-segment" role="radiogroup" aria-label="一档模型模式">
+                          <button
+                            type="button"
+                            class="wb-mode-segment__btn"
+                            :class="{ 'wb-mode-segment__btn--on': modelMode === 'auto' }"
+                            role="radio"
+                            :aria-checked="modelMode === 'auto'"
+                            @click="modelMode = 'auto'"
+                          >Auto</button>
+                          <button
+                            type="button"
+                            class="wb-mode-segment__btn"
+                            :class="{ 'wb-mode-segment__btn--on': modelMode === 'manual' }"
+                            role="radio"
+                            :aria-checked="modelMode === 'manual'"
+                            @click="modelMode = 'manual'"
+                          >自选</button>
+                        </div>
+                        <template v-if="modelMode === 'manual' && llmCatalog && llmCatalog.providers?.length && !llmCatalogError">
+                          <div class="wb-llm-dd">
+                            <span class="wb-sr-only" id="wb-direct-provider-lbl">厂商</span>
+                            <button
+                              type="button"
+                              class="wb-dd-trigger wb-dd-trigger--compact"
+                              :class="{ 'wb-dd-trigger--open': llmDdOpen === 'directProvider' }"
+                              aria-haspopup="listbox"
+                              :aria-expanded="llmDdOpen === 'directProvider'"
+                              aria-labelledby="wb-direct-provider-lbl"
+                              title="厂商"
+                              @click.stop="toggleLlmDd('directProvider')"
+                            >
+                              <span class="wb-dd-trigger__text">{{ currentProviderLabel }}</span>
+                              <svg class="wb-dd-trigger__icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                              </svg>
+                            </button>
+                            <ul
+                              v-show="llmDdOpen === 'directProvider'"
+                              class="wb-dd-panel"
+                              role="listbox"
+                              aria-labelledby="wb-direct-provider-lbl"
+                            >
+                              <li
+                                v-for="b in llmCatalog.providers"
+                                :key="`direct-${b.provider}`"
+                                role="option"
+                                class="wb-dd-item"
+                                :class="{ 'wb-dd-item--on': selectedProvider === b.provider }"
+                                :aria-selected="selectedProvider === b.provider"
+                                @click.stop="pickProvider(b.provider)"
+                              >
+                                {{ b.label || b.provider }}
+                              </li>
+                            </ul>
+                          </div>
+                          <div class="wb-llm-dd wb-llm-dd--model">
+                            <span class="wb-sr-only" id="wb-direct-model-lbl">模型</span>
+                            <button
+                              type="button"
+                              class="wb-dd-trigger wb-dd-trigger--model wb-dd-trigger--compact"
+                              :class="{ 'wb-dd-trigger--open': llmDdOpen === 'directModel' }"
+                              :disabled="!modelPickerEnabled"
+                              aria-haspopup="listbox"
+                              :aria-expanded="llmDdOpen === 'directModel'"
+                              aria-labelledby="wb-direct-model-lbl"
+                              title="模型"
+                              @click.stop="modelPickerEnabled && toggleLlmDd('directModel')"
+                            >
+                              <span class="wb-dd-trigger__text">{{ selectedModel || '选择模型' }}</span>
+                              <svg class="wb-dd-trigger__icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                              </svg>
+                            </button>
+                            <ul
+                              v-show="llmDdOpen === 'directModel' && modelPickerEnabled"
+                              class="wb-dd-panel wb-dd-panel--tall"
+                              role="listbox"
+                              aria-labelledby="wb-direct-model-lbl"
+                            >
+                              <template v-for="cat in LLM_CATEGORY_ORDER" :key="`direct-${cat}`">
+                                <template v-if="modelsForWorkbenchCategory(cat).length">
+                                  <li class="wb-dd-cat" role="presentation">{{ categoryLabel(cat) }}</li>
+                                  <li
+                                    v-for="row in modelsForWorkbenchCategory(cat)"
+                                    :key="`direct-${row.id}`"
+                                    role="option"
+                                    class="wb-dd-item"
+                                    :class="{ 'wb-dd-item--on': selectedModel === row.id }"
+                                    :aria-selected="selectedModel === row.id"
+                                    @click.stop="pickModel(row.id)"
+                                  >
+                                    {{ row.id }}
+                                  </li>
+                                </template>
+                              </template>
+                            </ul>
+                          </div>
+                        </template>
+                        <span
+                          v-else-if="modelMode === 'manual' && (llmCatalogLoading || llmCatalogError || !llmCatalog?.providers?.length)"
+                          class="wb-llm-inline__note"
+                          :title="llmCatalogError || ''"
+                        >{{ llmCatalogLoading ? '目录…' : '登录配置' }}</span>
+                      </div>
                       <button
                         v-if="directLoading"
                         type="button"
@@ -228,30 +342,66 @@
                         @click="() => void sendDirectChat()"
                       >发送</button>
                     </div>
-                    <div v-if="directAttachedFiles.length" class="wb-direct-file-chips" aria-label="已选附件">
-                      <span
-                        v-for="f in directAttachedFiles"
+                    <TransitionGroup
+                      v-if="directAttachedFiles.length"
+                      name="wb-direct-file-card"
+                      tag="div"
+                      class="wb-direct-file-stack"
+                      aria-label="已选附件"
+                    >
+                      <article
+                        v-for="(f, i) in directVisibleAttachedFiles"
                         :key="f.id"
-                        class="wb-direct-file-chip"
-                        :class="`wb-direct-file-chip--${f.status}`"
+                        class="wb-direct-file-card"
+                        :class="[
+                          `wb-direct-file-card--${f.status}`,
+                          `wb-direct-file-card--${directAttachmentKind(f)}`,
+                          { 'wb-direct-file-card--ingesting': f.ingesting },
+                        ]"
+                        :style="{ '--att-index': i }"
                         :title="directFileChipTitle(f)"
                       >
-                        <span class="wb-direct-file-chip__dot" aria-hidden="true">
-                          <span v-if="f.status === 'uploading'" class="wb-direct-file-chip__spinner" />
-                          <span v-else-if="f.status === 'ready'" class="wb-direct-file-chip__check">✓</span>
-                          <span v-else-if="f.status === 'inline'" class="wb-direct-file-chip__check" style="color:rgba(251,191,36,0.9)">✎</span>
-                          <span v-else-if="f.status === 'error' || f.status === 'skipped'" class="wb-direct-file-chip__warn">!</span>
+                        <span class="wb-direct-file-card__deck" aria-hidden="true">
+                          <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--back"></span>
+                          <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--mid"></span>
+                          <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--front">
+                            <span class="wb-direct-file-card__deck-label">{{ directAttachmentKindLabel(f) }}</span>
+                          </span>
                         </span>
-                        <span class="wb-direct-file-chip__name">{{ f.name }}</span>
-                        <span class="wb-direct-file-chip__meta">{{ formatDirectFileSize(f.size) }}</span>
+                        <span class="wb-direct-file-card__state" aria-hidden="true">
+                          <span v-if="f.status === 'uploading' || f.ingesting" class="wb-direct-file-card__spinner" />
+                          <span v-else-if="f.status === 'ready' || f.status === 'inline'" class="wb-direct-file-card__check">✓</span>
+                          <span v-else class="wb-direct-file-card__warn">!</span>
+                        </span>
                         <button
                           type="button"
-                          class="wb-direct-file-chip__remove"
+                          class="wb-direct-file-card__remove"
                           :aria-label="`移除 ${f.name}`"
                           :disabled="directLoading || f.status === 'uploading'"
                           @click="() => void removeDirectAttachedFile(f.id)"
                         >×</button>
-                      </span>
+                      </article>
+                      <div
+                        v-if="directHiddenAttachmentCount"
+                        key="__more"
+                        class="wb-direct-file-card wb-direct-file-card--more"
+                        aria-label="更多附件"
+                      >
+                        <span class="wb-direct-file-card__deck" aria-hidden="true">
+                          <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--back"></span>
+                          <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--mid"></span>
+                          <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--front">
+                            <span class="wb-direct-file-card__deck-plus">+{{ directHiddenAttachmentCount }}</span>
+                          </span>
+                        </span>
+                      </div>
+                    </TransitionGroup>
+                    <div v-if="directAttachmentMentions.length" class="wb-file-mention-row" aria-label="已引用附件">
+                      <span
+                        v-for="(m, i) in directAttachmentMentions"
+                        :key="`direct-ref-${m}`"
+                        class="wb-file-mention-token"
+                      >@附件{{ i + 1 }} {{ m }}</span>
                     </div>
                     <p v-if="directAttachHint" class="wb-direct-attach-hint" role="status">
                       {{ directAttachHint }}
@@ -284,6 +434,10 @@
             </section>
 
             <section class="wb-gear-scene wb-make-scene" aria-label="二档制作流程">
+      <header class="wb-make-hero">
+        <p v-if="greetingLine" class="wb-hero-kicker">{{ greetingLine }}</p>
+        <h1 class="wb-hero-title">今天有什么安排？</h1>
+      </header>
       <section
         v-if="hasWorkflow && planSession"
         ref="planPanelRef"
@@ -293,19 +447,19 @@
         <Transition name="wb-plan-shell" appear>
           <div :key="planSurfaceKey" class="wb-plan-surface">
             <div class="wb-plan-head">
-              <h2 id="wb-plan-title" class="wb-plan-title">需求规划</h2>
+              <h2 id="wb-plan-title" class="wb-plan-title">{{ planPanelTitle }}</h2>
               <button type="button" class="wb-plan-close" aria-label="关闭规划" @click="dismissPlanSession">×</button>
             </div>
             <p class="wb-plan-kicker">
-              类型：{{ planSession.intentTitle }} · 类似 Cursor Plan：先多轮澄清，再生成执行清单，最后进入制作与生成。
+              类型：{{ planSession.intentTitle }} · {{ planSession.phase === 'summary' ? '先确认任务摘要，再进入规划选择。' : '类似 Cursor Plan：先多轮澄清，再生成执行清单，最后进入制作与生成。' }}
             </p>
             <div v-if="planSession.loading" class="wb-plan-loading-block" aria-live="polite">
               <div class="wb-plan-loading-track" aria-hidden="true">
                 <div class="wb-plan-loading-bar" />
               </div>
-              <p class="wb-plan-loading">正在请求模型…</p>
+              <p class="wb-plan-loading">{{ planSession.phase === 'summary' ? '正在总结任务…' : '正在请求模型…' }}</p>
             </div>
-            <TransitionGroup name="wb-plan-msg" tag="ul" class="wb-plan-thread" aria-live="polite">
+            <TransitionGroup v-if="planSession.phase !== 'summary'" name="wb-plan-msg" tag="ul" class="wb-plan-thread" aria-live="polite">
               <li
                 v-for="(m, idx) in planSession.messages"
                 :key="`${m.role}-${idx}`"
@@ -353,6 +507,22 @@
               </li>
             </TransitionGroup>
             <p v-if="planSession.planError" class="wb-plan-error" role="alert">{{ planSession.planError }}</p>
+            <template v-if="planSession.phase === 'summary'">
+              <section v-if="!planSession.loading && planSession.summaryText" class="wb-plan-summary-card" aria-label="任务摘要确认">
+                <p class="wb-plan-summary-kicker">任务摘要</p>
+                <h3 class="wb-plan-summary-title">{{ planSession.summaryTitle || '请确认任务' }}</h3>
+                <p class="wb-plan-summary-body">{{ planSession.summaryText }}</p>
+                <p v-if="planSession.displayBrief" class="wb-plan-summary-source">{{ planSession.displayBrief }}</p>
+              </section>
+              <div class="wb-plan-actions">
+                <button type="button" class="wb-plan-secondary" :disabled="planSession.loading" @click="backSummaryToComposer">
+                  返回修改
+                </button>
+                <button type="button" class="wb-plan-primary" :disabled="planSession.loading || !planSession.summaryText" @click="() => void confirmSummaryAndStartPlanning()">
+                  确认并开始规划
+                </button>
+              </div>
+            </template>
             <template v-if="planSession.phase === 'chat'">
               <div v-if="planQuickOptions.length" class="wb-plan-quick" aria-label="快捷选择">
                 <div class="wb-plan-quick-main">
@@ -458,11 +628,17 @@
             </template>
             <template v-else-if="planSession.phase === 'checklist'">
               <h3 class="wb-plan-checklist-title">执行清单（确认后将写入制作草稿）</h3>
-              <ol class="wb-plan-checklist-ol">
-                <li v-for="(line, i) in planSession.checklistLines" :key="i" class="wb-plan-checklist-li">
-                  {{ line }}
-                </li>
-              </ol>
+              <div class="wb-plan-checklist-flow">
+                <MessageBody :content="planChecklistFlowMarkdown" />
+              </div>
+              <details class="wb-plan-checklist-details">
+                <summary>查看文字清单</summary>
+                <ol class="wb-plan-checklist-ol">
+                  <li v-for="(line, i) in planSession.checklistLines" :key="i" class="wb-plan-checklist-li">
+                    {{ line }}
+                  </li>
+                </ol>
+              </details>
               <div class="wb-plan-actions">
                 <button type="button" class="wb-plan-secondary" :disabled="planSession.loading" @click="backPlanToChat">
                   返回修改
@@ -481,7 +657,21 @@
         class="wb-orch"
         aria-label="制作进度"
       >
-        <h3 class="wb-orch-title">制作进度</h3>
+        <div class="wb-orch-head">
+          <h3 class="wb-orch-title">制作进度</h3>
+          <span class="wb-orch-percent">{{ orchestrationProgress.done }}/{{ orchestrationProgress.total }}</span>
+        </div>
+        <div class="wb-orch-progress" aria-hidden="true">
+          <span class="wb-orch-progress__bar" :style="{ width: `${orchestrationProgress.percent}%` }"></span>
+        </div>
+        <p
+          v-if="orchestrationSession?.artifact?.execution_mode === 'script' && orchestrationSession?.status === 'done'"
+          class="wb-orch-script-hint"
+          role="status"
+        >
+          本次已按「附件 + Python 脚本」生成脚本工作流，稍后会进入沙箱调试页。
+          你可以继续上传同类 Excel 文件，反复验证脚本输出是否正确。
+        </p>
         <ol class="wb-steps">
           <li
             v-for="st in orchestrationSession.steps"
@@ -496,6 +686,23 @@
             </span>
           </li>
         </ol>
+        <div v-if="orchestrationSession.script_result?.outputs?.length" class="wb-script-result">
+          <h4 class="wb-script-result__title">生成结果</h4>
+          <a
+            v-for="file in orchestrationSession.script_result.outputs"
+            :key="file.filename"
+            class="wb-script-download"
+            :href="file.download_url"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            下载 {{ file.filename }}
+          </a>
+        </div>
+        <details v-if="orchestrationSession.script_result" class="wb-script-log">
+          <summary>查看脚本日志</summary>
+          <pre>{{ orchestrationSession.script_result.stderr || orchestrationSession.script_result.stdout || '暂无日志' }}</pre>
+        </details>
         <p
           v-if="orchestrationSession.validate_warnings?.length"
           class="wb-orch-warn"
@@ -737,6 +944,67 @@
                 @change="onKnowledgeFileChange"
               />
               <p v-if="knowledgeError" class="wb-research-msg wb-research-msg--err" role="status">{{ knowledgeError }}</p>
+              <TransitionGroup
+                v-if="directAttachedFiles.length"
+                name="wb-direct-file-card"
+                tag="div"
+                class="wb-direct-file-stack wb-composer-file-stack"
+                aria-label="二档附件"
+              >
+                <article
+                  v-for="(f, i) in directVisibleAttachedFiles"
+                  :key="`composer-${f.id}`"
+                  class="wb-direct-file-card"
+                  :class="[
+                    `wb-direct-file-card--${f.status}`,
+                    `wb-direct-file-card--${directAttachmentKind(f)}`,
+                    { 'wb-direct-file-card--ingesting': f.ingesting },
+                  ]"
+                  :style="{ '--att-index': i }"
+                  :title="directFileChipTitle(f)"
+                >
+                  <span class="wb-direct-file-card__deck" aria-hidden="true">
+                    <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--back"></span>
+                    <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--mid"></span>
+                    <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--front">
+                      <span class="wb-direct-file-card__deck-label">{{ directAttachmentKindLabel(f) }}</span>
+                    </span>
+                  </span>
+                  <span class="wb-direct-file-card__state" aria-hidden="true">
+                    <span v-if="f.status === 'uploading' || f.ingesting" class="wb-direct-file-card__spinner" />
+                    <span v-else-if="f.status === 'ready' || f.status === 'inline'" class="wb-direct-file-card__check">✓</span>
+                    <span v-else class="wb-direct-file-card__warn">!</span>
+                  </span>
+                  <button
+                    type="button"
+                    class="wb-direct-file-card__remove"
+                    :aria-label="`移除 ${f.name}`"
+                    :disabled="knowledgeUploading || f.status === 'uploading'"
+                    @click="() => void removeDirectAttachedFile(f.id)"
+                  >×</button>
+                </article>
+                <div
+                  v-if="directHiddenAttachmentCount"
+                  key="composer-more"
+                  class="wb-direct-file-card wb-direct-file-card--more"
+                  aria-label="更多附件"
+                >
+                  <span class="wb-direct-file-card__deck" aria-hidden="true">
+                    <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--back"></span>
+                    <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--mid"></span>
+                    <span class="wb-direct-file-card__deck-card wb-direct-file-card__deck-card--front">
+                      <span class="wb-direct-file-card__deck-plus">+{{ directHiddenAttachmentCount }}</span>
+                    </span>
+                  </span>
+                </div>
+              </TransitionGroup>
+              <div v-if="directAttachmentMentions.length" class="wb-file-mention-row wb-file-mention-row--composer" aria-label="二档已引用附件">
+                <span
+                  v-for="(m, i) in directAttachmentMentions"
+                  :key="`make-ref-${m}`"
+                  class="wb-file-mention-token"
+                >@附件{{ i + 1 }} {{ m }}</span>
+              </div>
               <div class="wb-input-footer">
                 <div class="wb-input-hint">
                   <span class="wb-input-hint__intent">当前：{{ composerMainTitle }}</span>
@@ -887,7 +1155,7 @@
         </p>
       </div>
 
-      <nav class="wb-starters" aria-label="工作流描述快捷提示">
+      <nav v-if="!makeHasActiveTask" class="wb-starters" aria-label="工作流描述快捷提示">
         <button
           v-if="hasRepo"
           type="button"
@@ -1061,6 +1329,17 @@ import {
 import { streamLLMChat } from '../utils/llmStream'
 import type { StreamHandle } from '../utils/llmStream'
 import { stripInternalMarkers } from '../utils/lightMarkdown'
+import {
+  DIRECT_ATTACHMENT_ACCEPT,
+  DIRECT_KB_MAX_BYTES,
+  DIRECT_KB_SUPPORTED_EXT,
+  DIRECT_KB_SUPPORTED_EXTENSIONS,
+  directFileExt,
+  directFileKind,
+  directFileKindLabel,
+  formatDirectFileSize,
+  resolveDirectAttachmentOutcome,
+} from '../utils/directAttachments'
 
 /** 与后端 llm_model_taxonomy.CATEGORY_ORDER 一致 */
 const LLM_CATEGORY_ORDER = ['llm', 'vlm', 'image', 'video', 'other']
@@ -1167,10 +1446,6 @@ const activeBot = computed<AgentBot | null>(
 const speakingMessageId = ref<string>('')
 let phoneSynth: SpeechSynthesis | null = null
 
-/** 与后端 knowledge_ingest.SUPPORTED_EXTENSIONS / MAX_UPLOAD_BYTES 保持一致 */
-const DIRECT_KB_SUPPORTED_EXT = new Set(['txt', 'md', 'json', 'csv', 'pdf', 'docx', 'xlsx'])
-const DIRECT_KB_MAX_BYTES = 20 * 1024 * 1024
-
 const directSendDisabled = computed(
   () =>
     directLoading.value ||
@@ -1187,13 +1462,20 @@ const directAttachHint = computed(() => {
   const skipped = list.filter((f) => f.status === 'skipped').length
   const errored = list.filter((f) => f.status === 'error').length
   const parts: string[] = []
-  if (uploading) parts.push(`${uploading} 个上传中`)
+  if (uploading) parts.push(`${uploading} 个读取中`)
   if (ready) parts.push(`${ready} 个已纳入资料库（提问时按相关度自动召回）`)
-  if (inlined) parts.push(`${inlined} 个已提取文本，将直接注入模型上下文`)
+  if (inlined) parts.push(`${inlined} 个已读取，可直接发送给模型`)
   if (skipped) parts.push(`${skipped} 个未受支持，仅附文件名给模型参考`)
   if (errored) parts.push(`${errored} 个上传失败，仅附文件名给模型参考`)
   return parts.join(' · ')
 })
+const directVisibleAttachedFiles = computed(() => directAttachedFiles.value.slice(0, 3))
+const directHiddenAttachmentCount = computed(() => Math.max(0, directAttachedFiles.value.length - 3))
+const directAttachmentMentions = computed(() =>
+  directAttachedFiles.value
+    .map((f) => String(f?.name || '').trim())
+    .filter(Boolean),
+)
 const CONSUMPTION_TIER_STORAGE_KEY = 'workbench_consumption_tier'
 
 function readStoredConsumptionTier(): number {
@@ -1240,8 +1522,25 @@ const voiceStatusText = computed(() => {
   return '点击呼吸球开始语音规划。浏览器不支持语音时，可用下方文字补充。'
 })
 
+function isGearAxisLocked() {
+  const hasInput =
+    Boolean(String(draft.value || '').trim()) ||
+    Boolean(String(directDraft.value || '').trim()) ||
+    Boolean(String(voiceDraft.value || '').trim()) ||
+    Boolean(String(planReplyDraft.value || '').trim()) ||
+    directAttachedFiles.value.length > 0
+  const hasTask =
+    Boolean(planSession.value) ||
+    Boolean(pendingHandoff.value) ||
+    Boolean(finalizeLoading.value) ||
+    Boolean(linkBusy.value) ||
+    Boolean(orchestrationSession.value?.steps?.length)
+  return hasInput || hasTask
+}
+
 function setGear(key) {
   if (!gearScenes.some((it) => it.key === key)) return
+  if (key !== activeGear.value && isGearAxisLocked()) return
   gearDragOffset.value = 0
   gearDragging.value = false
   activeGear.value = key
@@ -1253,6 +1552,10 @@ function gearStopPercent(index) {
 }
 
 function onGearWheel(e) {
+  if (isGearAxisLocked()) {
+    gearWheelAccum = 0
+    return
+  }
   const dy = Number(e?.deltaY || 0)
   const now = Date.now()
   if (now < gearWheelLockedUntil) return
@@ -1271,6 +1574,7 @@ function onGearWheel(e) {
 }
 
 function onGearPointerDown(e) {
+  if (isGearAxisLocked()) return
   const el = e.currentTarget
   const rect = el?.getBoundingClientRect?.()
   gearDragTrackHeight = Math.max(1, rect?.height || 1)
@@ -1288,6 +1592,11 @@ function onGearPointerMove(e) {
 
 function settleGearDrag() {
   if (!gearDragging.value) return
+  if (isGearAxisLocked()) {
+    gearDragging.value = false
+    gearDragOffset.value = 0
+    return
+  }
   const step = 100 / Math.max(1, gearScenes.length - 1)
   const threshold = step * 0.64
   let next = gearIndex.value
@@ -1310,47 +1619,58 @@ function onGearPointerCancel(e) {
   gearDragOffset.value = 0
 }
 
-function formatDirectFileSize(bytes) {
-  const n = Number(bytes) || 0
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function directFileExt(filename) {
-  const s = String(filename || '')
-  const i = s.lastIndexOf('.')
-  if (i < 0 || i >= s.length - 1) return ''
-  return s.slice(i + 1).toLowerCase()
-}
-
 function directFileChipTitle(f) {
   if (!f) return ''
-  if (f.status === 'uploading') return `${f.name}：上传中…`
+  if (f.status === 'uploading') return `${f.name}：正在读取文件内容…`
   if (f.status === 'ready') return `${f.name}：已纳入资料库，提问时会按相关度自动召回片段`
-  if (f.status === 'inline') return `${f.name}：已提取文本，将直接注入模型上下文（嵌入服务暂时不可用）`
+  if (f.status === 'inline') {
+    return f.ingestError
+      ? `${f.name}：已读取文本，可直接发送；${f.ingestError}`
+      : `${f.name}：已读取文本，将直接注入模型上下文${f.ingesting ? '，资料库入库中' : ''}`
+  }
   if (f.status === 'skipped') return `${f.name}：${f.error || '该格式暂不解析；将仅附文件名供模型参考'}`
   if (f.status === 'error') return `${f.name}：${f.error || '上传失败'}（仅附文件名给模型参考）`
   return f.name
 }
 
+function directAttachmentKind(f) {
+  return directFileKind(f?.name || '', f?.file?.type || '')
+}
+
+function directAttachmentKindLabel(f) {
+  return directFileKindLabel(directAttachmentKind(f))
+}
+
+function directAttachmentStatusText(f) {
+  if (!f) return ''
+  if (f.status === 'uploading') return '读取中'
+  if (f.status === 'ready') return '已入库'
+  if (f.status === 'inline') {
+    if (f.ingesting) return '可发送 · 入库中'
+    if (f.ingestError) return '可发送 · 入库失败'
+    return '可发送'
+  }
+  if (f.status === 'skipped') return '未支持'
+  return '读取失败'
+}
+
 function directAttachmentNote(files) {
   const list = Array.isArray(files) ? files : []
   if (!list.length) return ''
-  const parts = list.map((f) => {
+  const parts = list.map((f, idx) => {
     const tag =
       f.status === 'ready'
         ? '已入库'
         : f.status === 'uploading'
-        ? '上传中'
+        ? '读取中'
         : f.status === 'inline'
-        ? '已内嵌文本'
+        ? '已读取'
         : f.status === 'error'
         ? '上传失败'
         : '未解析'
-    return `${f.name}（${formatDirectFileSize(f.size)}，${tag}）`
+    return `@附件${idx + 1} ${f.name}（${formatDirectFileSize(f.size)}，${tag}）`
   })
-  return `[附件：${parts.join('，')}]`
+  return `[附件顺序：${parts.join('，')}]`
 }
 
 function openDirectFilePicker() {
@@ -1369,9 +1689,59 @@ function makeDirectAttachId() {
   return `att_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
+function appendAttachmentMentions(files: File[], target: 'direct' | 'make') {
+  const names = (Array.isArray(files) ? files : [])
+    .map((file) => String(file?.name || '').trim())
+    .filter(Boolean)
+  if (!names.length) return
+  const startIndex = Math.max(0, directAttachedFiles.value.length - names.length)
+  const mentions = names.map((name, idx) => `@附件${startIndex + idx + 1} ${name}`).join(' ')
+  const r = target === 'make' ? draft : directDraft
+  const current = String(r.value || '')
+  const joiner = current.trim() ? (/\s$/.test(current) ? '' : ' ') : ''
+  r.value = `${current}${joiner}${mentions} `
+}
+
 async function uploadDirectAttachedFile(item) {
+  let extractedText = ''
   try {
-    const res = await api.knowledgeUploadDocument(item.file)
+    const extractRes = await api.knowledgeExtractText(item.file)
+    const outcome = resolveDirectAttachmentOutcome({ extractedText: extractRes?.text })
+    const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
+    if (idx < 0) return
+    if (!outcome.canSend) throw new Error(outcome.error)
+    extractedText = outcome.extractedText
+    directAttachedFiles.value[idx] = {
+      ...directAttachedFiles.value[idx],
+      status: 'inline',
+      extractedText,
+      docId: '',
+      error: '',
+      ingesting: true,
+      ingestError: '',
+    }
+  } catch (e) {
+    const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
+    if (idx < 0) return
+    const outcome = resolveDirectAttachmentOutcome({ extractError: e })
+    directAttachedFiles.value[idx] = {
+      ...directAttachedFiles.value[idx],
+      status: 'error',
+      extractedText: '',
+      docId: '',
+      error: outcome.error,
+      ingesting: false,
+      ingestError: '',
+    }
+    return
+  }
+
+  try {
+    const embeddingChoice = await resolveChatProviderModel()
+    const res = await api.knowledgeUploadDocument(item.file, {
+      embeddingProvider: embeddingChoice.provider,
+      embeddingModel: embeddingChoice.model,
+    })
     const docId = res?.document?.doc_id || res?.document?.docId || ''
     const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
     if (idx < 0) {
@@ -1385,43 +1755,28 @@ async function uploadDirectAttachedFile(item) {
       }
       return
     }
-    if (docId) {
-      directAttachedFiles.value[idx] = {
-        ...directAttachedFiles.value[idx],
-        status: 'ready',
-        docId,
-        error: '',
-      }
-    } else {
-      directAttachedFiles.value[idx] = {
-        ...directAttachedFiles.value[idx],
-        status: 'error',
-        error: '上传未返回文档 ID',
-      }
+    const outcome = resolveDirectAttachmentOutcome({ extractedText, docId, uploadError: docId ? undefined : '上传未返回文档 ID' })
+    directAttachedFiles.value[idx] = {
+      ...directAttachedFiles.value[idx],
+      status: outcome.status,
+      docId: outcome.docId,
+      extractedText: outcome.extractedText,
+      error: outcome.error,
+      ingesting: false,
+      ingestError: outcome.ingestError,
     }
   } catch (e) {
     const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
     if (idx < 0) return
-    // Fallback: try to extract text so the content can still be sent inline to the LLM
-    try {
-      const extractRes = await api.knowledgeExtractText(item.file)
-      const extractedText = String(extractRes?.text || '')
-      if (extractedText) {
-        directAttachedFiles.value[idx] = {
-          ...directAttachedFiles.value[idx],
-          status: 'inline',
-          extractedText,
-          error: '',
-        }
-        return
-      }
-    } catch {
-      /* extract failed as well; fall through to error state */
-    }
+    const outcome = resolveDirectAttachmentOutcome({ extractedText, uploadError: e })
     directAttachedFiles.value[idx] = {
       ...directAttachedFiles.value[idx],
-      status: 'error',
-      error: e?.message || String(e),
+      status: outcome.status,
+      docId: '',
+      extractedText: outcome.extractedText,
+      error: outcome.error,
+      ingesting: false,
+      ingestError: outcome.ingestError,
     }
   }
 }
@@ -1446,7 +1801,9 @@ function onDirectFilesChange(e) {
         size: file.size || 0,
         status: 'skipped',
         docId: '',
-        error: `不支持的格式（仅 ${[...DIRECT_KB_SUPPORTED_EXT].join('/')} 入库）`,
+        error: `不支持的格式（仅 ${DIRECT_KB_SUPPORTED_EXTENSIONS.join('/')} 入库）`,
+        ingesting: false,
+        ingestError: '',
         file,
       }
     }
@@ -1458,6 +1815,8 @@ function onDirectFilesChange(e) {
         status: 'skipped',
         docId: '',
         error: `超过 ${formatDirectFileSize(DIRECT_KB_MAX_BYTES)} 上限`,
+        ingesting: false,
+        ingestError: '',
         file,
       }
     }
@@ -1468,10 +1827,13 @@ function onDirectFilesChange(e) {
       status: 'uploading',
       docId: '',
       error: '',
+      ingesting: false,
+      ingestError: '',
       file,
     }
   })
   directAttachedFiles.value = [...directAttachedFiles.value, ...items]
+  appendAttachmentMentions(accepted, 'direct')
   for (const it of items) {
     if (it.status === 'uploading') void uploadDirectAttachedFile(it)
   }
@@ -1562,10 +1924,10 @@ function buildSystemPrompt(
   }
   if (inlineFiles && inlineFiles.length > 0) {
     const blocks = inlineFiles
-      .map((f) => `### 附件全文：${f.name}\n\n${f.text}`)
+      .map((f, idx) => `### @附件${idx + 1}：${f.name}\n\n${f.text}`)
       .join('\n\n---\n\n')
     parts.push(
-      `以下是用户直接上传的附件全文（嵌入服务暂时不可用，文本已直接注入；请优先据此回答）：\n\n${blocks}`,
+      `以下是用户按顺序直接上传的附件全文；用户消息里的 @附件1、@附件2 会对应这里的同序号文件。请按编号理解文件之间的先后逻辑，并优先据此回答：\n\n${blocks}`,
     )
   }
   if (knowledgePack) {
@@ -1594,6 +1956,7 @@ async function runDirectChatTurn(opts: {
   let knowledgePack = ''
   let citations: Array<{ title: string; snippet?: string; url?: string }> = []
   try {
+    const { provider, model } = await resolveChatProviderModel()
     if (opts.userText) {
       try {
         const employeeId = activeBot.value?.id || ''
@@ -1601,6 +1964,8 @@ async function runDirectChatTurn(opts: {
           query: opts.userText,
           top_k: 6,
           employee_id: employeeId || undefined,
+          embedding_provider: provider,
+          embedding_model: model,
         })
         const items = Array.isArray(res?.items) ? res.items : []
         if (items.length > 0) {
@@ -1620,7 +1985,10 @@ async function runDirectChatTurn(opts: {
             (m) => Array.isArray(m.attachments) && m.attachments.some((a) => a.status === 'ready'),
           )
           if (ready || hasUserUploads) {
-            const res: any = await api.knowledgeSearch(opts.userText, 6)
+            const res: any = await api.knowledgeSearch(opts.userText, 6, {
+              embeddingProvider: provider,
+              embeddingModel: model,
+            })
             const items = Array.isArray(res?.items) ? res.items : []
             knowledgePack = formatKnowledgeContext(items)
             citations = items.slice(0, 6).map((it: any, i: number) => {
@@ -1635,7 +2003,6 @@ async function runDirectChatTurn(opts: {
         }
       }
     }
-    const { provider, model } = await resolveChatProviderModel()
     const sys = buildSystemPrompt(activeBot.value?.persona || '', knowledgePack, opts.inlineFiles)
     const ctx = directMessages.value
       .filter((m) => m.id !== opts.assistantId)
@@ -1709,7 +2076,7 @@ async function sendDirectChat(text = '') {
     attachments: filesSnapshot.map((f) => ({ name: f.name, size: f.size, status: f.status, docId: f.docId })),
   })
   const inlineFiles = filesSnapshot
-    .filter((f: any) => f.status === 'inline' && f.extractedText)
+    .filter((f: any) => (f.status === 'inline' || f.status === 'ready') && f.extractedText)
     .map((f: any) => ({ name: f.name, text: f.extractedText as string }))
 
   const placeholder = makeMessage('assistant', '', { pending: true })
@@ -1947,7 +2314,7 @@ function onSurfaceDrop(e: DragEvent) {
   void ingestComposerFiles(Array.from(list))
 }
 
-async function ingestComposerFiles(files: File[]) {
+async function ingestComposerFiles(files: File[], target: 'direct' | 'make' = 'direct') {
   const remaining = Math.max(0, 12 - directAttachedFiles.value.length)
   const accepted = files.slice(0, remaining)
   const items = accepted.map((file) => {
@@ -1963,6 +2330,8 @@ async function ingestComposerFiles(files: File[]) {
         status: 'skipped',
         docId: '',
         error: '图片暂以「文件名 + 简短描述」形式给模型；接入视觉模型后会改为 base64 上送。',
+        ingesting: false,
+        ingestError: '',
         file,
       }
     }
@@ -1975,7 +2344,9 @@ async function ingestComposerFiles(files: File[]) {
         docId: '',
         error: tooBig
           ? `超过 ${formatDirectFileSize(DIRECT_KB_MAX_BYTES)} 上限`
-          : `不支持的格式（仅 ${[...DIRECT_KB_SUPPORTED_EXT].join('/')} 入库）`,
+          : `不支持的格式（仅 ${DIRECT_KB_SUPPORTED_EXTENSIONS.join('/')} 入库）`,
+        ingesting: false,
+        ingestError: '',
         file,
       }
     }
@@ -1986,10 +2357,13 @@ async function ingestComposerFiles(files: File[]) {
       status: 'uploading',
       docId: '',
       error: '',
+      ingesting: false,
+      ingestError: '',
       file,
     }
   })
   directAttachedFiles.value = [...directAttachedFiles.value, ...items]
+  appendAttachmentMentions(accepted, target)
   for (const it of items) {
     if (it.status === 'uploading') void uploadDirectAttachedFile(it)
   }
@@ -2458,12 +2832,35 @@ const orchestrationButtonLabel = computed(() => {
   const k = pendingHandoff.value?.intentKey
   if (k === 'mod') return '开始生成 Mod'
   if (k === 'employee') return '开始生成员工包'
+  const files = pendingHandoff.value?.files
+  if (k === 'workflow' && Array.isArray(files) && files.length > 0) {
+    return '开始处理附件（AI 生成 Python 脚本）'
+  }
   return '开始创建并校验'
 })
 
 const orchestrationButtonPendingLabel = computed(() =>
   finalizeLoading.value ? '执行中…' : orchestrationButtonLabel.value,
 )
+
+const makeHasActiveTask = computed(() =>
+  Boolean(
+    planSession.value ||
+      pendingHandoff.value ||
+      workflowLinkOffer.value ||
+      finalizeLoading.value ||
+      orchestrationSession.value?.steps?.length,
+  ),
+)
+
+const orchestrationProgress = computed(() => {
+  const steps = Array.isArray(orchestrationSession.value?.steps) ? orchestrationSession.value.steps : []
+  const total = Math.max(steps.length, 1)
+  const done = steps.filter((s) => s.status === 'done').length
+  const running = steps.some((s) => s.status === 'running') ? 0.45 : 0
+  const percent = Math.min(100, Math.max(0, ((done + running) / total) * 100))
+  return { total: steps.length, done, percent }
+})
 
 const canRunOrchestration = computed(() => {
   const h = pendingHandoff.value
@@ -2479,6 +2876,9 @@ const handoffFootNote = computed(() => {
   }
   if (k === 'employee') {
     return '员工包写入你的本地库；上架请到「员工制作」上传。商店执行器以已上架包为准。'
+  }
+  if (Array.isArray(pendingHandoff.value?.files) && pendingHandoff.value.files.length > 0) {
+    return '已选择附件：将生成可复用的「脚本工作流」，成功后自动进入沙箱调试页；你可以继续上传同类 Excel 文件验证脚本输出。若要生成节点与连线的流程图，请先移除附件再提交。'
   }
   return '创建并校验成功后进入工作流画布；尚无节点时跳过拓扑沙盒。'
 })
@@ -2760,6 +3160,80 @@ const planQuickOptions = computed(() => {
   return []
 })
 
+const planPanelTitle = computed(() => {
+  const ps = planSession.value
+  if (!ps) return '需求规划'
+  if (ps.phase === 'summary') return ps.summaryTitle || '确认任务摘要'
+  return ps.summaryTitle || '需求规划'
+})
+
+const planChecklistFlowMarkdown = computed(() => {
+  const lines = Array.isArray(planSession.value?.checklistLines) ? planSession.value.checklistLines : []
+  return buildChecklistFlowMarkdown(lines)
+})
+
+function mermaidChecklistLabel(text, max = 30) {
+  const s = String(text || '')
+    .replace(/^\s*\d+[\.)、]\s*/, '')
+    .replace(/[<>]/g, '')
+    .replace(/["[\]{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!s) return '步骤'
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
+
+function buildChecklistFlowMarkdown(lines) {
+  const list = Array.isArray(lines) ? lines.filter((x) => String(x || '').trim()).slice(0, 18) : []
+  if (!list.length) {
+    return '```mermaid\nflowchart TD\n  start["开始"] --> done["完成"]\n```'
+  }
+  const out = ['```mermaid', 'flowchart TD', '  start["开始"]']
+  list.forEach((line, idx) => {
+    out.push(`  S${idx + 1}["${idx + 1}. ${mermaidChecklistLabel(line)}"]`)
+  })
+  out.push('  done["完成"]')
+  out.push('  start --> S1')
+  for (let i = 1; i < list.length; i += 1) {
+    out.push(`  S${i} --> S${i + 1}`)
+  }
+  out.push(`  S${list.length} --> done`)
+  out.push('```')
+  return out.join('\n')
+}
+
+function compactPlanVisibleText(text, max = 260) {
+  const s = String(text || '')
+    .replace(/【本次上传附件全文】[\s\S]*?(?=\n\n---\n|$)/g, '【本次上传附件全文已读取，界面不展开】')
+    .replace(/【我的文件资料库命中片段】[\s\S]*?(?=\n\n---\n|$)/g, '【资料库片段已读取，界面不展开】')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!s) return '请根据上传内容和输入描述进行规划'
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
+
+function buildPlanSummarySystemPrompt(intentTitle) {
+  return [
+    '你是需求摘要助手。你只负责把用户上传文件和输入内容总结成一个简短、准确的任务摘要，供用户确认。',
+    `当前制作类型：${intentTitle || '未指定'}`,
+    '输出格式必须严格为：',
+    'TITLE: 一句话任务标题，不超过22个中文字符',
+    'SUMMARY: 2到3句话说明任务目标、输入文件、期望产出',
+    '不要输出流程图，不要输出选项，不要输出执行清单，不要泄露附件全文。',
+  ].join('\n')
+}
+
+function parsePlanSummary(raw, fallback) {
+  const text = String(raw || '').trim()
+  const titleMatch = text.match(/^TITLE:\s*(.+)$/im)
+  const summaryMatch = text.match(/^SUMMARY:\s*([\s\S]+)$/im)
+  const lines = text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean)
+  const fallbackText = compactPlanVisibleText(fallback, 180)
+  const title = (titleMatch?.[1] || lines[0] || fallbackText || '确认任务').replace(/^#+\s*/, '').trim().slice(0, 36)
+  const summary = (summaryMatch?.[1] || lines.slice(1).join(' ') || fallbackText || title).trim()
+  return { title, summary }
+}
+
 const canSendPlanQuickPicks = computed(() => {
   const opts = planQuickOptions.value
   if (!opts.length) return false
@@ -2791,6 +3265,25 @@ watch(
 
 function planAssistantParts(raw) {
   return parsePlanAssistantContent(raw)
+}
+
+function sanitizeMermaidLabel(label) {
+  return String(label || '')
+    .replace(/[()[\]{}<>]/g, ' ')
+    .replace(/[*/\\=+\-]/g, ' ')
+    .replace(/[|:;，,。]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 24) || '步骤'
+}
+
+function sanitizeMermaidSource(src) {
+  return String(src || '')
+    .split(/\r?\n/)
+    .map((line) =>
+      line.replace(/\[([^\]]*)\]/g, (_m, label) => `["${sanitizeMermaidLabel(label)}"]`),
+    )
+    .join('\n')
 }
 
 /** 助手气泡 Mermaid 渲染错误（按消息下标） */
@@ -2844,8 +3337,18 @@ async function flushPlanMermaidDiagrams() {
     try {
       await mer.run({ nodes: [graphEl] })
     } catch (e) {
-      nextErr[idx] = (e && e.message) || String(e) || '流程图解析失败'
+      const cleaned = sanitizeMermaidSource(diagram)
       host.innerHTML = ''
+      const retryEl = document.createElement('div')
+      retryEl.className = 'mermaid'
+      retryEl.textContent = cleaned
+      host.appendChild(retryEl)
+      try {
+        await mer.run({ nodes: [retryEl] })
+      } catch (retryError) {
+        nextErr[idx] = (retryError && retryError.message) || String(retryError) || '流程图解析失败'
+        host.innerHTML = ''
+      }
     }
   }
   planDiagramError.value = nextErr
@@ -2910,17 +3413,12 @@ async function uploadKnowledgeFiles(files) {
   const list = Array.from(files || []).filter(Boolean)
   if (!list.length || knowledgeUploading.value) return
   if (!requireLoginForWorkbenchUse()) return
-  knowledgeUploading.value = true
   knowledgeError.value = ''
   try {
-    for (const file of list) {
-      await api.knowledgeUploadDocument(file)
-    }
-    await loadKnowledgeDocuments()
+    await ingestComposerFiles(list as File[], 'make')
   } catch (err) {
     knowledgeError.value = err?.message || String(err)
   } finally {
-    knowledgeUploading.value = false
     if (knowledgeFileInputRef.value) knowledgeFileInputRef.value.value = ''
   }
 }
@@ -3078,10 +3576,17 @@ async function persistManualLlmIfNeeded() {
 
 async function pollWorkbenchSession(sessionId) {
   const delay = (ms) => new Promise((r) => setTimeout(r, ms))
+  /** 约 10 分钟：避免后端任务挂死时界面永远「执行中」 */
+  const maxRounds = 1350
+  let rounds = 0
   while (!pollStop.value) {
     const s = await api.workbenchGetSession(sessionId)
     orchestrationSession.value = s
     if (s.status === 'done' || s.status === 'error') return s
+    rounds += 1
+    if (rounds >= maxRounds) {
+      throw new Error('编排等待超时（约 10 分钟）。请检查后端日志、网络或 LLM 配置后重试。')
+    }
     await delay(450)
   }
   return null
@@ -3122,7 +3627,18 @@ async function runOrchestration() {
       body.provider = provider
       body.model = model
     }
-    const started = await api.workbenchStartSession(body)
+    const useScriptMode = intent === 'workflow' && Array.isArray(h.files) && h.files.length > 0
+    const started = useScriptMode
+      ? await api.workbenchStartScriptSession(
+          {
+            brief: body.brief,
+            workflow_name: body.workflow_name,
+            provider: body.provider,
+            model: body.model,
+          },
+          h.files,
+        )
+      : await api.workbenchStartSession(body)
     const sid = started?.session_id
     if (!sid) throw new Error('未返回 session_id')
     const final = await pollWorkbenchSession(sid)
@@ -3149,6 +3665,22 @@ async function runOrchestration() {
       sessionStorage.setItem('workbench_home_intent', finIntent)
     } catch {
       /* ignore */
+    }
+    if (art.execution_mode === 'script') {
+      pendingHandoff.value = null
+      const scriptWorkflowId = Number(art.script_workflow_id || 0)
+      if (Number.isFinite(scriptWorkflowId) && scriptWorkflowId > 0) {
+        orchestrationSession.value = null
+        await router.push({ path: `/script-workflows/${scriptWorkflowId}/edit`, query: { tab: 'sandbox' } })
+        return
+      }
+      nextTick(() => {
+        const el = document.querySelector('.wb-script-result')
+        if (el && typeof el.scrollIntoView === 'function') {
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        }
+      })
+      return
     }
     if (finIntent === 'workflow' && art.workflow_id != null) {
       workflowLinkOffer.value = {
@@ -3379,30 +3911,59 @@ function scrollPlanIntoView() {
   })
 }
 
-async function appendUserAndAssistantPlanTurn(userText) {
+async function appendUserAndAssistantPlanTurn(userText, displayText = userText) {
   const ps = planSession.value
   if (!ps) return
-  ps.messages.push({ role: 'user', content: userText })
+  ps.messages.push({ role: 'user', content: displayText })
   ps.planError = ''
   const { provider, model } = await resolveChatProviderModel()
   const sys = buildPlanSystemPrompt(ps.intentKey, ps.intentTitle)
+  const mappedMessages = ps.messages.map((m, idx) => {
+    if (idx === ps.messages.length - 1 && m.role === 'user') {
+      return { role: 'user', content: String(userText || displayText || '') }
+    }
+    return { role: m.role, content: m.content }
+  })
   const apiMsgs = [
     { role: 'system', content: sys },
-    ...ps.messages.map((m) => ({ role: m.role, content: m.content })),
+    ...(ps.fullBrief ? [{ role: 'user', content: `【完整隐藏上下文，供理解任务使用；不要原样输出】\n${ps.fullBrief}` }] : []),
+    ...mappedMessages,
   ]
   const res = await api.llmChat(provider, model, apiMsgs, 2048)
   const c = typeof res?.content === 'string' ? res.content : ''
   ps.messages.push({ role: 'assistant', content: (c || '').trim() || '（无回复）' })
 }
 
-async function openPlanSession(initialText) {
+async function summarizePlanSession() {
+  const ps = planSession.value
+  if (!ps) return
+  const { provider, model } = await resolveChatProviderModel()
+  const sys = buildPlanSummarySystemPrompt(ps.intentTitle)
+  const res = await api.llmChat(provider, model, [
+    { role: 'system', content: sys },
+    { role: 'user', content: ps.fullBrief || ps.displayBrief || ps.initialBrief },
+  ], 700)
+  const parsed = parsePlanSummary(res?.content, ps.displayBrief || ps.fullBrief)
+  ps.summaryTitle = parsed.title
+  ps.summaryText = parsed.summary
+  ps.initialBrief = `${parsed.title}\n${parsed.summary}`
+}
+
+async function openPlanSession(input) {
   planSurfaceKey.value += 1
   const meta = INTENT_META[composerIntent.value] || INTENT_META.workflow
+  const fullBrief = typeof input === 'object' && input ? String(input.fullBrief || '') : String(input || '')
+  const displayBrief = typeof input === 'object' && input ? String(input.displayBrief || '') : compactPlanVisibleText(fullBrief)
   planSession.value = {
     intentKey: composerIntent.value,
     intentTitle: meta.title,
-    phase: 'chat',
-    initialBrief: initialText,
+    phase: 'summary',
+    initialBrief: displayBrief,
+    fullBrief,
+    displayBrief,
+    summaryTitle: '',
+    summaryText: '',
+    files: Array.isArray(input?.files) ? input.files : [],
     messages: [],
     checklistText: '',
     checklistLines: [],
@@ -3417,14 +3978,49 @@ async function openPlanSession(initialText) {
   await nextTick()
   scrollPlanIntoView()
   try {
-    await appendUserAndAssistantPlanTurn(initialText)
+    await summarizePlanSession()
   } catch (e) {
     if (planSession.value) {
-      planSession.value.planError = e.message || String(e)
-      planSession.value.messages = []
+      const fallback = parsePlanSummary('', displayBrief || fullBrief)
+      planSession.value.summaryTitle = fallback.title
+      planSession.value.summaryText = fallback.summary
+      planSession.value.initialBrief = `${fallback.title}\n${fallback.summary}`
+      planSession.value.planError = `摘要生成失败，已使用输入内容兜底：${e.message || String(e)}`
     }
   } finally {
     if (planSession.value) planSession.value.loading = false
+  }
+}
+
+function backSummaryToComposer() {
+  const ps = planSession.value
+  if (ps?.displayBrief) draft.value = ps.displayBrief
+  dismissPlanSession()
+  nextTick(() => {
+    const el = inputRef.value
+    if (el && typeof el.focus === 'function') el.focus()
+  })
+}
+
+async function confirmSummaryAndStartPlanning() {
+  const ps = planSession.value
+  if (!ps || ps.phase !== 'summary' || ps.loading) return
+  ps.phase = 'chat'
+  ps.messages = []
+  ps.planError = ''
+  ps.loading = true
+  directAttachedFiles.value = []
+  planOptionSelections.value = {}
+  clearPlanOptionOtherText()
+  const visible = `已确认任务：${ps.summaryTitle || '任务摘要'}\n${ps.summaryText || ps.displayBrief || ''}`
+  try {
+    await appendUserAndAssistantPlanTurn(ps.fullBrief || ps.displayBrief || ps.summaryText, visible)
+  } catch (e) {
+    ps.planError = e.message || String(e)
+    ps.messages = []
+  } finally {
+    ps.loading = false
+    scrollPlanIntoView()
   }
 }
 
@@ -3511,6 +4107,7 @@ async function requestExecutionChecklist() {
     }
     const apiMsgs = [
       { role: 'system', content: sys },
+      ...(ps.fullBrief ? [{ role: 'user', content: `【完整隐藏上下文，供生成清单使用；不要原样输出】\n${ps.fullBrief}` }] : []),
       ...ps.messages.map((m) => ({ role: m.role, content: m.content })),
       tail,
     ]
@@ -3563,6 +4160,7 @@ function confirmPlanAndOpenHandoff() {
     workflowName: '',
     planNotes: ps.intentKey === 'workflow' ? ps.checklistText : '',
     suggestedModId: '',
+    files: Array.isArray(ps.files) ? ps.files : [],
   }
   dismissPlanSession()
   nextTick(() => {
@@ -3575,24 +4173,45 @@ function confirmPlanAndOpenHandoff() {
 
 async function submitDraft() {
   const text = draft.value.trim()
-  if (!text || !hasWorkflow.value) return
+  if ((!text && directAttachedFiles.value.length === 0) || !hasWorkflow.value) return
   if (!requireLoginForWorkbenchUse()) return
+  if (directAttachedFiles.value.some((f) => f.status === 'uploading')) {
+    knowledgeError.value = '附件仍在读取中，请稍候'
+    return
+  }
   if (planSession.value) {
     finalizeError.value = '请先完成或关闭上方的「需求规划」面板。'
     return
   }
   finalizeError.value = ''
+  const filesSnapshot = [...directAttachedFiles.value]
+  const note = directAttachmentNote(filesSnapshot)
+  const inlineBlocks = filesSnapshot
+    .filter((f: any) => (f.status === 'inline' || f.status === 'ready') && f.extractedText)
+    .map((f: any, idx: number) => `### @附件${idx + 1}：${f.name}\n\n${f.extractedText}`)
+    .join('\n\n---\n\n')
   let knowledgePack = ''
-  try {
-    const res = await api.knowledgeSearch(text, 6)
-    knowledgePack = formatKnowledgeContext(res?.items)
-  } catch (e) {
-    knowledgeError.value = e?.message || String(e)
+  if (text) {
+    try {
+      const embeddingChoice = await resolveChatProviderModel()
+      const res = await api.knowledgeSearch(text, 6, {
+        embeddingProvider: embeddingChoice.provider,
+        embeddingModel: embeddingChoice.model,
+      })
+      knowledgePack = formatKnowledgeContext(res?.items)
+    } catch (e) {
+      knowledgeError.value = e?.message || String(e)
+    }
   }
-  const payload = knowledgePack
-    ? `${text}\n\n---\n【我的文件资料库命中片段】\n${knowledgePack}`
-    : text
-  await openPlanSession(payload)
+  const payloadParts = [text]
+  if (note) payloadParts.push(note)
+  if (inlineBlocks) {
+    payloadParts.push(`【本次上传附件全文】\n用户按上传顺序提供了以下文件；@附件1、@附件2 等编号与上方附件顺序一致，请按编号理解文件之间的先后逻辑。\n\n${inlineBlocks}`)
+  }
+  if (knowledgePack) payloadParts.push(`【我的文件资料库命中片段】\n${knowledgePack}`)
+  const payload = payloadParts.filter(Boolean).join('\n\n---\n')
+  const displayPayload = [text, note].filter(Boolean).join('\n\n')
+  await openPlanSession({ fullBrief: payload, displayBrief: displayPayload, files: filesSnapshot.map((f: any) => f.file).filter(Boolean) })
 }
 
 function onComposerKeydown(e) {
@@ -3652,7 +4271,12 @@ function onComposerKeydown(e) {
   max-height: 100%;
   display: flex;
   flex-direction: column;
+  gap: clamp(0.45rem, 1.1vw, 0.85rem);
   overflow: hidden;
+}
+
+.wb-home-inner--make {
+  padding-top: 0;
 }
 
 .wb-home-inner--no-workflow {
@@ -3666,8 +4290,8 @@ function onComposerKeydown(e) {
   text-align: center;
   /* 顶部留白：避免「你好，xx」与「今天有什么安排？」紧贴页面顶端，
      兼顾首页态（hasWorkflow=false）与二档场景（activeGear === 'make'） */
-  padding-top: clamp(1.5rem, 4.5vw, 3rem);
-  margin-bottom: clamp(0.4rem, 1vw, 0.85rem);
+  padding-top: clamp(0.8rem, 2.6vw, 1.8rem);
+  margin-bottom: 0;
 }
 
 .wb-hero-kicker {
@@ -3860,8 +4484,8 @@ function onComposerKeydown(e) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: stretch;
-  gap: clamp(0.9rem, 2.4vh, 1.4rem);
+  justify-content: center;
+  gap: clamp(0.85rem, 2vh, 1.35rem);
   text-align: left;
   font-size: var(--wb-direct-font-px, 15px);
 }
@@ -3881,6 +4505,10 @@ function onComposerKeydown(e) {
   position: relative;
 }
 
+.wb-direct-shell--empty {
+  flex: 0 0 auto;
+}
+
 .wb-direct-main {
   position: relative;
   flex: 1;
@@ -3894,9 +4522,9 @@ function onComposerKeydown(e) {
 
 .wb-direct-main--empty {
   align-items: center;
-  justify-content: center;
-  padding-top: clamp(2.2rem, 8vh, 5.6rem);
-  padding-bottom: clamp(2rem, 7vh, 4.8rem);
+  justify-content: flex-start;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .wb-direct-main--chatting {
@@ -4276,13 +4904,23 @@ function onComposerKeydown(e) {
   padding-inline: clamp(1rem, 3vw, 3rem);
 }
 
+.wb-gear-layout--make .wb-make-scene {
+  justify-content: center;
+}
+
 .wb-make-scene > .wb-plan,
 .wb-make-scene > .wb-orch,
 .wb-make-scene > .wb-handoff,
 .wb-make-scene > .wb-composer-column,
 .wb-make-scene > .wb-starters,
-.wb-make-scene > .wb-foot {
+.wb-make-scene > .wb-foot,
+.wb-make-scene > .wb-make-hero {
   width: min(100%, 64rem);
+}
+
+.wb-make-hero {
+  margin: 0 0 clamp(0.6rem, 1.6vw, 1.2rem);
+  text-align: center;
 }
 
 .wb-direct-hero,
@@ -4310,7 +4948,7 @@ function onComposerKeydown(e) {
   z-index: 2;
   width: min(42rem, 100%);
   flex: 0 0 auto;
-  margin-top: clamp(0.4rem, 3vh, 2.2rem);
+  margin-top: 0;
   text-align: center;
 }
 
@@ -4473,9 +5111,55 @@ function onComposerKeydown(e) {
 
 .wb-direct-box-main {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: end;
   gap: 0.55rem 0.65rem;
+}
+
+.wb-file-mention-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  min-height: 1.4rem;
+}
+
+.wb-file-mention-row--composer {
+  margin: 0.35rem 1rem 0;
+}
+
+.wb-file-mention-token {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(22rem, 100%);
+  padding: 0.16rem 0.48rem;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.13);
+  border: 1px solid rgba(165, 180, 252, 0.18);
+  color: #c4b5fd;
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-direct-llm-inline {
+  justify-content: flex-end;
+  align-self: end;
+  margin-right: 0;
+  max-width: min(42vw, 23rem);
+}
+
+.wb-direct-llm-inline .wb-mode-segment__btn {
+  min-width: 2.85rem;
+  padding-inline: 0.62rem;
+}
+
+.wb-dd-trigger--compact {
+  max-width: 8.5rem;
+  min-height: 1.92rem;
+  padding-inline: 0.62rem;
 }
 
 .wb-direct-file-input {
@@ -4529,80 +5213,243 @@ function onComposerKeydown(e) {
   outline-offset: 2px;
 }
 
-.wb-direct-file-chips {
+.wb-direct-file-stack {
+  --att-overlap: 0.62rem;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
-  padding: 0 0.1rem 0.15rem;
-}
-
-.wb-direct-file-chip {
-  display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  max-width: 100%;
-  padding: 0.22rem 0.35rem 0.22rem 0.45rem;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.28);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 0.72rem;
-  color: rgba(226, 232, 240, 0.88);
-  transition: border-color 0.18s ease, background 0.18s ease;
+  gap: 0;
+  min-height: 4.05rem;
+  padding: 0.25rem 0.1rem 0.18rem 0.55rem;
 }
 
-.wb-direct-file-chip--ready {
-  border-color: rgba(94, 234, 212, 0.45);
-  background: rgba(13, 148, 136, 0.18);
-}
-
-.wb-direct-file-chip--uploading {
-  border-color: rgba(165, 180, 252, 0.45);
-  background: rgba(79, 70, 229, 0.18);
-}
-
-.wb-direct-file-chip--inline {
-  border-color: rgba(251, 191, 36, 0.45);
-  background: rgba(120, 53, 15, 0.22);
-}
-
-.wb-direct-file-chip--error,
-.wb-direct-file-chip--skipped {
-  border-color: rgba(248, 113, 113, 0.4);
-  background: rgba(127, 29, 29, 0.22);
-}
-
-.wb-direct-file-chip__dot {
+.wb-direct-file-card {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 0.95rem;
-  height: 0.95rem;
-  flex-shrink: 0;
-  font-size: 0.65rem;
-  font-weight: 800;
-  line-height: 1;
+  width: 3.15rem;
+  height: 4.35rem;
+  min-height: 0;
+  margin-left: calc(var(--att-index, 0) * -1 * var(--att-overlap));
+  padding: 0;
+  border: 0;
+  border-radius: 0.58rem;
+  background: transparent;
+  box-shadow: none;
+  color: rgba(226, 232, 240, 0.92);
+  transform: translateY(calc(var(--att-index, 0) * -0.12rem)) rotate(calc((var(--att-index, 0) - 1) * -6deg));
+  transition:
+    transform 0.22s ease,
+    filter 0.22s ease;
+  z-index: calc(20 + var(--att-index, 0));
 }
 
-.wb-direct-file-chip__check {
+.wb-direct-file-card:hover {
+  transform: translateY(calc(var(--att-index, 0) * -0.12rem - 0.25rem)) rotate(calc((var(--att-index, 0) - 1) * -7deg));
+  filter: brightness(1.08);
+}
+
+.wb-direct-file-card--ready {
+  background: transparent;
+}
+
+.wb-direct-file-card--uploading {
+  background: transparent;
+}
+
+.wb-direct-file-card--inline {
+  background: transparent;
+}
+
+.wb-direct-file-card--error,
+.wb-direct-file-card--skipped {
+  background: transparent;
+}
+
+.wb-direct-file-card--more {
+  opacity: 0.82;
+  margin-left: -0.62rem;
+  transform: translateY(-0.18rem) scale(0.96) rotate(6deg);
+  z-index: 26;
+}
+
+.wb-direct-file-card__deck {
+  position: relative;
+  width: 3.05rem;
+  height: 4.2rem;
+  flex: 0 0 auto;
+  transform: translateZ(0);
+}
+
+.wb-direct-file-card__deck-card {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.54rem;
+  background: linear-gradient(145deg, #30333d, #22252d);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+  transition: transform 0.22s ease, background 0.22s ease, border-color 0.22s ease;
+}
+
+.wb-direct-file-card__deck-card--back {
+  display: none;
+}
+
+.wb-direct-file-card__deck-card--mid {
+  display: none;
+}
+
+.wb-direct-file-card__deck-card--front {
+  display: grid;
+  place-items: center;
+  transform: none;
+  color: #aeb4c2;
+}
+
+.wb-direct-file-card:hover .wb-direct-file-card__deck-card--back {
+  transform: translate(-0.28rem, 0.3rem) rotate(-11deg);
+}
+
+.wb-direct-file-card:hover .wb-direct-file-card__deck-card--mid {
+  transform: translate(0.02rem, 0.08rem) rotate(-5deg);
+}
+
+.wb-direct-file-card:hover .wb-direct-file-card__deck-card--front {
+  transform: none;
+}
+
+.wb-direct-file-card__deck-label,
+.wb-direct-file-card__deck-plus {
+  display: inline-grid;
+  place-items: center;
+  max-width: 2.2rem;
+  transform: none;
+  font-size: 0.54rem;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.wb-direct-file-card__deck-plus {
+  color: #b9bfcc;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.wb-direct-file-card--excel .wb-direct-file-card__deck-card--front {
+  border-color: rgba(74, 222, 128, 0.18);
+  background: linear-gradient(145deg, rgba(30, 82, 52, 0.9), rgba(31, 41, 55, 0.96));
+  color: #a7f3d0;
+}
+
+.wb-direct-file-card--pdf .wb-direct-file-card__deck-card--front {
+  border-color: rgba(248, 113, 113, 0.2);
+  background: linear-gradient(145deg, rgba(91, 33, 33, 0.92), rgba(31, 41, 55, 0.96));
+  color: #fecaca;
+}
+
+.wb-direct-file-card--word .wb-direct-file-card__deck-card--front {
+  border-color: rgba(96, 165, 250, 0.22);
+  background: linear-gradient(145deg, rgba(30, 58, 138, 0.84), rgba(31, 41, 55, 0.96));
+  color: #bfdbfe;
+}
+
+.wb-direct-file-card--csv .wb-direct-file-card__deck-card--front,
+.wb-direct-file-card--json .wb-direct-file-card__deck-card--front,
+.wb-direct-file-card--text .wb-direct-file-card__deck-card--front {
+  border-color: rgba(251, 191, 36, 0.2);
+  background: linear-gradient(145deg, rgba(113, 63, 18, 0.88), rgba(31, 41, 55, 0.96));
+  color: #fde68a;
+}
+
+.wb-direct-file-card__body {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.wb-direct-file-card__name {
+  overflow: hidden;
+  color: #f8fafc;
+  font-size: 0.75rem;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-direct-file-card__order {
+  display: inline-flex;
+  margin-right: 0.32rem;
+  color: rgba(165, 180, 252, 0.98);
+  font-weight: 850;
+}
+
+.wb-direct-file-card__meta {
+  overflow: hidden;
+  font-size: 0.66rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-direct-file-card__meta {
+  color: rgba(148, 163, 184, 0.88);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-direct-file-card__state {
+  position: absolute;
+  right: 0.1rem;
+  bottom: 0.1rem;
+  display: grid;
+  place-items: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.76);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.24);
+  font-size: 0.72rem;
+  font-weight: 850;
+  z-index: 3;
+}
+
+.wb-direct-file-card__check {
   color: #5eead4;
 }
 
-.wb-direct-file-chip__warn {
+.wb-direct-file-card__warn {
   color: #fca5a5;
 }
 
-.wb-direct-file-chip__spinner {
-  width: 0.7rem;
-  height: 0.7rem;
+.wb-direct-file-card__spinner {
+  width: 0.8rem;
+  height: 0.8rem;
   border-radius: 999px;
   border: 1.5px solid rgba(165, 180, 252, 0.35);
   border-top-color: rgba(199, 210, 254, 0.95);
-  animation: wb-direct-file-chip-spin 0.85s linear infinite;
+  animation: wb-direct-file-card-spin 0.85s linear infinite;
 }
 
-@keyframes wb-direct-file-chip-spin {
+@keyframes wb-direct-file-card-spin {
   to {
     transform: rotate(360deg);
   }
+}
+
+.wb-direct-file-card-enter-active,
+.wb-direct-file-card-leave-active {
+  transition: opacity 0.24s ease, transform 0.34s cubic-bezier(0.18, 1.05, 0.28, 1);
+}
+
+.wb-direct-file-card-enter-from,
+.wb-direct-file-card-leave-to {
+  opacity: 0;
+  transform: translateY(-1.8rem) rotate(-14deg) scale(0.9);
+}
+
+.wb-direct-file-card-move {
+  transition: transform 0.28s cubic-bezier(0.18, 1.05, 0.28, 1);
 }
 
 .wb-direct-attach-hint {
@@ -4614,43 +5461,37 @@ function onComposerKeydown(e) {
   text-align: left;
 }
 
-.wb-direct-file-chip__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 12rem;
-}
-
-.wb-direct-file-chip__meta {
-  flex-shrink: 0;
-  color: rgba(148, 163, 184, 0.85);
-  font-variant-numeric: tabular-nums;
-}
-
-.wb-direct-file-chip__remove {
+.wb-direct-file-card__remove {
+  position: absolute;
+  right: -0.18rem;
+  top: -0.18rem;
   display: grid;
   place-items: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  margin: -0.1rem -0.15rem -0.1rem 0;
+  width: 1.18rem;
+  height: 1.18rem;
   padding: 0;
   border: none;
   border-radius: 999px;
-  background: transparent;
-  color: rgba(248, 250, 252, 0.55);
+  background: rgba(31, 41, 55, 0.92);
+  color: rgba(248, 250, 252, 0.58);
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;
+  z-index: 4;
 }
 
-.wb-direct-file-chip__remove:hover:not(:disabled) {
+.wb-direct-file-card__remove:hover:not(:disabled) {
   color: #fecaca;
-  background: rgba(248, 113, 113, 0.12);
+  background: rgba(248, 113, 113, 0.14);
 }
 
-.wb-direct-file-chip__remove:disabled {
+.wb-direct-file-card__remove:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.wb-composer-file-stack {
+  margin: 0.45rem 0 0.2rem;
 }
 
 .wb-direct-input {
@@ -5179,6 +6020,7 @@ function onComposerKeydown(e) {
   overflow: auto;
   max-height: min(32vh, 16rem);
   box-shadow: 0 12px 28px -16px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
 }
 
 .wb-plan-diagram-fallback {
@@ -5191,13 +6033,16 @@ function onComposerKeydown(e) {
 
 .wb-plan-diagram-host {
   min-height: 3rem;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.25rem;
 }
 
 .wb-plan-diagram-host :deep(svg) {
-  max-width: 100%;
+  max-width: none;
+  min-width: min(34rem, 100%);
   height: auto;
 }
 
@@ -5470,6 +6315,49 @@ function onComposerKeydown(e) {
   cursor: not-allowed;
 }
 
+.wb-plan-summary-card {
+  margin: 0 0 0.85rem;
+  padding: 0.9rem 1rem;
+  border-radius: 0.9rem;
+  border: 1px solid rgba(129, 140, 248, 0.2);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(129, 140, 248, 0.16), transparent 16rem),
+    rgba(15, 23, 42, 0.46);
+  box-shadow: 0 16px 34px -24px rgba(0, 0, 0, 0.58);
+}
+
+.wb-plan-summary-kicker {
+  margin: 0 0 0.4rem;
+  color: rgba(165, 180, 252, 0.9);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.wb-plan-summary-title {
+  margin: 0 0 0.45rem;
+  color: #f8fafc;
+  font-size: clamp(1rem, 0.94rem + 0.22vw, 1.18rem);
+  line-height: 1.35;
+}
+
+.wb-plan-summary-body,
+.wb-plan-summary-source {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.84);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.wb-plan-summary-source {
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(148, 163, 184, 0.78);
+  font-size: 0.78rem;
+}
+
 .wb-plan-quick-send {
   width: 100%;
   margin-top: 0.15rem;
@@ -5598,6 +6486,35 @@ function onComposerKeydown(e) {
   color: rgba(224, 231, 255, 0.95);
 }
 
+.wb-plan-checklist-flow {
+  margin: 0 0 0.85rem;
+  padding: 0.5rem;
+  border: 1px solid rgba(129, 140, 248, 0.18);
+  border-radius: 0.75rem;
+  background: rgba(15, 23, 42, 0.42);
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.wb-plan-checklist-flow :deep(svg) {
+  max-width: none;
+  min-width: min(38rem, 100%);
+  height: auto;
+}
+
+.wb-plan-checklist-details {
+  margin: 0 0 0.85rem;
+  color: rgba(203, 213, 225, 0.9);
+}
+
+.wb-plan-checklist-details > summary {
+  cursor: pointer;
+  width: fit-content;
+  margin-bottom: 0.45rem;
+  color: rgba(165, 180, 252, 0.95);
+  font-size: 0.82rem;
+}
+
 .wb-plan-checklist-ol {
   margin: 0 0 0.85rem;
   padding-left: 1.25rem;
@@ -5699,19 +6616,62 @@ function onComposerKeydown(e) {
 
 .wb-orch {
   width: 100%;
-  border-radius: 1.125rem;
+  border-radius: 0.95rem;
   border: 1px solid rgba(52, 211, 153, 0.28);
-  background: rgba(16, 185, 129, 0.08);
-  padding: 1rem 1.15rem 1.05rem;
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.1), rgba(15, 23, 42, 0.22));
+  padding: 0.85rem 1rem 0.9rem;
+}
+
+.wb-orch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .wb-orch-title {
-  margin: 0 0 0.65rem;
+  margin: 0;
   font-size: 0.82rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: rgba(167, 243, 208, 0.85);
+}
+
+.wb-orch-percent {
+  color: rgba(167, 243, 208, 0.78);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-orch-progress {
+  position: relative;
+  height: 0.42rem;
+  margin-bottom: 0.75rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wb-orch-progress__bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #34d399, #a7f3d0);
+  transition: width 0.35s ease;
+}
+
+.wb-orch-script-hint {
+  margin: 0 0 0.65rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.55rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.88);
+  background: rgba(2, 6, 23, 0.35);
+  border: 1px solid rgba(94, 234, 212, 0.22);
 }
 
 .wb-steps {
@@ -5798,12 +6758,62 @@ function onComposerKeydown(e) {
   color: rgba(253, 224, 71, 0.88);
 }
 
+.wb-script-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.wb-script-result__title {
+  margin: 0 0.35rem 0 0;
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 0.82rem;
+}
+
+.wb-script-download {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.32rem 0.7rem;
+  border-radius: 999px;
+  color: #ccfbf1;
+  background: rgba(20, 184, 166, 0.18);
+  text-decoration: none;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.wb-script-log {
+  margin-top: 0.55rem;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.78rem;
+}
+
+.wb-script-log summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+.wb-script-log pre {
+  max-height: 9rem;
+  overflow: auto;
+  margin: 0.45rem 0 0;
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.65rem;
+  background: rgba(0, 0, 0, 0.28);
+  white-space: pre-wrap;
+}
+
 .wb-handoff {
-  border-radius: 1.125rem;
-  border: 1px solid rgba(129, 140, 248, 0.28);
-  background: rgba(99, 102, 241, 0.1);
-  padding: 1rem 1.15rem 1.1rem;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+  border-radius: 0;
+  border: 0;
+  border-left: 2px solid rgba(129, 140, 248, 0.5);
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.12), rgba(15, 23, 42, 0.08));
+  padding: 0.85rem 0 0.9rem 1rem;
+  box-shadow: none;
 }
 
 .wb-handoff-head {
@@ -5854,6 +6864,7 @@ function onComposerKeydown(e) {
   flex-direction: column;
   gap: 0.35rem;
   margin-bottom: 0.65rem;
+  min-width: 0;
 }
 
 .wb-handoff-label {
@@ -5891,16 +6902,20 @@ function onComposerKeydown(e) {
   font-size: 0.9rem;
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  max-width: 100%;
 }
 
 .wb-handoff-textarea {
   line-height: 1.5;
   resize: vertical;
   min-height: 4.5rem;
+  max-height: 7rem;
+  overflow: auto;
 }
 
 .wb-handoff-textarea--sm {
   min-height: 3.25rem;
+  max-height: 5.5rem;
 }
 
 .wb-handoff-input::placeholder,
