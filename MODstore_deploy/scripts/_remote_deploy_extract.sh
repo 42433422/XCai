@@ -21,7 +21,23 @@ export PATH="$JAVA_HOME/bin:$PATH"
 mvn -B -q -DskipTests package
 systemctl restart modstore
 systemctl restart modstore-payment
-sleep 2
+API_PORTS="${MODSTORE_API_HEALTH_PORTS:-9999 8765}"
+API_CODE=000
+for _try in $(seq 1 45); do
+  for port in $API_PORTS; do
+    c=$(curl -sS -o /dev/null -m 3 -w "%{http_code}" "http://127.0.0.1:${port}/api/health" 2>/dev/null || true)
+    c=${c:-000}
+    if [ "$c" = "200" ]; then API_CODE=200; break 2; fi
+  done
+  sleep 2
+done
+PAY_CODE=000
+for _try in $(seq 1 45); do
+  pc=$(curl -sS -o /dev/null -m 3 -w "%{http_code}" "http://127.0.0.1:8080/actuator/health" 2>/dev/null || true)
+  pc=${pc:-000}
+  PAY_CODE=$pc
+  if [ "$PAY_CODE" = "200" ]; then break; fi
+  sleep 2
+done
 systemctl is-active modstore modstore-payment
-curl -sS -o /dev/null -w "api_http=%{http_code}\n" http://127.0.0.1:9999/api/health || true
-curl -sS -o /dev/null -w "payment_http=%{http_code}\n" http://127.0.0.1:8080/actuator/health || true
+printf "api=%s pay=%s\n" "$API_CODE" "$PAY_CODE"

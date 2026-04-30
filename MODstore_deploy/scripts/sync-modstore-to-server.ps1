@@ -10,6 +10,7 @@
   服务器上**仓库根**（即 MODstore_deploy 的**父目录**），必须与 modstore / modstore-payment 的 systemd 中 JAR/WorkingDirectory 所在树为**同一套目录**（否则 mvn 改了一处、java 仍跑另一处旧 JAR，表现为「支付 Java 不可用」）。
   未设置时默认 /root/modstore-git（全 ASCII，避免 PS5.1/SSH 对中文路径解析不一致）。在服务器上需保证该路径指向真实代码树：执行一次 scripts/ensure_modstore_symlink.sh 或手建 ln -s 到实际目录。
   或设置环境变量 DEPLOY_REMOTE_BASE 为**完整部署根路径**（含中文时务必与磁盘上实际目录名完全一致，可用 UTF-8 无 BOM 文本手算 Base64 写入脚本测试解码）。
+  服务器上若 FastAPI 非 9999：在 systemd 或 profile 中 export MODSTORE_API_HEALTH_PORTS="8765"（空格分隔多端口探测顺序）。
 
 .EXAMPLE
   .\scripts\sync-modstore-to-server.ps1

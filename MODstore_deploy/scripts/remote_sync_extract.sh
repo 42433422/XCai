@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run on server: extract modstore_deploy_sync.tgz, keep .env, pip, npm, mvn, restart
 # Usage: export REMOTE_BASE=/root/modstore-git; bash remote_sync_extract.sh
+# 可选：export MODSTORE_API_HEALTH_PORTS="9999 8765" 若 FastAPI 监听非默认端口
 set -e
 # 与 sync-modstore-to-server.ps1 默认一致；须与 modstore、modstore-payment 的 -jar 为同一工作树
 BASE="${REMOTE_BASE:-/root/modstore-git}"
@@ -84,11 +85,8 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl is-active modstore 2>/dev/null || true
   systemctl is-active modstore-payment 2>/dev/null || true
 fi
-# Modstore API 端口以服务器 systemd 为准（常 9999，勿与 constants 默认 8765 混淆）
-API_CODE=$(curl -sS -o /dev/null -m 5 -w "%{http_code}" "http://127.0.0.1:9999/api/health" 2>/dev/null || true)
-API_CODE=${API_CODE:-000}
-# Spring Boot can take 30-90s to bind :8080 after systemctl restart; single curl races and false-fails
-echo "[ok] wait payment :8080/actuator/health (up to ~90s)..."
+# Spring Boot can take 30-90s to bind :8080 after systemctl restart
+echo "[ok] wait payment :8080/actuator/health (up to ~120s)..."
 PAY_CODE=000
 for _try in $(seq 1 60); do
   pc=$(curl -sS -o /dev/null -m 3 -w "%{http_code}" "http://127.0.0.1:8080/actuator/health" 2>/dev/null || true)
@@ -100,7 +98,26 @@ for _try in $(seq 1 60); do
   fi
   sleep 2
 done
-printf "api=%s pay=%s\n" "$API_CODE" "$PAY_CODE"
+# FastAPI：单机常见 9999（systemd）或 8765（文档/compose）；重启后需轮询，勿单次 curl
+# 可 export MODSTORE_API_HEALTH_PORTS="9999 8765 8000" 覆盖探测顺序
+API_PORTS="${MODSTORE_API_HEALTH_PORTS:-9999 8765}"
+API_CODE=000
+API_READY_PORT=""
+echo "[ok] wait modstore /api/health on ports: $API_PORTS (up to ~120s)..."
+for _try in $(seq 1 60); do
+  for port in $API_PORTS; do
+    c=$(curl -sS -o /dev/null -m 3 -w "%{http_code}" "http://127.0.0.1:${port}/api/health" 2>/dev/null || true)
+    c=${c:-000}
+    if [ "$c" = "200" ]; then
+      API_CODE=200
+      API_READY_PORT=$port
+      echo "[ok] modstore API ready on :${port} (try ${_try})"
+      break 2
+    fi
+  done
+  sleep 2
+done
+printf "api=%s port=%s pay=%s\n" "$API_CODE" "${API_READY_PORT:-none}" "$PAY_CODE"
 if [ "$PAY_CODE" != "200" ]; then
   echo "[err] payment service not healthy on 127.0.0.1:8080 (need 200; check modstore-payment / DB / Redis / Rabbit)" >&2
   if command -v systemctl >/dev/null 2>&1; then
@@ -111,6 +128,19 @@ if [ "$PAY_CODE" != "200" ]; then
   if command -v ss >/dev/null 2>&1; then
     echo "--- listen :8080 ---"
     ss -lntp 2>/dev/null | grep -E ':8080\b' || echo "(no listener on 8080)"
+  fi
+  exit 1
+fi
+if [ "$API_CODE" != "200" ]; then
+  echo "[err] modstore /api/health not 200 on any of: $API_PORTS (need 200; check uvicorn 端口与 systemd)" >&2
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl status modstore --no-pager -l 2>&1 | head -n 40 || true
+    echo "--- journal modstore (last 80 lines) ---"
+    journalctl -u modstore -n 80 --no-pager 2>&1 || true
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    echo "--- listen :9999 :8765 :8000 ---"
+    ss -lntp 2>/dev/null | grep -E ':(9999|8765|8000)\b' || echo "(no listener on common API ports)"
   fi
   exit 1
 fi
