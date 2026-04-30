@@ -144,4 +144,5 @@ if [ "$API_CODE" != "200" ]; then
   fi
   exit 1
 fi
+echo "[hint] 请确认 systemctl 中 modstore 的 WorkingDirectory/ExecStart 使用本目录: $DP（若仍指向 /root/releases/… 则运行的是旧树，本脚本已不会更新该路径）"
 echo "[ok] sync build done"
