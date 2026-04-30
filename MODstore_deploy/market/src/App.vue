@@ -2,7 +2,7 @@
   <div class="app-shell" :class="{ 'app-shell--wb-home': isWorkbenchHome }">
     <nav v-if="!isHome && !isEmployeeWorkbench" class="navbar">
       <div class="nav-inner">
-        <a href="/" class="nav-brand" @click="switchMode('client')">{{ t('nav.brand') }}</a>
+        <a href="https://xiu-ci.com/about.html" class="nav-brand" @click="switchMode('client')">{{ t('nav.brand') }}</a>
         <div class="nav-links">
           <div class="nav-section">
             <template v-if="isAdmin">
@@ -13,31 +13,42 @@
 
           <div class="nav-section">
             <template v-if="currentMode === 'admin' && isAdmin">
-              <a href="/admin/database" class="nav-link nav-admin-link">{{ t('nav.database') }}</a>
+              <router-link :to="{ name: 'admin-database' }" class="nav-link nav-admin-link">{{ t('nav.database') }}</router-link>
               <span class="nav-balance nav-badge">{{ t('nav.adminMode') }}</span>
             </template>
 
             <template v-else>
-              <a href="/workbench" class="nav-link">{{ t('nav.workbench') }}</a>
-              <a href="/plans" class="nav-link">{{ t('nav.plans') }}</a>
-              <a href="/ai-store" class="nav-link nav-gradient">{{ t('nav.aiStore') }}</a>
+              <router-link :to="{ name: 'workbench-home' }" class="nav-link">{{ t('nav.workbench') }}</router-link>
+              <router-link :to="{ name: 'plans' }" class="nav-link">{{ t('nav.plans') }}</router-link>
+              <router-link :to="{ name: 'ai-store' }" class="nav-link nav-gradient">{{ t('nav.aiStore') }}</router-link>
+              <router-link
+                :to="{ name: 'workbench-home', query: { assistant: 'customer-service' } }"
+                class="nav-link nav-customer-ai"
+                title="AI 客服占位，后续接入客服工作台"
+              >AI 客服</router-link>
             </template>
           </div>
 
           <div class="nav-section nav-section--user">
             <template v-if="isLoggedIn">
-              <a
+              <router-link
                 v-if="username"
-                href="/account"
+                :to="{ name: 'account' }"
                 :class="['nav-username', membershipTier ? `nav-username--${membershipTier}` : '']"
                 :title="membershipLabel ? `${membershipLabel} · ${username}` : username"
-              >{{ username }}</a>
-              <a
+              >{{ username }}</router-link>
+              <router-link
                 v-if="levelProfile"
-                href="/account"
+                :to="{ name: 'account' }"
                 class="nav-level-badge"
                 :title="`${levelProfile.title || '账号等级'} · 累计经验 ${levelProfile.experience}`"
-              >Lv.{{ levelProfile.level }}</a>
+              >Lv.{{ levelProfile.level }}</router-link>
+              <router-link
+                :to="{ name: 'wallet-keys' }"
+                class="nav-link"
+                title="在钱包中管理 PAT 与桌面加密下发"
+                >{{ t('nav.apiKeys') }}</router-link
+              >
               <router-link
                 to="/notifications"
                 class="nav-link nav-notifications"
@@ -57,13 +68,13 @@
                   <span v-if="unreadNotifications > 0" class="nav-notif-badge">{{ unreadBadgeText }}</span>
                 </span>
               </router-link>
-              <a href="/wallet" class="nav-link">{{ t('nav.wallet') }}</a>
+              <router-link :to="{ name: 'wallet' }" class="nav-link">{{ t('nav.wallet') }}</router-link>
               <span class="nav-balance" v-if="balance !== null">¥{{ balance.toFixed(2) }}</span>
               <button class="nav-link btn-logout" @click="doLogout">{{ t('nav.logout') }}</button>
             </template>
             <template v-else>
-              <a href="/login" class="nav-link">{{ t('nav.login') }}</a>
-              <a href="/register" class="nav-link btn-primary">{{ t('nav.register') }}</a>
+              <router-link :to="{ name: 'login' }" class="nav-link">{{ t('nav.login') }}</router-link>
+              <router-link :to="{ name: 'register' }" class="nav-link btn-primary">{{ t('nav.register') }}</router-link>
             </template>
           </div>
         </div>
@@ -133,14 +144,6 @@ function checkHome() {
   isEmployeeWorkbench.value = path.startsWith('/workbench/employee')
 }
 
-watch(currentMode, (mode) => {
-  if (mode === 'admin') {
-    router.push('/admin/database')
-  } else {
-    router.push('/')
-  }
-})
-
 watch(
   isLoggedIn,
   (v) => {
@@ -155,6 +158,11 @@ watch(
 
 function switchMode(mode) {
   currentMode.value = mode
+  if (mode === 'admin') {
+    void router.push({ name: 'admin-database' })
+  } else {
+    void router.push({ name: 'workbench-home' })
+  }
 }
 
 async function refreshGlobalState() {
@@ -172,7 +180,7 @@ async function doLogout() {
   authStore.logout()
   walletStore.clear()
   notificationStore.clear()
-  await router.push('/')
+  await router.push({ name: 'login' })
 }
 </script>
 
@@ -438,6 +446,18 @@ a { text-decoration: none; color: inherit; }
 }
 .nav-link.nav-gradient:hover {
   opacity: 0.92;
+}
+.nav-customer-ai {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #c4b5fd;
+  background: transparent;
+  border: 0;
+}
+.nav-customer-ai:hover,
+.nav-customer-ai.router-link-active {
+  color: #ddd6fe;
+  background: transparent;
 }
 .btn-primary { background: #ffffff; color: #0a0a0a !important; border: none; }
 .btn-primary:hover { opacity: 0.9; }

@@ -66,6 +66,7 @@ Refresh token 由 `/api/auth/login` 返回，刷新由前端 SDK 自动处理；
   - `employee:execute` —— 调用员工
   - `catalog:read` —— 浏览市场/模板
   - `webhook:manage` —— 管理订阅
+- `mod:sync` / `llm:use` —— 桌面 Mod 同步与经平台配置/调用模型（与 `catalog:read`、`employee:execute` 等组合；见 `developer_scopes.py` 与 [08 桌面密钥包](./08-key-export-desktop.md)）
 - 留空时表示"暂时全部"，后续启用强制后会被映射为"全开"。**新接入推荐显式填写**。
 
 ## 四、安全建议
@@ -74,3 +75,7 @@ Refresh token 由 `/api/auth/login` 返回，刷新由前端 SDK 自动处理；
 2. PAT 走 `Authorization: Bearer` 头，不要放 query string（日志容易记下来）；
 3. 给每个集成单独建一个 PAT，方便单独吊销而不影响其它系统；
 4. 配合 webhook 的 HMAC 共享密钥使用——PAT 解决"谁在调我"，HMAC 解决"谁在回调我"。
+
+## 五、多账号数据隔离（与认证的关系）
+
+JWT / PAT 解析出的 **user id** 是服务端按账号过滤业务数据的依据；钱包、订单、配额、个人知识库归属等与「当前凭证对应用户」绑定。详见 [07 多账号数据隔离](./07-account-data-isolation.md)。

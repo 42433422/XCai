@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../../api'
 
 interface DeveloperToken {
@@ -15,6 +15,7 @@ interface DeveloperToken {
 }
 
 const tokens = ref<DeveloperToken[]>([])
+const activeTokens = computed(() => tokens.value.filter((t) => t.is_active))
 const loading = ref(false)
 const errMsg = ref('')
 
@@ -26,12 +27,101 @@ const justCreated = ref<{ token: string; meta: DeveloperToken } | null>(null)
 const copied = ref(false)
 
 const SCOPE_HINTS = [
+  'mod:sync',
+  'llm:use',
   'workflow:read',
   'workflow:execute',
   'employee:execute',
   'catalog:read',
   'webhook:manage',
 ]
+
+const desktopPubB64 = ref('')
+const exportPassword = ref('')
+const exportSelected = ref<number[]>([])
+const exportBusy = ref(false)
+const exportAuditOpen = ref(false)
+const exportAudit = ref<any[]>([])
+const exportAuditLoading = ref(false)
+
+function onExportCheck(id: number, ev: Event) {
+  const el = ev.target as HTMLInputElement
+  if (el.checked) {
+    if (!exportSelected.value.includes(id)) exportSelected.value = [...exportSelected.value, id]
+  } else {
+    exportSelected.value = exportSelected.value.filter((x) => x !== id)
+  }
+}
+
+function selectAllActiveForExport() {
+  exportSelected.value = activeTokens.value.map((t) => t.id)
+}
+
+async function runExportBundle() {
+  errMsg.value = ''
+  if (!desktopPubB64.value.trim()) {
+    errMsg.value = '请粘贴桌面端公钥（SPKI DER 的 base64）'
+    return
+  }
+  if (!exportPassword.value) {
+    errMsg.value = '请输入当前登录密码以确认导出'
+    return
+  }
+  if (!exportSelected.value.length) {
+    errMsg.value = '请至少勾选一个要下发的 Token'
+    return
+  }
+  if (
+    !confirm(
+      '将使用所选 Token 的同名同权限**轮换签发**新明文，并仅写入加密包；网页上旧前缀将立即失效。确定继续？',
+    )
+  )
+    return
+  exportBusy.value = true
+  try {
+    const resp: any = await api.developerExportKeyBundle({
+      recipient_public_key_spki_b64: desktopPubB64.value.trim(),
+      current_password: exportPassword.value,
+      token_ids: exportSelected.value,
+      rotate_source_tokens: true,
+    })
+    const b64 = resp?.cipher_b64 as string
+    if (!b64) throw new Error('响应缺少 cipher_b64')
+    const bin = atob(b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const blob = new Blob([bytes], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `modstore-keybundle-${Date.now()}.msk1`
+    a.click()
+    URL.revokeObjectURL(url)
+    exportPassword.value = ''
+    await refresh()
+  } catch (e: any) {
+    errMsg.value = e?.detail || e?.message || '导出失败'
+  } finally {
+    exportBusy.value = false
+  }
+}
+
+async function loadExportAudit() {
+  exportAuditLoading.value = true
+  try {
+    const r: any = await api.developerListKeyExportAudit(30)
+    exportAudit.value = Array.isArray(r?.events) ? r.events : []
+  } catch {
+    exportAudit.value = []
+  } finally {
+    exportAuditLoading.value = false
+  }
+}
+
+async function toggleAudit() {
+  exportAuditOpen.value = !exportAuditOpen.value
+  if (exportAuditOpen.value && !exportAudit.value.length) await loadExportAudit()
+}
 
 async function refresh() {
   loading.value = true
@@ -149,7 +239,8 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
       <div>
         <h2 class="dt__title">Personal Access Token</h2>
         <p class="dt__hint">
-          用 <code>Authorization: Bearer pat_xxx</code> 调用 MODstore REST API。明文仅在创建时显示一次。
+          用 <code>Authorization: Bearer pat_xxx</code> 调用 MODstore REST API。明文仅在创建时显示一次。可将多条 Token
+          <strong>加密下发到桌面</strong>，避免逐条复制（见下方「传到桌面」）。
         </p>
       </div>
       <button class="dt__btn dt__btn--primary" type="button" @click="openCreate">
@@ -203,6 +294,71 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
         </tr>
       </tbody>
     </table>
+
+    <section class="dt-desk">
+      <h3 class="dt-desk__title">传到桌面（加密包）</h3>
+      <p class="dt-desk__hint">
+        桌面软件生成 <strong>P-256</strong> 密钥对，将公钥以 <strong>DER SPKI 再 base64</strong> 粘贴到下方；在网页输入<strong>当前登录密码</strong>确认后，将所选
+        Token <strong>轮换</strong>并写入仅桌面私钥可解的 <code>.msk1</code> 包。详见开发者手册
+        <a href="/dev-docs/developer/08-key-export-desktop.md" target="_blank" rel="noreferrer">08-key-export-desktop</a>。
+      </p>
+      <label class="dt-field">
+        <span>桌面端公钥（base64 DER SPKI）</span>
+        <textarea v-model="desktopPubB64" class="dt-desk__ta" rows="3" placeholder="MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE..." />
+      </label>
+      <label class="dt-field">
+        <span>当前登录密码（二次确认）</span>
+        <input v-model="exportPassword" type="password" autocomplete="current-password" />
+      </label>
+      <div v-if="activeTokens.length" class="dt-desk__pick">
+        <div class="dt-desk__pick-head">
+          <span>要下发的 Token（多选）</span>
+          <button type="button" class="dt__btn" @click="selectAllActiveForExport">全选可用</button>
+        </div>
+        <label v-for="t in activeTokens" :key="'ex-' + t.id" class="dt-desk__cb">
+          <input type="checkbox" :checked="exportSelected.includes(t.id)" @change="onExportCheck(t.id, $event)" />
+          <span>{{ t.name }} <code>{{ t.prefix }}…</code></span>
+        </label>
+      </div>
+      <p v-else class="dt__placeholder">没有可用 Token，请先创建。</p>
+      <div class="dt-desk__actions">
+        <button
+          class="dt__btn dt__btn--primary"
+          type="button"
+          :disabled="exportBusy || !activeTokens.length"
+          @click="runExportBundle"
+        >
+          {{ exportBusy ? '生成中…' : '生成并下载 .msk1 加密包' }}
+        </button>
+        <button type="button" class="dt__btn" @click="toggleAudit">
+          {{ exportAuditOpen ? '收起' : '查看' }}导出审计
+        </button>
+      </div>
+      <div v-if="exportAuditOpen" class="dt-desk__audit">
+        <p v-if="exportAuditLoading">加载审计…</p>
+        <table v-else-if="exportAudit.length" class="dt__table dt__table--compact">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>动作</th>
+              <th>成功</th>
+              <th>详情</th>
+              <th>IP</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="ev in exportAudit" :key="ev.id">
+              <td>{{ formatTime(ev.created_at) }}</td>
+              <td>{{ ev.action }}</td>
+              <td>{{ ev.success ? '是' : '否' }}</td>
+              <td>{{ ev.detail }}</td>
+              <td>{{ ev.client_ip || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="dt__placeholder">暂无记录</p>
+      </div>
+    </section>
 
     <transition name="dt-fade">
       <div v-if="showDialog" class="dt-modal" @click.self="closeCreate">
@@ -565,6 +721,68 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
   white-space: pre-wrap;
   word-break: break-all;
   color: #0f172a;
+}
+
+.dt-desk {
+  margin-top: 28px;
+  padding: 18px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.dt-desk__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.dt-desk__hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.dt-desk__ta {
+  width: 100%;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+}
+
+.dt-desk__pick {
+  margin: 12px 0;
+}
+
+.dt-desk__pick-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dt-desk__cb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin: 4px 0;
+}
+
+.dt-desk__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.dt-desk__audit {
+  margin-top: 14px;
+}
+
+.dt__table--compact {
+  font-size: 12px;
 }
 
 .dt-fade-enter-active,

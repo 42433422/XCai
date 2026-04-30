@@ -3,6 +3,7 @@
     <nav class="wallet-tabs" aria-label="钱包分区">
       <router-link :to="{ name: 'wallet' }" class="wallet-tab">资金与记录</router-link>
       <router-link :to="{ name: 'wallet-purchased' }" class="wallet-tab">已购资产</router-link>
+      <router-link :to="{ name: 'wallet-keys' }" class="wallet-tab">API 密钥</router-link>
     </nav>
     <router-view />
   </div>

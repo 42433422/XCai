@@ -12,6 +12,7 @@ export default {
     orders: 'Orders',
     refunds: 'Refunds',
     wallet: 'Wallet',
+    apiKeys: 'API Keys',
     logout: 'Log out',
     login: 'Log in',
     register: 'Sign up',

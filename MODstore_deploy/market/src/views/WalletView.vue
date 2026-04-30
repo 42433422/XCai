@@ -31,6 +31,8 @@
         </span>
       </div>
       <p class="plan-extra-links">
+        <router-link :to="{ name: 'wallet-keys' }" class="inline-link">API 密钥</router-link>
+        <span class="plan-extra-sep">·</span>
         <router-link to="/analytics" class="inline-link">使用统计</router-link>
         <span class="plan-extra-sep">·</span>
         <router-link to="/refunds" class="inline-link">退款申请</router-link>
@@ -427,24 +429,6 @@
             </div>
           </details>
         </details>
-
-        <div class="llm-try">
-          <h4 class="llm-try-title">试聊（经服务端代理，不暴露密钥）</h4>
-          <textarea
-            v-model="tryChatInput"
-            class="input llm-textarea"
-            rows="3"
-            placeholder="输入一句测试…"
-            maxlength="2000"
-          />
-          <p v-if="tryChatTrialBlocked && selectedModel" class="llm-try-hint">
-            当前模型类别不支持试聊（服务端代理仅支持语言 / 多模态聊天接口）。
-          </p>
-          <button type="button" class="btn btn-primary-solid llm-try-send" :disabled="trySendDisabled" @click="sendTryChat">
-            {{ tryChatBusy ? '请求中…' : '发送' }}
-          </button>
-          <pre v-if="tryChatReply" class="llm-try-reply">{{ tryChatReply }}</pre>
-        </div>
       </template>
     </div>
   </div>
@@ -515,9 +499,6 @@ const byokBaseUrl = reactive({})
 const byokSaving = ref('')
 const byokBulkPaste = ref('')
 const byokImportBusy = ref(false)
-const tryChatInput = ref('')
-const tryChatReply = ref('')
-const tryChatBusy = ref(false)
 
 let _prefTimer = null
 let _catalogInterval = null
@@ -546,25 +527,6 @@ function modelsForCategory(cat) {
   }
   return []
 }
-
-const selectedModelCategory = computed(() => {
-  const block = currentProviderBlock.value
-  const detailed = block?.models_detailed
-  if (detailed && detailed.length) {
-    const row = detailed.find((r) => r.id === selectedModel.value)
-    return row?.category || 'llm'
-  }
-  return 'llm'
-})
-
-const tryChatTrialBlocked = computed(() => {
-  const c = selectedModelCategory.value
-  return c !== 'llm' && c !== 'vlm'
-})
-
-const trySendDisabled = computed(
-  () => tryChatBusy.value || !selectedModel.value || tryChatTrialBlocked.value,
-)
 
 const byokConfiguredCount = computed(() => llmStatusList.value.filter((s) => s.has_user_override).length)
 
@@ -856,31 +818,6 @@ async function clearByok(provider) {
     llmErr.value = e.message || String(e)
   } finally {
     byokSaving.value = ''
-  }
-}
-
-async function sendTryChat() {
-  const text = tryChatInput.value.trim()
-  if (!text || !selectedModel.value) {
-    llmErr.value = '请选择模型并输入内容'
-    return
-  }
-  if (tryChatTrialBlocked.value) {
-    llmErr.value = '试聊仅支持「语言大模型」或「视觉 / 多模态」类模型'
-    return
-  }
-  tryChatBusy.value = true
-  tryChatReply.value = ''
-  llmErr.value = ''
-  try {
-    const res = await api.llmChat(selectedProvider.value, selectedModel.value, [
-      { role: 'user', content: text },
-    ])
-    tryChatReply.value = res.content || '(空回复)'
-  } catch (e) {
-    llmErr.value = e.message || String(e)
-  } finally {
-    tryChatBusy.value = false
   }
 }
 
@@ -1973,10 +1910,4 @@ function formatDate(iso) {
 .llm-byok-fields { margin-bottom: 8px; }
 .llm-byok-block .input { width: 100%; margin-bottom: 8px; box-sizing: border-box; }
 .llm-byok-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-.llm-try { margin-top: 18px; padding-top: 16px; border-top: 0.5px solid rgba(255,255,255,0.1); }
-.llm-try-title { font-size: 14px; margin: 0 0 10px; color: rgba(255,255,255,0.85); }
-.llm-textarea { width: 100%; box-sizing: border-box; margin-bottom: 10px; resize: vertical; min-height: 72px; }
-.llm-try-send { margin-bottom: 10px; }
-.llm-try-hint { font-size: 12px; color: rgba(251, 191, 36, 0.9); margin: 0 0 8px; line-height: 1.45; }
-.llm-try-reply { margin: 0; padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.45); font-size: 13px; line-height: 1.5; color: rgba(230,240,255,0.95); white-space: pre-wrap; word-break: break-word; font-family: inherit; }
 </style>

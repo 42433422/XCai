@@ -94,6 +94,7 @@
     <nav class="quick-nav" aria-label="快捷入口">
       <RouterLink to="/wallet" class="quick-link">钱包</RouterLink>
       <RouterLink :to="{ name: 'wallet-purchased' }" class="quick-link">已购</RouterLink>
+      <RouterLink :to="{ name: 'wallet-keys' }" class="quick-link">API 密钥</RouterLink>
       <RouterLink to="/notifications" class="quick-link">通知中心</RouterLink>
       <RouterLink to="/plans" class="quick-link">会员购买</RouterLink>
     </nav>

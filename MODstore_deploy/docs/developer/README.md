@@ -13,6 +13,8 @@
 | [04a 事件参考](./04a-event-reference.md) | 所有可订阅事件清单（自动生成） |
 | [05 SDK 示例](./05-sdk-examples.md) | Python / TypeScript / curl 范例 |
 | [06 错误码与限流](./06-errors-and-limits.md) | 常见错误、重试策略、生产建议 |
+| [07 多账号数据隔离](./07-account-data-isolation.md) | `user_id` / owner 模型、接口绑定当前用户、与公开目录的区别 |
+| [08 桌面密钥包导出](./08-key-export-desktop.md) | Web→桌面 `.msk1` 加密包、ECDH+AES-GCM、审计与 scope 说明 |
 
 ## 在线交互
 

@@ -387,6 +387,24 @@ export const api: any = {
   developerRevokeToken: (tokenId: string | number) =>
     req(`/api/developer/tokens/${tokenId}`, { method: 'DELETE' }),
 
+  developerExportKeyBundle: (payload: {
+    recipient_public_key_spki_b64: string
+    current_password: string
+    token_ids: number[]
+    rotate_source_tokens?: boolean
+  }) =>
+    req('/api/developer/key-export/bundle', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient_public_key_spki_b64: payload.recipient_public_key_spki_b64,
+        current_password: payload.current_password,
+        token_ids: payload.token_ids,
+        rotate_source_tokens: payload.rotate_source_tokens !== false,
+      }),
+    }),
+  developerListKeyExportAudit: (limit = 50) =>
+    req(`/api/developer/key-export/audit?limit=${encodeURIComponent(String(limit))}`),
+
   // 开发者门户：Webhook 订阅
   developerWebhookEventCatalog: () => req('/api/developer/webhooks/event-catalog'),
   developerListWebhooks: () => req('/api/developer/webhooks'),

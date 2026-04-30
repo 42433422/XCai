@@ -57,6 +57,11 @@ from modman.store import (
 from modstore_server.authoring import slim_openapi_paths
 from modstore_server.constants import DEFAULT_API_PORT, DEFAULT_XCAGI_BACKEND_URL
 from modstore_server.file_safe import read_text_file, resolve_under_mod, write_text_file
+from modstore_server.workflow_employee_scaffold import (
+    WorkflowEmployeeScaffoldDTO,
+    run_workflow_employee_scaffold,
+    scaffold_auto_merge_default,
+)
 from modstore_server.auth_service import decode_access_token, get_user_by_id
 from modstore_server.models import User, add_user_mod, get_user_mod_ids, user_owns_mod, remove_user_mod
 from fastapi import Depends, Header
@@ -108,6 +113,19 @@ try:
 except Exception:  # 启动期失败必须降级，不能影响进程拉起
     logging.getLogger(__name__).exception(
         "domain event subscribers failed to install"
+    )
+
+
+# 事务 outbox 后台 drain：把 ``enqueue_event`` 写入的 pending 行
+# drain 到 NeuroBus + 业务 webhook，避免支付履约因 webhook 超时被阻塞。
+# 测试可通过 ``MODSTORE_OUTBOX_WORKER_DISABLED=1`` 关闭，避免后台线程影响断言时序。
+try:
+    from modstore_server.eventing.db_outbox import start_default_worker
+
+    start_default_worker()
+except Exception:
+    logging.getLogger(__name__).exception(
+        "outbox dispatcher worker failed to start"
     )
 
 
@@ -517,6 +535,21 @@ def api_mod_authoring_summary(mod_id: str, user: User = Depends(_require_user)):
     }
 
 
+@app.post("/api/mods/{mod_id}/workflow-employees/scaffold", tags=["authoring"])
+def api_mod_workflow_employee_scaffold(
+    mod_id: str, body: WorkflowEmployeeScaffoldDTO, user: User = Depends(_require_user)
+):
+    """追加 workflow_employees 并生成 employee_stubs 占位路由（与 FHD MODstore 对齐）。"""
+    _assert_user_owns_mod(user, mod_id)
+    d = _mod_dir(mod_id)
+    try:
+        return run_workflow_employee_scaffold(
+            d, body, allow_blueprint_merge=scaffold_auto_merge_default()
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @app.put("/api/mods/{mod_id}/manifest", tags=["mods"])
 def api_put_manifest(mod_id: str, body: ManifestPutDTO, user: User = Depends(_require_user)):
     _assert_user_owns_mod(user, mod_id)
@@ -890,6 +923,7 @@ for _m in (
     "modstore_server.health_api",
     "modstore_server.openapi_connector_api",
     "modstore_server.developer_api",
+    "modstore_server.developer_key_export_api",
     "modstore_server.webhook_subscription_api",
     "modstore_server.templates_api",
 ):

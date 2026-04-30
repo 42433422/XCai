@@ -477,6 +477,24 @@ class DeveloperToken(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DeveloperKeyExportEvent(Base):
+    """开发者密钥导出/桌面投递审计（不落密钥明文）。"""
+
+    __tablename__ = "developer_key_export_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    client_ip = Column(String(64), nullable=False, default="")
+    user_agent = Column(String(512), nullable=False, default="")
+    action = Column(String(64), nullable=False, default="")
+    token_ids_json = Column(Text, nullable=False, default="[]")
+    token_count = Column(Integer, nullable=False, default=0)
+    success = Column(Boolean, nullable=False, default=False)
+    detail = Column(String(512), nullable=False, default="")
+    algorithm = Column(String(64), nullable=False, default="")
+
+
 class WorkflowVersion(Base):
     """工作流版本快照：用于发布/回滚。
 

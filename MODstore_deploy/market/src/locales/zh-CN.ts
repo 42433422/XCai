@@ -12,6 +12,7 @@ export default {
     orders: '订单',
     refunds: '退款',
     wallet: '钱包',
+    apiKeys: 'API 密钥',
     logout: '退出',
     login: '登录',
     register: '注册',

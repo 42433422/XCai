@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from modstore_server.api.deps import _get_current_user
 from modstore_server.auth_service import generate_pat
+from modstore_server.developer_scopes import validate_scopes_or_raise
 from modstore_server.infrastructure.db import get_db
 from modstore_server.models import DeveloperToken, User
 
@@ -64,6 +65,10 @@ async def create_developer_token(
     db: Session = Depends(get_db),
     user: User = Depends(_get_current_user),
 ):
+    try:
+        scopes_norm = validate_scopes_or_raise(body.scopes or [])
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     raw, prefix, digest = generate_pat()
     expires_at = (
         datetime.utcnow() + timedelta(days=int(body.expires_days))
@@ -75,7 +80,7 @@ async def create_developer_token(
         name=body.name.strip(),
         token_prefix=prefix,
         token_hash=digest,
-        scopes_json=json.dumps(body.scopes or [], ensure_ascii=False),
+        scopes_json=json.dumps(scopes_norm, ensure_ascii=False),
         expires_at=expires_at,
     )
     db.add(row)
