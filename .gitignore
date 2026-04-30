@@ -38,4 +38,3 @@ MODstore_deploy/keys_staging/
 *.log
 *.db
 *.sqlite3
-MODstore_deploy/modstore_server/data/event_outbox.jsonl
