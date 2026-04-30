@@ -1,6 +1,5 @@
 import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
-import react from '@vitejs/plugin-react'
 
 const apiProxyTarget =
   (process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8765').trim() ||
@@ -23,8 +22,11 @@ export default defineConfig(({ command }) => {
         : '/'
 
   return {
-    plugins: [vue(), react()],
+    plugins: [vue()],
     base,
+    build: {
+      emptyOutDir: false,
+    },
     server: {
       port: 5176,
       proxy: {

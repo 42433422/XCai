@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "title": "XCAGI Mod 扩展面（MODstore 内置）",
-  "summary": "宿主（XCAGI Flask）在启动时加载 mods 目录下各包；本文件描述 manifest 契约、常见挂点与调试方式。可配合「制作向导」页一键合并宿主 openapi.json。",
+  "summary": "宿主（XCAGI / FHD，FastAPI）在启动时扫描并加载 mods 目录下各包；本文件描述 manifest 契约、后端入口约定与调试方式。可配合「制作向导」页一键合并宿主 openapi.json。",
   "ui_intro_zh": {
-    "page": "本页是「制作向导」：上半部分为内置中文说明，帮助你对照 manifest 各字段、后端蓝图与运行方式。点击「合并宿主 /api 路由」后，会从「路径与同步」中配置的后端地址请求 openapi.json，并只展示以 /api 开头的路径摘要，便于扩展开发与排错。",
+    "page": "本页是「制作向导」：上半部分为内置中文说明，帮助你对照 manifest 各字段、后端路由入口与运行方式。点击「合并宿主 /api 路由」后，会从「路径与同步」中配置的后端地址请求 openapi.json，并只展示以 /api 开头的路径摘要，便于扩展开发与排错。",
     "manifest_section": "下列为 manifest 常见字段说明。「必填」表示校验强烈建议填写；未填可能出现警告或影响部署。",
-    "blueprint_section": "后端扩展通常放在 backend/blueprints.py（或根目录 blueprints.py），并实现 register_blueprints(app, mod_id)；与 manifest.backend.entry 对应。",
+    "blueprint_section": "后端入口文件习惯命名为 backend/blueprints.py（或根目录 blueprints.py），与 manifest.backend.entry 对应；模块内应导出 register_fastapi_routes(app, mod_id)，在其中 app.include_router(...) 挂载 FastAPI APIRouter。Flask Blueprint / register_blueprints 已废弃，新 Mod 请勿使用。",
     "openapi_section": "表格为宿主当前登记的接口路径节选；HTTP 方法、参数与鉴权以宿主完整 OpenAPI 为准。",
     "runtime_section": "以下为部署目标、沙箱环境变量与 FHD 壳菜单导出等关键词，供复制到文档或脚本使用。"
   },
@@ -45,7 +45,7 @@
         "kind": "string",
         "required": true,
         "example": "blueprints",
-        "note": "相对 Mod 根：Python 模块名（不含 .py），内含 register_blueprints(app, mod_id)"
+        "note": "相对 Mod 根 backend/ 下的 Python 模块名（不含 .py）；该模块须导出 register_fastapi_routes(app, mod_id)（推荐）"
       },
       {
         "key": "backend.init",
@@ -83,7 +83,7 @@
         "key": "workflow_employees",
         "kind": "array",
         "required": false,
-        "note": "工作流员工定义（结构依宿主）"
+        "note": "工作流员工定义（结构依宿主）；可用 MODstore POST .../workflow-employees/scaffold 生成占位路由"
       },
       {
         "key": "fhd_shell",
@@ -109,25 +109,27 @@
   },
   "backend_blueprint_convention": {
     "file_candidates": ["backend/blueprints.py", "blueprints.py"],
-    "register_signature": "register_blueprints(app, mod_id: str) -> None",
+    "register_signature": "register_fastapi_routes(app, mod_id: str) -> None",
     "url_prefix_example": "/api/mod/{mod_id}",
-    "flask_patterns": [
-      "@bp.route(\"/path\", methods=[\"GET\"])",
-      "Blueprint(mod_id, __name__, url_prefix=f\"/api/mod/{mod_id}\")"
+    "fastapi_patterns": [
+      "router = APIRouter()",
+      "@router.get(\"/path\")",
+      "app.include_router(router, prefix=f\"/api/mod/{mod_id}\")"
     ],
+    "legacy_note": "register_blueprints(app, mod_id) 仅为旧 Mod 兼容保留，新 Mod 禁止依赖。",
     "comms_example": "get_mod_comms().register(mod_id, \"ping\", callable, replace=True)"
   },
   "runtime_and_debug": {
     "deploy_target": "XCAGI/mods/<id>/",
     "sandbox_env": "XCAGI_MODS_ROOT 指向仅含单 Mod 的 mods 根目录后重启后端",
-    "fhd_shell_export": "modman export-fhd-shell → FHD backend/shell/fhd_shell_mods.json"
+    "fhd_shell_export": "modman export-fhd-shell → FHD app/shell/fhd_shell_mods.json"
   },
   "host_discovery": {
     "openapi_url": "/openapi.json",
     "note": "制作向导中「合并宿主路由」将请求 {xcagi_backend_url}/openapi.json 并筛选 /api 前缀路径"
   },
   "reference_mods_in_repo": [
-    { "id": "example-mod", "note": "最小 Flask 蓝图 + comms 注册示例" },
+    { "id": "example-mod", "note": "最小 FastAPI 路由 + comms 示例（若存在于 library）" },
     { "id": "sz-qsm-pro", "note": "更接近业务的完整包（若存在于 library）" }
   ]
 }

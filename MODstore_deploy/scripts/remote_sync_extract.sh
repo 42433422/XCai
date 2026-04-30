@@ -51,7 +51,7 @@ if ! test -f .venv/bin/pip; then
 fi
 if test -f .venv/bin/pip; then
   .venv/bin/pip install -q -U pip
-  .venv/bin/pip install -q -e ".[web]"
+  .venv/bin/pip install -q -e ".[web,knowledge]"
 else
   echo "[warn] no venv" >&2
 fi

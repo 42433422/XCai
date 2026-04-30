@@ -15,57 +15,34 @@
 import { ref, shallowRef } from 'vue'
 import { api } from '../../../../api'
 import { getNodeMeta, type NodeKind } from './useNodeRegistry'
+import type {
+  BackendWorkflowEdge,
+  BackendWorkflowNode,
+  WorkflowFlowEdge,
+  WorkflowFlowNode,
+  WorkflowFlowNodeData,
+} from '../../../../domain/workflow/types'
 
-export interface BackendNode {
-  id: number
-  node_type: string
-  name: string
-  config: Record<string, unknown>
-  position_x: number
-  position_y: number
-}
-
-export interface BackendEdge {
-  id: number
-  source_node_id: number
-  target_node_id: number
-  condition: string
-}
-
-export interface WorkflowFlowNodeData {
-  kind: NodeKind
-  label: string
-  config: Record<string, unknown>
-  /** 后端真实 id；未保存到后端时为 0 */
-  backendId: number
+export type {
+  BackendWorkflowEdge,
+  BackendWorkflowNode,
+  WorkflowFlowEdge,
+  WorkflowFlowNode,
+  WorkflowFlowNodeData,
 }
 
 /**
- * 与 Vue Flow 兼容的 Node/Edge 形状（duck-typed），刻意不继承 vue-flow 自带泛型，
- * 避免 TS2589 "Type instantiation is excessively deep" 在 spread 时爆栈。
+ * 历史代码用 `BackendNode` / `BackendEdge` 命名，保留别名以避免大范围 import 改动。
+ * 新代码请直接使用 domain 类型 `BackendWorkflowNode` / `BackendWorkflowEdge`。
  */
-export interface WorkflowFlowNode {
-  id: string
-  type: string
-  position: { x: number; y: number }
-  data: WorkflowFlowNodeData
-}
-
-export interface WorkflowFlowEdge {
-  id: string
-  source: string
-  target: string
-  sourceHandle?: string | null
-  type?: string
-  label?: string
-  data: { condition: string; backendId: number }
-}
+export type BackendNode = BackendWorkflowNode
+export type BackendEdge = BackendWorkflowEdge
 
 function genTmpId(): string {
   return `tmp_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`
 }
 
-function backendNodeToFlow(n: BackendNode): WorkflowFlowNode {
+function backendNodeToFlow(n: BackendWorkflowNode): WorkflowFlowNode {
   const meta = getNodeMeta(n.node_type)
   return {
     id: String(n.id),
@@ -80,7 +57,7 @@ function backendNodeToFlow(n: BackendNode): WorkflowFlowNode {
   }
 }
 
-function backendEdgeToFlow(e: BackendEdge): WorkflowFlowEdge {
+function backendEdgeToFlow(e: BackendWorkflowEdge): WorkflowFlowEdge {
   const branch = (e.condition || '').trim()
   const sourceHandle =
     branch === 'true' ? 'true' : branch === 'false' ? 'false' : null

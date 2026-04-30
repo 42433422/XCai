@@ -1,14 +1,43 @@
-"""MODstore 支付订单存储（JSON 文件落盘）。"""
+"""MODstore 支付订单存储（JSON 文件落盘）。
+
+注意：当 ``PAYMENT_BACKEND=java`` 时，订单/钱包数据的真实来源是 Java + PostgreSQL。
+本模块在 Java 模式下应当成为只读兜底，任何写入都会通过 ``logger`` 发出
+``PAYMENT_BACKEND=java`` 警告，便于及时发现「双写」造成的数据漂移。
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
-import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 _ORDERS_DIR_VAR = "MODSTORE_PAYMENT_ORDERS_DIR"
+
+logger = logging.getLogger(__name__)
+
+
+def is_local_source_of_truth() -> bool:
+    """``PAYMENT_BACKEND`` 决定本地 JSON 是否仍为真实数据源。
+
+    - ``java``：Java + PostgreSQL 拥有订单/钱包数据，本模块进入只读保护模式。
+    - 其他取值（``python``、空、未识别）：仍把本地 JSON 视为权威来源，保持兼容。
+    """
+
+    backend = (os.environ.get("PAYMENT_BACKEND") or "").strip().lower()
+    return backend != "java"
+
+
+def _warn_local_write_when_java(action: str, out_trade_no: str) -> None:
+    if is_local_source_of_truth():
+        return
+    logger.warning(
+        "PAYMENT_BACKEND=java but %s wrote local payment_orders for %s; Java/PostgreSQL is the authoritative store",
+        action,
+        out_trade_no,
+    )
 
 def _orders_dir() -> Path:
     d = Path(os.environ.get(_ORDERS_DIR_VAR, "") or (Path(__file__).resolve().parent / "payment_orders"))
@@ -63,6 +92,7 @@ def create(
         "pay_type": pay_type,
     }
     p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    _warn_local_write_when_java("create", out_trade_no)
     return {"ok": True, "order": doc}
 
 
@@ -78,6 +108,7 @@ def merge_fields(out_trade_no: str, **kwargs: Any) -> bool:
     p = _path(out_trade_no)
     try:
         p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        _warn_local_write_when_java("merge_fields", out_trade_no)
         return True
     except OSError:
         return False
@@ -116,6 +147,7 @@ def update_status(
     p = _path(out_trade_no)
     try:
         p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        _warn_local_write_when_java("update_status", out_trade_no)
         return True
     except Exception:
         return False
@@ -144,3 +176,46 @@ def list_orders(
     rows.sort(key=lambda d: d.get("created_at", ""), reverse=True)
     total = len(rows)
     return rows[offset : offset + limit], total
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def close_pending_older_than(*, minutes: int = 30) -> int:
+    """把超过 ``minutes`` 分钟仍处于 ``pending`` 的订单标记为 ``closed``。
+
+    在 ``PAYMENT_BACKEND=java`` 模式下短路返回 0，避免和 Java 调度器双写：
+    Java 拥有订单数据，本地 JSON 不应再被改写。
+    """
+
+    if not is_local_source_of_truth():
+        return 0
+
+    cutoff = datetime.now(timezone.utc).timestamp() - max(0, int(minutes)) * 60
+    closed = 0
+    for path in _orders_dir().glob("order_*.json"):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if doc.get("status") != "pending":
+            continue
+        ts = _parse_iso(doc.get("created_at"))
+        if ts is None:
+            continue
+        if ts.timestamp() > cutoff:
+            continue
+        doc["status"] = "closed"
+        doc["updated_at"] = _now_iso()
+        try:
+            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            closed += 1
+        except OSError:
+            continue
+    return closed

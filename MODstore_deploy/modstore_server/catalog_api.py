@@ -145,13 +145,23 @@ async def api_upload_package(
     if not (str(meta.get("id") or "").strip() and str(meta.get("version") or "").strip()):
         raise HTTPException(400, "metadata 须含 id 与 version")
     rec: Dict[str, Any] = dict(meta)
-    v2cfg = extract_or_upgrade_v2_config(rec)
+    artifact = str(rec.get("artifact") or "").strip().lower()
+    has_explicit_v2 = isinstance(rec.get("employee_config_v2"), dict)
+    is_employee_upload = artifact == "employee_pack" or has_explicit_v2
+    v2cfg = extract_or_upgrade_v2_config(rec) if is_employee_upload else {}
     sf = get_session_factory()
-    with sf() as db:
-        errs = validate_v2_config(v2cfg, db=db, user_id=None, require_workflow_heart=True)
-    if errs:
-        raise HTTPException(400, "V2 配置校验失败: " + "; ".join(errs))
-    rec["employee_config_v2"] = v2cfg
+    if is_employee_upload:
+        with sf() as db:
+            errs = validate_v2_config(
+                v2cfg,
+                db=db,
+                user_id=None,
+                require_workflow_heart=True,
+                require_workflow_sandbox=True,
+            )
+        if errs:
+            raise HTTPException(400, "V2 配置校验失败: " + "; ".join(errs))
+        rec["employee_config_v2"] = v2cfg
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".xcmod", ".xcemp", ".zip"}:
         raise HTTPException(400, "file 须为 .xcmod / .xcemp / .zip")
@@ -161,6 +171,8 @@ async def api_upload_package(
     art = str(rec.get("artifact") or "").strip().lower()
     if art in ("mod", "employee_pack"):
         audit_meta["artifact"] = art
+    if is_employee_upload and v2cfg:
+        audit_meta["employee_config_v2"] = v2cfg
     probe = str(rec.get("probe_mod_id") or "").strip()
     if probe:
         audit_meta["probe_mod_id"] = probe

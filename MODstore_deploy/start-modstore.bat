@@ -10,7 +10,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue ^| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
 timeout /t 1 /nobreak >nul
 
-start "MODstore API" cmd /k "cd /d ""%~dp0"" && ""%PY%"" -m pip install -q -e ".[web]" 2>nul && ""%PY%"" -m modstore_server"
+start "MODstore API" cmd /k "cd /d ""%~dp0"" && ""%PY%"" -m pip install -q -e ".[web,knowledge]" 2>nul && ""%PY%"" -m modstore_server"
 
 timeout /t 2 /nobreak >nul
 

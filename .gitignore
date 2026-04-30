@@ -21,10 +21,21 @@ _nginx_extract/
 MODstore_deploy.zip
 MODstore_deploy/market/node_modules/
 MODstore_deploy/market/dist/
-node_modules/
-dist/
+MODstore_deploy/java_payment_service/target/
+*.tar.gz
+*.zip
+MODstore_deploy/market/coverage/
+MODstore_deploy/market/playwright-report/
+MODstore_deploy/market/test-results/
+coverage/
+playwright-report/
+test-results/
+
+# 本地密钥试验目录（勿入库）
+MODstore_deploy/keys_staging/
 
 # 日志和数据库
 *.log
 *.db
 *.sqlite3
+MODstore_deploy/modstore_server/data/event_outbox.jsonl

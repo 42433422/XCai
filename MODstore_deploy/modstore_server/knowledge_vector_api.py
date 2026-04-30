@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 import os
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from modstore_server.api.deps import _get_current_user
@@ -21,7 +21,7 @@ from modstore_server.knowledge_vector_store import (
     status as vector_status,
     upsert_document,
 )
-from modstore_server.models import User
+from modstore_server.models import User, get_session_factory
 
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
@@ -30,6 +30,8 @@ router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 class KnowledgeSearchBody(BaseModel):
     query: str = Field(..., min_length=1, max_length=4000)
     limit: int = Field(6, ge=1, le=20)
+    embedding_provider: str | None = Field(None, max_length=64)
+    embedding_model: str | None = Field(None, max_length=128)
 
 
 def _service_unavailable(e: Exception) -> HTTPException:
@@ -38,7 +40,9 @@ def _service_unavailable(e: Exception) -> HTTPException:
 
 @router.get("/status")
 def api_knowledge_status(user: User = Depends(_get_current_user)):
-    emb = embedding_config_snapshot()
+    sf = get_session_factory()
+    with sf() as session:
+        emb = embedding_config_snapshot(session=session, user_id=int(user.id))
     vec = vector_status()
     return {
         "ok": bool(emb.get("configured") and vec.get("ready")),
@@ -57,13 +61,25 @@ def api_list_documents(user: User = Depends(_get_current_user)):
 
 
 @router.post("/documents")
-async def api_upload_document(file: UploadFile = File(...), user: User = Depends(_get_current_user)):
+async def api_upload_document(
+    file: UploadFile = File(...),
+    embedding_provider: str | None = Form(None),
+    embedding_model: str | None = Form(None),
+    user: User = Depends(_get_current_user),
+):
     filename = (file.filename or "upload.txt").strip()
     raw = await file.read()
     text, chunks, chunk_metas = parse_and_chunk_with_metadata(filename, raw)
     doc_id = make_doc_id(user.id, filename, raw)
     try:
-        embeddings = await embed_texts(chunks)
+        sf = get_session_factory()
+        with sf() as session:
+            embeddings = await embed_texts(
+                chunks,
+                session=session,
+                user_id=int(user.id),
+                provider=embedding_provider,
+            )
         doc = upsert_document(
             user_id=user.id,
             doc_id=doc_id,
@@ -118,7 +134,14 @@ def api_delete_document(doc_id: str, user: User = Depends(_get_current_user)):
 @router.post("/search")
 async def api_search_knowledge(body: KnowledgeSearchBody, user: User = Depends(_get_current_user)):
     try:
-        vecs = await embed_texts([body.query])
+        sf = get_session_factory()
+        with sf() as session:
+            vecs = await embed_texts(
+                [body.query],
+                session=session,
+                user_id=int(user.id),
+                provider=body.embedding_provider,
+            )
         items = search(user.id, vecs[0], body.limit)
     except EmbeddingConfigError as e:
         raise _service_unavailable(e)

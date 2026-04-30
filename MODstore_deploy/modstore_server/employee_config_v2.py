@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from modstore_server.models import Workflow
+from modstore_server.workflow_sandbox_state import validate_workflow_sandbox_ready
 
 
 def _to_str(v: Any) -> str:
@@ -79,6 +80,7 @@ def validate_v2_config(
     db: Optional[Session] = None,
     user_id: Optional[int] = None,
     require_workflow_heart: bool = True,
+    require_workflow_sandbox: bool = False,
 ) -> List[str]:
     c = config if isinstance(config, dict) else {}
     errs: List[str] = []
@@ -98,6 +100,16 @@ def validate_v2_config(
         hit = q.first()
         if not hit:
             errs.append(f"workflow_id={wf_id} 不存在或无权限")
+        elif require_workflow_sandbox:
+            errs.extend(
+                validate_workflow_sandbox_ready(
+                    db,
+                    workflow_id=wf_id,
+                    user_id=user_id,
+                )
+            )
+    elif wf_id > 0 and require_workflow_sandbox:
+        errs.append("无法验证 workflow 沙箱状态：缺少数据库上下文")
     perception = c.get("perception") or {}
     actions = c.get("actions") or {}
     memory = c.get("memory") or {}

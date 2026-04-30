@@ -1,4 +1,15 @@
-"""XC AGI 支付宝支付路由：下单、回调、查询、套餐、诊断。"""
+"""XC AGI 支付宝支付路由：下单、回调、查询、套餐、诊断。
+
+⚠️ 兼容层：当 ``PAYMENT_BACKEND=java`` 时（生产推荐），FastAPI 中间件会将
+``/api/payment/**`` 整段透传到 Java 支付服务（见 ``app._payment_backend_proxy_middleware``），
+本文件中的实现仅作为本地开发或灰度回滚用 fallback。任何对账/履约的真实入口请改写
+``java_payment_service``，并通过 ``payment_contract`` + ``test_payment_contract`` 维护契约。
+
+新增端点应优先：
+1. 在 ``payment_contract.PAYMENT_ENDPOINTS`` 注册；
+2. 在 Java 控制器实现；
+3. 仅在 fallback 必要时在本文件实现。
+"""
 
 from __future__ import annotations
 
@@ -383,7 +394,17 @@ def _checkout_return_url(request: Request, out_trade_no: str) -> str | None:
 
 
 def _fulfill_paid_order(out_trade_no: str) -> None:
-    """支付成功后幂等入账（钱包 / 套餐 / 市场商品）。"""
+    """支付成功后幂等入账（钱包 / 套餐 / 市场商品）。
+
+    ``PAYMENT_BACKEND=java`` 时 Java 拥有履约权（通过事件 + DB 事务），本地仅记录警告
+    并直接返回，避免与 Java 重复扣减/赠送权益。
+    """
+    if not payment_orders.is_local_source_of_truth():
+        logger.warning(
+            "PAYMENT_BACKEND=java; skipping Python _fulfill_paid_order for %s (Java owns fulfillment)",
+            out_trade_no,
+        )
+        return
     order = payment_orders.find(out_trade_no)
     if not order or order.get("status") != "paid":
         return
@@ -561,14 +582,11 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
                     )
             except Exception:
                 logger.exception("订单经验入账失败 (不影响履约): %s", out_trade_no)
-            session.commit()
 
-            # 标记订单为已发放
-            payment_orders.merge_fields(out_trade_no, fulfilled=True)
-            logger.info("订单权益已发放: %s user=%s amount=%s", out_trade_no, user_id, total_amount)
-            # 通知由 ``eventing.subscribers._on_payment_paid`` 订阅 ``payment.paid``
-            # 后处理。本模块只发布领域事件，不再直接调用 notification_service。
-            webhook_dispatcher.publish_event(
+            # 事务内入 outbox：业务写 + 事件入队同一 commit，避免「履约成功但事件丢失」或「事件已发但履约回滚」
+            # 通知由 ``eventing.subscribers._on_payment_paid`` 订阅 ``payment.paid`` 后异步处理。
+            webhook_dispatcher.enqueue_event(
+                session,
                 PAYMENT_PAID,
                 out_trade_no,
                 {
@@ -585,7 +603,8 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
                 },
             )
             if kind == "wallet":
-                webhook_dispatcher.publish_event(
+                webhook_dispatcher.enqueue_event(
+                    session,
                     WALLET_BALANCE_CHANGED,
                     str(user_id),
                     {
@@ -595,6 +614,12 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
                         "transaction_type": txn_type,
                     },
                 )
+            session.commit()
+
+            # commit 成功后再标记订单已发放并发出本地 NeuroBus 事件，
+            # OutboxDispatcherWorker 会负责把 outbox 行 drain 到外部 webhook。
+            payment_orders.merge_fields(out_trade_no, fulfilled=True)
+            logger.info("订单权益已发放: %s user=%s amount=%s", out_trade_no, user_id, total_amount)
         except Exception as e:
             # 回滚事务
             session.rollback()

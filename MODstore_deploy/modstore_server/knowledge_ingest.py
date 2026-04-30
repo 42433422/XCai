@@ -76,16 +76,94 @@ def _parse_docx(raw: bytes) -> str:
 def _parse_xlsx(raw: bytes) -> str:
     try:
         import openpyxl
+        from openpyxl.utils import get_column_letter
     except ImportError as e:
         raise HTTPException(503, "服务器未安装 openpyxl，暂不能解析 XLSX") from e
-    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    max_rows = max(10, min(int(os.environ.get("MODSTORE_XLSX_PREVIEW_ROWS", "80")), 300))
+    max_cols = max(8, min(int(os.environ.get("MODSTORE_XLSX_PREVIEW_COLS", "40")), 120))
+    max_formulas = max(0, min(int(os.environ.get("MODSTORE_XLSX_MAX_FORMULAS", "80")), 500))
+    max_scan_cells = max(1000, min(int(os.environ.get("MODSTORE_XLSX_SCAN_CELLS", "30000")), 200000))
+
+    def fmt(v: Any) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            return f"{v:g}"
+        return str(v).replace("\n", " ").strip()
+
+    def cell_text(formula_value: Any, cached_value: Any) -> str:
+        f = fmt(formula_value)
+        c = fmt(cached_value)
+        if f.startswith("="):
+            return f"公式 {f}" + (f" -> {c}" if c and c != f else "")
+        return c or f
+
+    def md_cell(text: Any) -> str:
+        return fmt(text).replace("|", "\\|")
+
+    wb_values = openpyxl.load_workbook(io.BytesIO(raw), read_only=False, data_only=True)
+    wb_formulas = openpyxl.load_workbook(io.BytesIO(raw), read_only=False, data_only=False)
     lines: List[str] = []
-    for ws in wb.worksheets:
+    for ws in wb_formulas.worksheets:
+        vws = wb_values[ws.title]
+        used_range = ws.calculate_dimension()
         lines.append(f"## Sheet: {ws.title}")
-        for row in ws.iter_rows(values_only=True):
-            vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
-            if vals:
-                lines.append(" | ".join(vals))
+        lines.append(f"- Used range: {used_range}")
+        lines.append(f"- Size: {ws.max_row or 0} rows x {ws.max_column or 0} columns")
+        merged = [str(rng) for rng in getattr(ws, "merged_cells", []).ranges]
+        if merged:
+            lines.append(f"- Merged cells: {', '.join(merged[:40])}" + (" ..." if len(merged) > 40 else ""))
+
+        row_limit = min(ws.max_row or 0, max_rows)
+        col_limit = min(ws.max_column or 0, max_cols)
+        if row_limit and col_limit:
+            lines.append("")
+            lines.append("### Grid preview with coordinates")
+            headers = ["Row"] + [get_column_letter(c) for c in range(1, col_limit + 1)]
+            lines.append("| " + " | ".join(headers) + " |")
+            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+            for r in range(1, row_limit + 1):
+                cells: List[str] = []
+                has_value = False
+                for c in range(1, col_limit + 1):
+                    fcell = ws.cell(row=r, column=c)
+                    vcell = vws.cell(row=r, column=c)
+                    text = cell_text(fcell.value, vcell.value)
+                    if text:
+                        has_value = True
+                        cells.append(md_cell(f"{fcell.coordinate}={text}"))
+                    else:
+                        cells.append("")
+                if has_value:
+                    lines.append("| " + " | ".join([str(r), *cells]) + " |")
+            if (ws.max_row or 0) > row_limit or (ws.max_column or 0) > col_limit:
+                lines.append(f"... preview limited to {row_limit} rows x {col_limit} columns")
+
+        if max_formulas > 0:
+            formulas: List[str] = []
+            scanned = 0
+            for row in ws.iter_rows():
+                for fcell in row:
+                    scanned += 1
+                    if scanned > max_scan_cells or len(formulas) >= max_formulas:
+                        break
+                    value = fcell.value
+                    if isinstance(value, str) and value.startswith("="):
+                        cached = fmt(vws[fcell.coordinate].value)
+                        formulas.append(
+                            f"- {fcell.coordinate}: {value}" + (f" -> cached {cached}" if cached else "")
+                        )
+                if scanned > max_scan_cells or len(formulas) >= max_formulas:
+                    break
+            if formulas:
+                lines.append("")
+                lines.append("### Formulas")
+                lines.extend(formulas)
+                if len(formulas) >= max_formulas:
+                    lines.append(f"... formulas limited to {max_formulas}")
+        lines.append("")
+    wb_values.close()
+    wb_formulas.close()
     return "\n".join(lines)
 
 

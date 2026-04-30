@@ -9,7 +9,7 @@ cp "$BACKUP_ENV" "$DEPLOY_ROOT/.env"
 rm -f /tmp/modstore_deploy_sync.tgz
 cd "$DEPLOY_ROOT"
 if [ -f scripts/ensure_llm_master_key.py ]; then .venv/bin/python scripts/ensure_llm_master_key.py .env || true; fi
-.venv/bin/pip install -q -e ".[web]"
+.venv/bin/pip install -q -e ".[web,knowledge]"
 cd market
 # package-lock 与本地 workspace 偶发不同步时 npm ci 会失败；生产机用 install 更稳
 npm install

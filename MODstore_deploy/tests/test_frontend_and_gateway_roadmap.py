@@ -53,7 +53,9 @@ def test_payment_gateway_proxy_remains_in_python_until_gateway_decision():
     """
 
     text = APP_PY.read_text(encoding="utf-8")
-    assert "_proxy_to_java_payment" in text
+    # 中间件名称在事件异步化重构中保持稳定；任何重命名都需要同步更新此处与
+    # docs/FRONTEND_AND_GATEWAY_ROADMAP.md 中的引用。
+    assert "_payment_backend_proxy_middleware" in text
     assert "PaymentGatewayService" in text
 
 

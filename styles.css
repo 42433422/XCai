@@ -55,17 +55,14 @@ a { color: inherit; }
 .header-inner { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .brand-mark { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; min-width: 0; }
 .brand-seal {
-  width: 44px; height: 44px; border-radius: 14px;
+  width: 104px; height: 56px; border-radius: 14px;
   display: grid; place-items: center;
-  color: #fff; font-family: "KaiTi", "STKaiti", serif; font-weight: 800; letter-spacing: .08em;
-  background:
-    linear-gradient(135deg, rgba(239, 51, 64, .95), rgba(255, 176, 32, .88)),
-    radial-gradient(circle at 20% 20%, rgba(255,255,255,.9), transparent 38%);
-  box-shadow: 0 12px 30px rgba(239, 51, 64, 0.22);
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(11, 99, 246, 0.13);
   overflow: hidden;
   flex: 0 0 auto;
 }
-.brand-seal img { width: 100%; height: 100%; object-fit: cover; }
+.brand-seal img { width: 100%; height: 100%; object-fit: contain; padding: 4px 8px; transform: translateY(-19px); }
 .brand-name { display: grid; gap: 2px; min-width: 0; }
 .brand-name strong { font-size: 17px; line-height: 1.2; white-space: nowrap; }
 .brand-name span { font-size: 12px; color: var(--text-faint); letter-spacing: .08em; text-transform: uppercase; }
@@ -191,14 +188,16 @@ a { color: inherit; }
   padding: clamp(56px, 8vw, 92px) 0;
   overflow: hidden;
   background:
-    radial-gradient(circle at 50% 0%, rgba(36, 213, 255, .12), transparent 32rem),
+    radial-gradient(circle at 22% 20%, rgba(36, 213, 255, .16), transparent 24rem),
+    radial-gradient(circle at 78% 74%, rgba(11, 99, 246, .10), transparent 26rem),
     #ffffff;
 }
 .logo-river {
   position: relative;
-  margin-top: 18px;
-  padding: 18px 0;
+  height: clamp(260px, 32vw, 380px);
+  margin-top: clamp(22px, 4vw, 42px);
   overflow: hidden;
+  isolation: isolate;
 }
 .logo-river::before,
 .logo-river::after {
@@ -212,47 +211,102 @@ a { color: inherit; }
 }
 .logo-river::before { left: 0; background: linear-gradient(90deg, #fff, rgba(255,255,255,0)); }
 .logo-river::after { right: 0; background: linear-gradient(270deg, #fff, rgba(255,255,255,0)); }
+.logo-river__lane {
+  position: absolute;
+  left: -20vw;
+  width: 140vw;
+  padding: 16px 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.logo-river__lane--one {
+  top: 14%;
+  z-index: 1;
+}
+.logo-river__lane--two {
+  top: 44%;
+  z-index: 2;
+}
+.logo-river__lane--three {
+  top: 72%;
+  z-index: 1;
+}
 .logo-river__track {
+  position: relative;
+  z-index: 1;
   display: flex;
   width: max-content;
-  animation: logoRiverRight 28s linear infinite;
+  animation: logoRiverRight 30s linear infinite;
   will-change: transform;
   transform: translate3d(-50%, 0, 0);
 }
+.logo-river__lane--two .logo-river__track {
+  animation-name: logoRiverLeft;
+  animation-duration: 34s;
+  transform: translate3d(0, 0, 0);
+}
+.logo-river__lane--three .logo-river__track { animation-duration: 38s; }
 .logo-river:hover .logo-river__track { animation-play-state: paused; }
 .logo-river__group {
   display: flex;
   flex: 0 0 auto;
-  gap: 18px;
-  padding-right: 18px;
+  gap: clamp(18px, 3vw, 42px);
+  padding-right: clamp(18px, 3vw, 42px);
 }
 .logo-river__item {
-  min-width: 168px;
-  height: 78px;
-  padding: 0 24px;
-  border-radius: 24px;
+  min-width: 0;
+  height: 74px;
+  padding: 0 clamp(16px, 2.4vw, 34px);
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--text);
-  font-weight: 900;
-  letter-spacing: .06em;
-  background: rgba(255, 255, 255, .86);
-  border: 1px solid rgba(18, 32, 54, .09);
-  box-shadow: 0 14px 34px rgba(11, 22, 42, .08);
   white-space: nowrap;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
-.logo-river__item--image { padding: 12px 20px; background: #fff; }
+.logo-river__item--text {
+  color: rgba(16, 32, 51, 0.42);
+  font-size: clamp(15px, 1.3vw, 19px);
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+.logo-river__item--image {
+  height: 86px;
+  padding: 0 clamp(18px, 3vw, 42px);
+  background: transparent;
+}
 .logo-river__item--image img {
-  width: 54px;
-  height: 54px;
-  border-radius: 16px;
-  object-fit: cover;
-  box-shadow: 0 10px 22px rgba(239, 51, 64, .18);
+  height: 66px;
+  width: auto;
+  max-width: clamp(140px, 18vw, 240px);
+  border-radius: 0;
+  object-fit: contain;
+  box-shadow: none;
+  filter: none;
+}
+.logo-river__item--sunbird img {
+  height: clamp(62px, 8vw, 88px);
+  max-width: clamp(170px, 24vw, 320px);
+  filter: none;
+}
+.logo-river__item--emblem img {
+  height: clamp(56px, 7vw, 82px);
+  max-width: clamp(110px, 15vw, 200px);
+  filter: none;
 }
 @keyframes logoRiverRight {
   from { transform: translate3d(-50%, 0, 0); }
   to { transform: translate3d(0, 0, 0); }
+}
+@keyframes logoRiverLeft {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-50%, 0, 0); }
 }
 .contact-form { display: grid; gap: 16px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }

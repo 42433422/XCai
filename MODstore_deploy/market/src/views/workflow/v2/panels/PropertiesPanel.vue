@@ -100,11 +100,20 @@ function onNumberInput(key: string, ev: Event) {
     <header class="wf2-properties__head">
       <h3 class="wf2-properties__title">属性</h3>
       <button v-if="selected" class="wf2-properties__del" type="button" @click="emit('delete', selected.id)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        </svg>
         删除节点
       </button>
     </header>
 
     <div v-if="!selected" class="wf2-properties__empty">
+      <svg class="wf2-properties__empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+        <line x1="9" y1="9" x2="15" y2="15"/>
+        <line x1="15" y1="9" x2="9" y2="15"/>
+      </svg>
       <p>选中一个节点以编辑属性</p>
       <p class="wf2-properties__empty-sub">画布空白处单击可取消选中</p>
     </div>
@@ -212,10 +221,11 @@ function onNumberInput(key: string, ev: Event) {
 
 <style scoped>
 .wf2-properties {
-  width: 320px;
+  width: 340px;
   flex-shrink: 0;
-  border-left: 1px solid #e2e8f0;
-  background: #ffffff;
+  border-left: 1px solid rgba(148, 163, 184, 0.08);
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(16px);
   height: 100%;
   overflow-y: auto;
 }
@@ -224,43 +234,56 @@ function onNumberInput(key: string, ev: Event) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
-  border-bottom: 1px solid #e2e8f0;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
 }
 
 .wf2-properties__title {
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f1f5f9;
 }
 
 .wf2-properties__del {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
-  background: transparent;
-  border: 1px solid #fecaca;
-  color: #b91c1c;
-  padding: 4px 10px;
-  border-radius: 6px;
+  font-weight: 500;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  padding: 5px 10px;
+  border-radius: 8px;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
 .wf2-properties__del:hover {
-  background: #fef2f2;
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 .wf2-properties__empty {
-  padding: 32px 16px;
+  padding: 48px 20px;
   text-align: center;
   color: #64748b;
 }
 
+.wf2-properties__empty-icon {
+  margin-bottom: 12px;
+  color: #475569;
+  opacity: 0.5;
+}
+
 .wf2-properties__empty-sub {
   font-size: 12px;
-  color: #94a3b8;
+  color: #475569;
 }
 
 .wf2-properties__body {
-  padding: 14px 16px 24px;
+  padding: 16px 18px 24px;
 }
 
 .wf2-properties__meta {
@@ -274,64 +297,72 @@ function onNumberInput(key: string, ev: Event) {
   --accent: #6366f1;
   display: inline-block;
   font-size: 11px;
-  font-weight: 600;
-  padding: 3px 8px;
+  font-weight: 700;
+  padding: 4px 10px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .wf2-properties__id {
   font-size: 11px;
-  color: #94a3b8;
+  color: #475569;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .wf2-properties__desc {
   font-size: 12px;
   color: #64748b;
-  margin: 4px 0 14px;
+  margin: 4px 0 16px;
+  line-height: 1.5;
 }
 
 .wf2-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 14px;
+  gap: 6px;
+  margin-bottom: 16px;
 }
 
 .wf2-field__label {
   font-size: 12px;
-  color: #334155;
-  font-weight: 500;
+  color: #94a3b8;
+  font-weight: 600;
 }
 
 .wf2-field__required {
-  color: #ef4444;
+  color: #f87171;
   margin-left: 2px;
 }
 
 .wf2-field__helper {
   font-size: 11px;
-  color: #94a3b8;
+  color: #475569;
   line-height: 1.4;
 }
 
 .wf2-input {
   width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 7px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 8px;
+  padding: 8px 12px;
   font-size: 13px;
   font-family: inherit;
-  color: #0f172a;
-  background: #fff;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  color: #f1f5f9;
+  background: rgba(30, 41, 59, 0.6);
+  transition: all 0.2s ease;
+}
+
+.wf2-input::placeholder {
+  color: #475569;
 }
 
 .wf2-input:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  background: rgba(30, 41, 59, 0.8);
 }
 
 .wf2-input--ta {
@@ -347,8 +378,40 @@ function onNumberInput(key: string, ev: Event) {
 .wf2-switch {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 13px;
-  color: #334155;
+  color: #cbd5e1;
+}
+
+.wf2-switch input[type="checkbox"] {
+  width: 36px;
+  height: 20px;
+  appearance: none;
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.wf2-switch input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #e2e8f0;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+.wf2-switch input[type="checkbox"]:checked {
+  background: rgba(99, 102, 241, 0.5);
+}
+
+.wf2-switch input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
+  background: #fff;
 }
 </style>

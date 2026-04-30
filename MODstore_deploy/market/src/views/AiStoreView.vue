@@ -103,9 +103,20 @@
           <span class="price" :class="{ free: item.price <= 0 }">
             {{ item.price <= 0 ? '免费' : '¥' + item.price.toFixed(2) }}
           </span>
-          <router-link :to="{ name: 'catalog-detail', params: { id: item.id } }" class="btn btn-detail">
-            详情
-          </router-link>
+          <div class="card-actions">
+            <button
+              v-if="authStore.isAdmin"
+              type="button"
+              class="btn btn-danger"
+              :disabled="delistingId === item.id"
+              @click="delistItem(item)"
+            >
+              {{ delistingId === item.id ? '下架中' : '下架' }}
+            </button>
+            <router-link :to="{ name: 'catalog-detail', params: { id: item.id } }" class="btn btn-detail">
+              详情
+            </router-link>
+          </div>
         </div>
       </article>
     </div>
@@ -117,6 +128,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { api } from '../api'
+import { useAuthStore } from '../stores/auth'
 
 const ARTIFACT_LABELS = {
   mod: 'MOD 插件',
@@ -135,9 +147,11 @@ const loading = ref(true)
 const err = ref('')
 const items = ref([])
 const total = ref(0)
+const delistingId = ref(null)
 const searchQ = ref('')
 const appliedQ = ref('')
 const facets = ref({ industries: [], artifacts: [], security_levels: [] })
+const authStore = useAuthStore()
 
 const filters = reactive({
   industry: '',
@@ -221,6 +235,23 @@ function resetFilters() {
   filters.artifact = ''
   filters.securityLevel = ''
   loadItems()
+}
+
+async function delistItem(item) {
+  if (!item || delistingId.value) return
+  const ok = window.confirm(`确定下架「${item.name}」吗？下架后市场将不再展示该商品。`)
+  if (!ok) return
+  delistingId.value = item.id
+  err.value = ''
+  try {
+    await api.adminDeleteCatalog(item.id)
+    await loadItems()
+    await loadFacets()
+  } catch (e) {
+    err.value = e?.message || String(e)
+  } finally {
+    delistingId.value = null
+  }
 }
 
 watch(
@@ -498,6 +529,14 @@ onMounted(async () => {
   gap: 10px;
 }
 
+.card-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .price {
   font-size: 18px;
   font-weight: 700;
@@ -519,6 +558,17 @@ onMounted(async () => {
 
 .btn-detail:hover {
   background: rgba(255, 255, 255, 0.12);
+}
+
+.btn-danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.btn-danger:hover:not(:disabled) {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.28);
 }
 
 .pager-hint {

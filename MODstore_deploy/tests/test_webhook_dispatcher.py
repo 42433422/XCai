@@ -216,7 +216,10 @@ def test_publish_event_dispatches_and_emits_to_neuro_bus(monkeypatch):
             "order_kind": "plan",
         }
     )
-    assert result == {"ok": True}
+    # ``publish_event`` 自 PR-D 起还会扇出到 ``webhook_subscriptions``，
+    # 没有订阅时返回 0；只断言 ok 与 dispatcher 投递成功。
+    assert result.get("ok") is True
+    assert result.get("subscriptions_delivered", 0) == 0
     assert captured["dispatched"]["type"] == "payment.paid"
     assert seen_neuro, "publish_event must also notify the in-process NeuroBus"
 

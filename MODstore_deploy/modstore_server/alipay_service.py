@@ -1,4 +1,9 @@
-"""MODstore 支付宝支付服务：基于 python-alipay-sdk 的完整封装。"""
+"""MODstore 支付宝支付服务：基于 python-alipay-sdk 的完整封装。
+
+⚠️ 兼容层：在 ``PAYMENT_BACKEND=java`` 模式下，下单 / 回调 / 退款全部由 Java 支付服务
+（``com.modstore.controller.AlipayController`` 等）处理；本模块仅作为
+``PAYMENT_BACKEND=python`` 的本地回滚 fallback 使用，不再接入新的支付宝能力。
+"""
 
 from __future__ import annotations
 

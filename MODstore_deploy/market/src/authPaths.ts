@@ -1,10 +1,27 @@
 import type { RouteLocationNormalizedLoaded, RouteLocationRaw } from 'vue-router'
 
 export function safeRedirectPath(raw: unknown): string {
-  if (typeof raw !== 'string' || !raw.startsWith('/')) return '/'
-  if (raw.startsWith('//')) return '/'
-  if (raw.startsWith('/login')) return '/'
-  return raw
+  if (typeof raw !== 'string') return '/workbench/home'
+  const trimmed = raw.trim()
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//')) return '/workbench/home'
+
+  const withoutBase = trimmed.startsWith('/market/')
+    ? trimmed.slice('/market'.length)
+    : trimmed === '/market'
+      ? '/'
+      : trimmed
+
+  if (
+    withoutBase === '/' ||
+    withoutBase === '/index.html' ||
+    withoutBase.startsWith('/login') ||
+    /^\/(?:about|services|solutions|cases|case-edu|case-park|case-manufacture|news|honors|contact|baidu_verify_codeva-hVYlSoeYiP)\.html(?:[?#].*)?$/.test(
+      withoutBase,
+    )
+  ) {
+    return '/workbench/home'
+  }
+  return withoutBase
 }
 
 /**

@@ -14,8 +14,22 @@ export interface OrderSummary {
   subject?: string
 }
 
+/**
+ * 与 modstore_server/payment_api.py `api_payment_entitlements` 字段对齐。
+ */
+export interface EntitlementItem {
+  purchase_id: number
+  catalog_id: number
+  pkg_id?: string
+  version?: string
+  name: string
+  /** 实付金额（元） */
+  price_paid?: number
+  /** ISO 字符串；后端无购买时间则为空串 */
+  purchased_at?: string
+}
+
 export interface EntitlementList {
-  items?: unknown[]
-  entitlements?: unknown[]
-  total?: number
+  items: EntitlementItem[]
+  total: number
 }

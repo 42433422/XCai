@@ -34,6 +34,14 @@
               {{ buying ? '购买中...' : '购买' }}
             </button>
           </template>
+          <button
+            v-if="authStore.isAdmin"
+            class="btn btn-danger"
+            :disabled="delisting"
+            @click="delistItem"
+          >
+            {{ delisting ? '下架中...' : '下架' }}
+          </button>
         </div>
       </div>
 
@@ -158,13 +166,16 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 const item = ref(null)
 const loading = ref(true)
 const err = ref('')
 const buying = ref(false)
+const delisting = ref(false)
 const hasToken = ref(false)
 const favBusy = ref(false)
 const reviewsLoading = ref(false)
@@ -330,6 +341,22 @@ async function doDownload() {
   }
 }
 
+async function delistItem() {
+  const it = item.value
+  if (!it || delisting.value) return
+  const ok = window.confirm(`确定下架「${it.name}」吗？下架后市场将不再展示该商品。`)
+  if (!ok) return
+  delisting.value = true
+  try {
+    await api.adminDeleteCatalog(it.id)
+    await router.push({ name: 'ai-store' })
+  } catch (e) {
+    alert(e?.message || String(e))
+  } finally {
+    delisting.value = false
+  }
+}
+
 function navigateToWorkflow() {
   router.push('/workflow')
 }
@@ -464,6 +491,17 @@ function navigateToWorkflow() {
 .btn-success:hover {
   background: rgba(74,222,128,0.2);
   color: #4ade80;
+}
+
+.btn-danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.btn-danger:hover {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.28);
 }
 
 .btn-fav {

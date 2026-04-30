@@ -10,7 +10,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx",
     "allowJs": false,
     "checkJs": false,
     "strict": false,
@@ -21,6 +20,6 @@
     },
     "types": ["vite/client", "node", "vitest/globals"]
   },
-  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue", "vite.config.ts", "playwright.config.ts"],
+  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts", "playwright.config.ts"],
   "references": []
 }

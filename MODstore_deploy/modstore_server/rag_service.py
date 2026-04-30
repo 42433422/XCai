@@ -209,6 +209,7 @@ async def retrieve(
     top_k: int = 6,
     min_score: float = 0.0,
     query_embedding: Optional[Sequence[float]] = None,
+    embedding_provider: Optional[str] = None,
 ) -> List[RetrievedChunk]:
     """跨可见集合做 KNN 检索并归并。
 
@@ -243,7 +244,17 @@ async def retrieve(
 
     if query_embedding is None:
         try:
-            vecs = await embed_texts([q])
+            sf_embed = get_session_factory()
+            with sf_embed() as session:
+                try:
+                    vecs = await embed_texts(
+                        [q],
+                        session=session,
+                        user_id=int(user_id),
+                        provider=embedding_provider,
+                    )
+                except TypeError:
+                    vecs = await embed_texts([q])
         except EmbeddingConfigError as e:
             logger.warning("rag_service.retrieve: embedding 配置缺失: %s", e)
             return []

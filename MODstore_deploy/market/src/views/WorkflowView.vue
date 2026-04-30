@@ -1,18 +1,18 @@
 <template>
   <div class="workflow-page">
     <div class="page-header">
-      <h1 class="page-title">工作流管理</h1>
+      <h1 class="page-title">自动化任务</h1>
       <p class="page-desc">
-        创建和管理工作流；<strong>沙盒测试</strong>在服务端图上全链路回放，支持变量快照、条件边命中记录与 Mock 员工（调试不触发真实外部调用）。
+        把常做的文件处理、数据同步和协作流程保存成任务。你可以直接运行，也可以进入高级调试查看流程细节。
       </p>
       <div class="page-header-row">
         <nav class="wf-subtabs" aria-label="工作流子页面">
-          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'list' }" @click="activeTab = 'list'">列表</button>
-          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'sandbox' }" @click="activeTab = 'sandbox'">沙盒实验室</button>
-          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'executions' }" @click="activeTab = 'executions'">执行记录</button>
-          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'triggers' }" @click="activeTab = 'triggers'">触发器</button>
+          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'list' }" @click="activeTab = 'list'">我的任务</button>
+          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'executions' }" @click="activeTab = 'executions'">运行记录</button>
+          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'sandbox' }" @click="activeTab = 'sandbox'">高级调试</button>
+          <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'triggers' }" @click="activeTab = 'triggers'">自动触发</button>
         </nav>
-        <button class="btn btn-primary" @click="showCreateModal = true">创建工作流</button>
+        <button class="btn btn-primary" @click="showCreateModal = true">创建自动化任务</button>
       </div>
     </div>
 
@@ -35,20 +35,20 @@
             <span>更新于: {{ formatDate(workflow.updated_at) }}</span>
           </div>
           <div class="workflow-card-actions">
-            <button class="btn btn-sm" @click="openV2Editor(workflow.id)" title="新版可视化编辑器（Vue Flow，推荐）">编辑</button>
-            <button class="btn btn-sm" @click="editWorkflow(workflow.id)" title="旧版自绘画布（即将下线）">旧编辑器</button>
+            <button class="btn btn-sm" @click="executeWorkflow(workflow.id)">运行</button>
+            <button class="btn btn-sm" @click="openV2Editor(workflow.id)" title="可视化编辑器">编辑</button>
+            <button class="btn btn-sm" @click="editWorkflow(workflow.id)" title="旧版自绘画布（高级）">高级编辑</button>
             <button class="btn btn-sm" @click="toggleWorkflowStatus(workflow.id, !workflow.is_active)">
               {{ workflow.is_active ? '停用' : '激活' }}
             </button>
             <button class="btn btn-sm btn-danger" @click="deleteWorkflow(workflow.id)">删除</button>
-            <button class="btn btn-sm btn-success" @click="executeWorkflow(workflow.id)">执行</button>
-            <button class="btn btn-sm btn-sandbox" @click="openSandboxFor(workflow.id)">沙盒</button>
+            <button class="btn btn-sm btn-sandbox" @click="openSandboxFor(workflow.id)">调试</button>
           </div>
         </div>
       </div>
       <div v-else class="empty-state">
-        <p>暂无工作流</p>
-        <p class="empty-hint">点击上方「创建工作流」开始使用</p>
+        <p>还没有自动化任务</p>
+        <p class="empty-hint">可以从二档用 AI 创建，或点击上方「创建自动化任务」。</p>
       </div>
     </div>
 

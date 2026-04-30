@@ -56,7 +56,33 @@ describe('auth router guards', () => {
         query: { redirect: '//evil.example' },
         fullPath: '/login',
       }),
-    ).resolves.toBe('/')
+    ).resolves.toBe('/workbench/home')
+  })
+
+  it('normalizes market-prefixed and official-site redirects after auth', async () => {
+    localStorage.setItem(ACCESS_TOKEN_KEY, 'token-1')
+    vi.mocked(api.me).mockResolvedValue({ id: 1, username: 'user' })
+    const guard = installAndGetGuard()
+
+    await expect(
+      guard({
+        name: 'login',
+        hash: '',
+        meta: {},
+        query: { redirect: '/market/wallet' },
+        fullPath: '/login',
+      }),
+    ).resolves.toBe('/wallet')
+
+    await expect(
+      guard({
+        name: 'login',
+        hash: '',
+        meta: {},
+        query: { redirect: '/index.html' },
+        fullPath: '/login',
+      }),
+    ).resolves.toBe('/workbench/home')
   })
 
   it('sends non-admin users away from admin routes', async () => {

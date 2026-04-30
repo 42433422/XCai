@@ -8,7 +8,7 @@
 export interface ChatAttachmentMeta {
   name: string
   size: number
-  status: 'ready' | 'error' | 'skipped' | 'uploading'
+  status: 'ready' | 'inline' | 'error' | 'skipped' | 'uploading'
   docId?: string
 }
 

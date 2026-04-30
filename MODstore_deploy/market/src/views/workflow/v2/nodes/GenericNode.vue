@@ -90,23 +90,38 @@ const summary = computed(() => {
 .wf2-node {
   --accent: #6366f1;
   position: relative;
-  width: 220px;
-  min-height: 92px;
-  background: #ffffff;
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, #e2e8f0);
-  border-left: 4px solid var(--accent);
-  border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.18);
-  padding: 10px 12px 12px;
+  width: 240px;
+  min-height: 100px;
+  background: rgba(30, 41, 59, 0.95);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-left: 3px solid var(--accent);
+  border-radius: 14px;
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.3),
+    0 2px 4px -2px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  padding: 14px 16px 16px;
   font-family: inherit;
   cursor: grab;
-  transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.wf2-node:hover {
+  box-shadow:
+    0 20px 25px -5px rgba(0, 0, 0, 0.4),
+    0 8px 10px -6px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  border-color: rgba(148, 163, 184, 0.22);
+  transform: translateY(-2px);
 }
 
 .wf2-node--selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent),
-    0 12px 28px -16px rgba(15, 23, 42, 0.28);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 20px 25px -5px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .wf2-node:active {
@@ -116,20 +131,21 @@ const summary = computed(() => {
 .wf2-node__head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 
 .wf2-node__icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 14px;
+  font-size: 15px;
   flex-shrink: 0;
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .wf2-node__titles {
@@ -139,16 +155,17 @@ const summary = computed(() => {
 }
 
 .wf2-node__type {
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: rgba(148, 163, 184, 0.7);
   text-transform: uppercase;
 }
 
 .wf2-node__name {
   font-size: 14px;
-  font-weight: 600;
-  color: #0f172a;
+  font-weight: 700;
+  color: #f1f5f9;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -156,9 +173,9 @@ const summary = computed(() => {
 
 .wf2-node__summary {
   font-size: 12px;
-  color: #475569;
+  color: #94a3b8;
   margin: 0;
-  line-height: 1.4;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -166,35 +183,53 @@ const summary = computed(() => {
 }
 
 .wf2-handle {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   background: var(--accent);
-  border: 2px solid #fff;
+  border: 2px solid rgba(30, 41, 59, 0.95);
+  border-radius: 50%;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 50%, transparent);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.wf2-handle:hover {
+  transform: scale(1.3);
 }
 
 .wf2-handle--true {
   top: 38%;
   background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
 }
 
 .wf2-handle--false {
   top: 72%;
   background: #ef4444;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
 }
 
 .wf2-branch-label {
   position: absolute;
-  right: -42px;
+  right: -46px;
   font-size: 10px;
-  color: #94a3b8;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
   pointer-events: none;
+  letter-spacing: 0.02em;
 }
 
 .wf2-branch-label--true {
-  top: calc(38% - 6px);
+  top: calc(38% - 8px);
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.25);
 }
 
 .wf2-branch-label--false {
-  top: calc(72% - 6px);
+  top: calc(72% - 8px);
+  background: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
 }
 </style>

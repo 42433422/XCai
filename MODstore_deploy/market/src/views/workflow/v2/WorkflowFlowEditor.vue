@@ -370,7 +370,7 @@ async function submitSaveAsTemplate() {
           @connect="onConnect"
           @edge-double-click="onEdgeDoubleClick"
         >
-          <Background pattern-color="#cbd5e1" :gap="20" />
+          <Background pattern-color="rgba(148,163,184,0.10)" :gap="20" />
           <Controls position="bottom-left" />
           <MiniMap
             position="bottom-right"
@@ -477,33 +477,61 @@ async function submitSaveAsTemplate() {
 </template>
 
 <style scoped>
+/* ===== 工作流编辑器深色主题变量 ===== */
 .wf2 {
+  --wf-canvas-bg: #0b1120;
+  --wf-panel-bg: rgba(15, 23, 42, 0.88);
+  --wf-panel-border: rgba(148, 163, 184, 0.10);
+  --wf-text-primary: #f1f5f9;
+  --wf-text-secondary: #94a3b8;
+  --wf-text-muted: #64748b;
+  --wf-accent: #6366f1;
+  --wf-accent-glow: rgba(99, 102, 241, 0.35);
+
   display: flex;
   flex-direction: column;
   height: calc(100vh - 56px);
-  background: #f8fafc;
+  background: var(--wf-canvas-bg);
 }
 
+/* Flash 提示 */
 .wf2-flash {
   position: absolute;
   top: 70px;
   left: 50%;
   transform: translateX(-50%);
-  padding: 8px 14px;
-  border-radius: 8px;
+  padding: 10px 18px;
+  border-radius: 10px;
   font-size: 13px;
+  font-weight: 500;
   z-index: 30;
-  box-shadow: 0 8px 24px -10px rgba(15, 23, 42, 0.25);
+  backdrop-filter: blur(12px);
+  animation: wf2-flash-slide 0.3s ease;
+}
+
+@keyframes wf2-flash-slide {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 
 .wf2-flash--ok {
-  background: #dcfce7;
-  color: #166534;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: #4ade80;
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.15);
 }
 
 .wf2-flash--err {
-  background: #fee2e2;
-  color: #991b1b;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #f87171;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.15);
 }
 
 .wf2-body {
@@ -516,7 +544,59 @@ async function submitSaveAsTemplate() {
   flex: 1;
   position: relative;
   min-width: 0;
-  background: #f1f5f9;
+  background: var(--wf-canvas-bg);
+}
+
+/* 覆盖 Vue Flow 默认背景与连线 */
+:deep(.vue-flow__container) {
+  background: var(--wf-canvas-bg) !important;
+}
+
+:deep(.vue-flow__edge path) {
+  stroke: rgba(148, 163, 184, 0.35);
+  stroke-width: 2;
+  transition: stroke 0.2s ease;
+}
+
+:deep(.vue-flow__edge.selected path),
+:deep(.vue-flow__edge:hover path) {
+  stroke: rgba(99, 102, 241, 0.7);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.4));
+}
+
+:deep(.vue-flow__edge-text) {
+  fill: #94a3b8;
+  font-size: 11px;
+}
+
+:deep(.vue-flow__controls) {
+  background: rgba(15, 23, 42, 0.8) !important;
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(148, 163, 184, 0.12) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.4) !important;
+}
+
+:deep(.vue-flow__controls-button) {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08) !important;
+  color: #94a3b8 !important;
+}
+
+:deep(.vue-flow__controls-button:hover) {
+  background: rgba(148, 163, 184, 0.1) !important;
+  color: #f1f5f9 !important;
+}
+
+:deep(.vue-flow__controls-button svg) {
+  fill: currentColor;
+}
+
+:deep(.vue-flow__minimap) {
+  background: rgba(15, 23, 42, 0.7) !important;
+  border: 1px solid rgba(148, 163, 184, 0.1) !important;
+  border-radius: 10px !important;
 }
 
 .wf2-canvas-overlay,
@@ -527,40 +607,45 @@ async function submitSaveAsTemplate() {
   align-items: center;
   justify-content: center;
   pointer-events: none;
-  color: #64748b;
+  color: var(--wf-text-muted);
 }
 
 .wf2-canvas-empty__inner {
-  background: rgba(255, 255, 255, 0.86);
-  padding: 18px 24px;
-  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  padding: 32px 40px;
+  border-radius: 16px;
   text-align: center;
   pointer-events: auto;
-  box-shadow: 0 12px 32px -16px rgba(15, 23, 42, 0.2);
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.5);
 }
 
 .wf2-canvas-empty__inner h3 {
-  margin: 0 0 4px;
-  font-size: 16px;
-  color: #0f172a;
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: var(--wf-text-primary);
+  font-weight: 600;
 }
 
 .wf2-canvas-empty__inner p {
   margin: 0;
-  font-size: 12px;
-  color: #64748b;
+  font-size: 13px;
+  color: var(--wf-text-secondary);
 }
 
+/* 沙盒结果面板 */
 .wf2-sandbox-panel {
   position: absolute;
-  right: 12px;
-  top: 96px;
-  width: 360px;
+  right: 16px;
+  top: 100px;
+  width: 380px;
   max-height: calc(100vh - 140px);
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  box-shadow: 0 12px 28px -12px rgba(15, 23, 42, 0.25);
+  background: var(--wf-panel-bg);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--wf-panel-border);
+  border-radius: 14px;
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
   z-index: 20;
@@ -570,45 +655,52 @@ async function submitSaveAsTemplate() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--wf-panel-border);
 }
 
 .wf2-sandbox-panel__head h4 {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
+  color: var(--wf-text-primary);
+  font-weight: 600;
 }
 
 .wf2-tb-btn {
   font-size: 12px;
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: #334155;
-  padding: 4px 8px;
-  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(30, 41, 59, 0.6);
+  color: var(--wf-text-secondary);
+  padding: 5px 10px;
+  border-radius: 8px;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
 
 .wf2-tb-btn:hover {
-  background: #f1f5f9;
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--wf-text-primary);
 }
 
 .wf2-sandbox-panel__pre {
   margin: 0;
-  padding: 10px 12px;
+  padding: 12px 16px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: #0f172a;
-  background: #f8fafc;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--wf-text-primary);
+  background: rgba(15, 23, 42, 0.5);
   white-space: pre-wrap;
   overflow: auto;
+  border-radius: 0 0 14px 14px;
 }
 
+/* 模板弹窗 */
 .wf2-tplmask {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.42);
+  background: rgba(2, 6, 23, 0.7);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -618,9 +710,11 @@ async function submitSaveAsTemplate() {
 
 .wf2-tplcard {
   width: min(520px, 100%);
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 24px 48px -16px rgba(15, 23, 42, 0.4);
+  background: rgba(30, 41, 59, 0.95);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 32px 64px -16px rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
 }
@@ -629,37 +723,39 @@ async function submitSaveAsTemplate() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid #e2e8f0;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.10);
 }
 
 .wf2-tplcard__head h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
+  color: var(--wf-text-primary);
+  font-weight: 600;
 }
 
 .wf2-tplcard__body {
-  padding: 14px 16px;
+  padding: 16px 20px;
 }
 
 .wf2-tplcard__foot {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid #e2e8f0;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid rgba(148, 163, 184, 0.10);
 }
 
 .wf2-tplfield {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 14px;
 }
 
 .wf2-tplfield span {
-  font-size: 12px;
-  color: #334155;
+  font-size: 13px;
+  color: var(--wf-text-secondary);
   font-weight: 500;
 }
 
@@ -667,36 +763,45 @@ async function submitSaveAsTemplate() {
 .wf2-tplfield textarea,
 .wf2-tplfield select {
   width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 6px 9px;
-  font-size: 13px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
   font-family: inherit;
+  color: var(--wf-text-primary);
+  background: rgba(15, 23, 42, 0.6);
+  transition: all 0.2s ease;
+}
+
+.wf2-tplfield input::placeholder,
+.wf2-tplfield textarea::placeholder {
+  color: var(--wf-text-muted);
 }
 
 .wf2-tplfield input:focus,
 .wf2-tplfield textarea:focus,
 .wf2-tplfield select:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  border-color: var(--wf-accent);
+  box-shadow: 0 0 0 3px var(--wf-accent-glow);
+  background: rgba(15, 23, 42, 0.8);
 }
 
 .wf2-tplfield--inline {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .wf2-tplrow {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 14px;
 }
 
 .wf2-fade-enter-active,
 .wf2-fade-leave-active {
-  transition: opacity 0.18s ease;
+  transition: opacity 0.2s ease;
 }
 
 .wf2-fade-enter-from,

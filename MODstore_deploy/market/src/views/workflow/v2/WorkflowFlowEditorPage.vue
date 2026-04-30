@@ -30,21 +30,21 @@ function goBack() {
 <style scoped>
 .wf2-page {
   height: 100vh;
-  background: #f8fafc;
+  background: #0b1120;
 }
 
 .wf2-page__error {
   padding: 64px 24px;
   text-align: center;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .wf2-tb-btn {
   margin-top: 16px;
   font-size: 13px;
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: #334155;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(30, 41, 59, 0.6);
+  color: #cbd5e1;
   padding: 6px 12px;
   border-radius: 6px;
   cursor: pointer;

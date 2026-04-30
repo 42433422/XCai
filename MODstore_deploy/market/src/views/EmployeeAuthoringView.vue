@@ -23,7 +23,7 @@
           </div>
           <div class="metric-card">
             <span class="metric-label">Workflow 心脏</span>
-            <strong :class="safeResolvedWorkflowId > 0 ? 'metric-ok' : 'metric-warn'">{{ safeResolvedWorkflowId > 0 ? `#${safeResolvedWorkflowId}` : '未配置' }}</strong>
+          <strong :class="workflowGatePass ? 'metric-ok' : 'metric-warn'">{{ workflowGatePass ? `#${safeResolvedWorkflowId} 已通过` : workflowGate === 'idle' ? '未配置' : '需沙箱' }}</strong>
           </div>
         </div>
       </div>
@@ -100,9 +100,16 @@
             :template-id="employeeTemplateId"
             :guide-target="activeGuideTarget"
             :immersive="true"
+            :eligible-workflows="eligibleWorkflows"
+            :all-workflow-options="allWorkflowOptions"
+            :workflow-gate="workflowGate"
+            :workflow-gate-message="workflowGateMessage"
+            :workflow-gate-loading="workflowGateLoading"
+            :workflow-gate-error="workflowGateError"
             @update:config="onBuilderConfigUpdate"
             @template-change="applyTemplate"
             @export-zip="exportBuilderEmployeePackZip"
+            @refresh-workflows="loadEligibleWorkflows"
           />
           <p v-if="employeeConfigErrors.length" class="flash flash-warn">V2 校验：{{ employeeConfigErrors.join('；') }}</p>
         </section>
@@ -289,7 +296,7 @@
               :error="error"
               :success="success"
               :uploading="uploading"
-              :can-confirm="canConfirmListingUpload"
+              :can-confirm="canConfirmListingUpload && workflowGatePass"
               :is-catalog-edit="isCatalogEdit"
               @update:industry="(v)=>form.industry=v"
               @update:price="(v)=>form.price=v"
@@ -516,9 +523,17 @@ const {
   linkedManifestSnapshot,
   showLinkedModPanel,
   packageManifestWorkflowId,
+  eligibleWorkflows,
+  allWorkflowOptions,
+  workflowGateLoading,
+  workflowGateError,
   packageScanFlashClass,
   resolvedWorkflowId,
   safeResolvedWorkflowId,
+  workflowGate,
+  workflowGateMessage,
+  workflowGatePass,
+  loadEligibleWorkflows,
 } = useEmployeeWorkbenchState({
   parseWorkflowIdFromEntry,
   inferWorkflowIdFromManifest,
@@ -596,9 +611,14 @@ const {
   auditErr,
   sandboxGateOk,
   canConfirmListingUpload,
-  runEmployeeWorkflowSandbox,
+  runEmployeeWorkflowSandbox: runEmployeeWorkflowSandboxBase,
   runFiveDimAuditClick,
 } = publishFlow
+
+async function runEmployeeWorkflowSandbox() {
+  await runEmployeeWorkflowSandboxBase()
+  await loadEligibleWorkflows()
+}
 
 const DIMENSION_LABELS = {
   manifest_compliance: '清单合规',
@@ -932,6 +952,7 @@ const packageIoDiffSummary = computed(() => {
   if (formDesc && cfgDesc && formDesc !== cfgDesc) rows.push('描述（表单/配置）不一致')
   if (!selectedFile.value) rows.push('未选择上传包')
   if (!(safeResolvedWorkflowId.value > 0)) rows.push('workflow_id 未就绪')
+  if (!workflowGatePass.value) rows.push('工作流尚未通过当前图沙箱测试')
   return rows
 })
 
@@ -994,6 +1015,7 @@ const canGoToTesting = computed(() => {
   if (!String(form.value.name || '').trim()) return false
   if (!String(form.value.description || '').trim()) return false
   if (!v2HeartReady.value) return false
+  if (!workflowGatePass.value) return false
   return true
 })
 
@@ -1011,7 +1033,7 @@ function refreshV2Validation() {
 }
 
 const canNextStep = computed(() => {
-  if (currentStep.value === 6) return v2HeartReady.value
+  if (currentStep.value === 6) return v2HeartReady.value && workflowGatePass.value
   if (currentStep.value === 8) return publishWizardStep.value === 'listing' || auditReport.value?.summary?.pass === true
   return currentStep.value < 9
 })
@@ -1100,7 +1122,11 @@ function goTestingStep() {
   syncFormToV2Identity()
   refreshV2Validation()
   if (!v2HeartReady.value) {
-    error.value = '工作流是员工心脏：请先填写 workflow_id'
+    error.value = '工作流是员工心脏：请先选择已通过沙箱测试的工作流'
+    return
+  }
+  if (!workflowGatePass.value) {
+    error.value = workflowGateMessage.value || '当前工作流尚未通过沙箱测试，不能继续'
     return
   }
   if (employeeConfigErrors.value.length) {
@@ -1263,6 +1289,7 @@ onMounted(async () => {
   await syncEditQueryFromRoute()
   await loadLinkedModMeta()
   applyLinkWorkflowIdFromRoute()
+  await loadEligibleWorkflows()
   const wid = safeResolvedWorkflowId.value
   if (wid > 0) {
     employeeConfigV2.value.collaboration.workflow.workflow_id = wid
@@ -1713,6 +1740,10 @@ async function handleSubmit() {
   }
   if (!sandboxGateOk.value) {
     error.value = '请先完成沙盒测试（工作流沙盒运行，或勾选本地/Docker 确认）'
+    return
+  }
+  if (!workflowGatePass.value) {
+    error.value = workflowGateMessage.value || '当前工作流尚未通过沙箱测试，不能上架'
     return
   }
   if (auditErr.value || !auditReport.value || auditReport.value.summary?.pass !== true) {

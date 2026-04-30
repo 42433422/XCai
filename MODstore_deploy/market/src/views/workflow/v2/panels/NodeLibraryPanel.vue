@@ -26,55 +26,61 @@ function onDragStart(ev: DragEvent, kind: NodeKind) {
     <p class="wf2-library__hint">点击或拖入画布</p>
     <div v-for="g in groups" :key="g.category" class="wf2-library__group">
       <button class="wf2-library__group-head" type="button" @click="toggle(g.category)">
-        <span>{{ g.label }}</span>
+        <div class="wf2-library__group-label">
+          <span class="wf2-library__group-bar" :style="{ background: g.items[0]?.accent || '#6366f1' }" />
+          <span>{{ g.label }}</span>
+        </div>
         <span class="wf2-library__group-count">{{ g.items.length }}</span>
       </button>
-      <ul v-show="!collapsed[g.category]" class="wf2-library__list">
-        <li
-          v-for="m in g.items"
-          :key="m.kind"
-          class="wf2-library__item"
-          :draggable="true"
-          @dragstart="onDragStart($event, m.kind)"
-          @click="$emit('add', m.kind)"
-        >
-          <span class="wf2-library__item-icon" :style="{ background: m.accent }">{{ m.icon }}</span>
-          <div class="wf2-library__item-text">
-            <span class="wf2-library__item-label">{{ m.label }}</span>
-            <span class="wf2-library__item-desc">{{ m.description }}</span>
-          </div>
-        </li>
-      </ul>
+      <transition name="wf2-lib-collapse">
+        <ul v-show="!collapsed[g.category]" class="wf2-library__list">
+          <li
+            v-for="m in g.items"
+            :key="m.kind"
+            class="wf2-library__item"
+            :draggable="true"
+            @dragstart="onDragStart($event, m.kind)"
+            @click="$emit('add', m.kind)"
+          >
+            <span class="wf2-library__item-icon" :style="{ background: m.accent }">{{ m.icon }}</span>
+            <div class="wf2-library__item-text">
+              <span class="wf2-library__item-label">{{ m.label }}</span>
+              <span class="wf2-library__item-desc">{{ m.description }}</span>
+            </div>
+          </li>
+        </ul>
+      </transition>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .wf2-library {
-  width: 248px;
+  width: 264px;
   flex-shrink: 0;
-  border-right: 1px solid #e2e8f0;
-  background: #f8fafc;
-  padding: 16px 12px;
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(16px);
+  border-right: 1px solid rgba(148, 163, 184, 0.08);
+  padding: 20px 14px;
   overflow-y: auto;
   height: 100%;
 }
 
 .wf2-library__title {
   margin: 0 0 4px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #0f172a;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f1f5f9;
 }
 
 .wf2-library__hint {
-  margin: 0 0 12px;
+  margin: 0 0 16px;
   font-size: 12px;
-  color: #94a3b8;
+  color: #64748b;
 }
 
 .wf2-library__group {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .wf2-library__group-head {
@@ -82,27 +88,43 @@ function onDragStart(ev: DragEvent, kind: NodeKind) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 8px;
+  padding: 8px 10px;
   background: transparent;
   border: 0;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: 6px;
+  letter-spacing: 0.06em;
+  border-radius: 8px;
+  transition: all 0.2s ease;
 }
 
 .wf2-library__group-head:hover {
-  background: #e2e8f0;
+  background: rgba(148, 163, 184, 0.08);
+  color: #e2e8f0;
+}
+
+.wf2-library__group-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wf2-library__group-bar {
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
 
 .wf2-library__group-count {
   font-size: 10px;
-  color: #94a3b8;
-  background: #e2e8f0;
-  padding: 1px 6px;
+  font-weight: 600;
+  color: #64748b;
+  background: rgba(148, 163, 184, 0.1);
+  padding: 2px 8px;
   border-radius: 999px;
 }
 
@@ -115,16 +137,34 @@ function onDragStart(ev: DragEvent, kind: NodeKind) {
 .wf2-library__item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 8px;
-  border-radius: 8px;
+  gap: 12px;
+  padding: 10px 10px;
+  border-radius: 10px;
   cursor: grab;
-  transition: background 0.15s ease;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.wf2-library__item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 0;
+  border-radius: 0 2px 2px 0;
+  background: var(--item-accent, #6366f1);
+  transition: height 0.25s ease;
 }
 
 .wf2-library__item:hover {
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.wf2-library__item:hover::before {
+  height: 60%;
 }
 
 .wf2-library__item:active {
@@ -132,15 +172,16 @@ function onDragStart(ev: DragEvent, kind: NodeKind) {
 }
 
 .wf2-library__item-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 14px;
+  font-size: 15px;
   flex-shrink: 0;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--item-accent, #6366f1) 30%, transparent);
 }
 
 .wf2-library__item-text {
@@ -151,15 +192,35 @@ function onDragStart(ev: DragEvent, kind: NodeKind) {
 
 .wf2-library__item-label {
   font-size: 13px;
-  color: #0f172a;
-  font-weight: 500;
+  color: #e2e8f0;
+  font-weight: 600;
 }
 
 .wf2-library__item-desc {
   font-size: 11px;
-  color: #94a3b8;
+  color: #64748b;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 折叠动画 */
+.wf2-lib-collapse-enter-active,
+.wf2-lib-collapse-leave-active {
+  transition: all 0.25s ease;
+  overflow: hidden;
+}
+
+.wf2-lib-collapse-enter-from,
+.wf2-lib-collapse-leave-to {
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
+}
+
+.wf2-lib-collapse-enter-to,
+.wf2-lib-collapse-leave-from {
+  opacity: 1;
+  max-height: 400px;
 }
 </style>

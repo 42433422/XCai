@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue'
+import { api } from '../api'
 import { applyTemplateV2 } from '../employeeConfigV2'
 
 export function useEmployeeWorkbenchState({
@@ -52,6 +53,10 @@ export function useEmployeeWorkbenchState({
   const linkedManifestSnapshot = ref(null)
   const showLinkedModPanel = ref(false)
   const packageManifestWorkflowId = ref(0)
+  const eligibleWorkflows = ref([])
+  const allWorkflowOptions = ref([])
+  const workflowGateLoading = ref(false)
+  const workflowGateError = ref('')
 
   const packageScanFlashClass = computed(() => {
     if (packageScanKind.value === 'ok') return 'flash-success'
@@ -80,6 +85,51 @@ export function useEmployeeWorkbenchState({
     const n = Number(resolvedWorkflowId.value || 0)
     return Number.isFinite(n) && n > 0 ? n : 0
   })
+
+  const selectedWorkflowStatus = computed(() => {
+    const wid = safeResolvedWorkflowId.value
+    if (!(wid > 0)) return null
+    return (allWorkflowOptions.value || []).find((w) => Number(w?.id || 0) === wid) || null
+  })
+
+  const workflowGate = computed(() => {
+    if (workflowGateLoading.value) return 'loading'
+    const wid = safeResolvedWorkflowId.value
+    if (!(wid > 0)) return 'idle'
+    if ((eligibleWorkflows.value || []).some((w) => Number(w?.id || 0) === wid)) return 'pass'
+    const status = String(selectedWorkflowStatus.value?.sandbox_status?.status || '').trim()
+    if (status === 'stale' || status === 'fail' || status === 'untested') return status
+    return workflowGateError.value ? 'fail' : 'fail'
+  })
+
+  const workflowGateMessage = computed(() => {
+    if (workflowGateLoading.value) return '正在读取工作流沙箱状态'
+    if (workflowGateError.value) return workflowGateError.value
+    const wid = safeResolvedWorkflowId.value
+    if (!(wid > 0)) return '请先选择已通过沙箱测试的工作流'
+    if (workflowGate.value === 'pass') return `工作流 #${wid} 已通过沙箱测试，可继续配置员工模块`
+    if (workflowGate.value === 'stale') return `工作流 #${wid} 已变更，请重新运行沙箱测试`
+    if (workflowGate.value === 'untested') return `工作流 #${wid} 尚未运行沙箱测试`
+    return `工作流 #${wid} 最近一次沙箱测试未通过`
+  })
+
+  const workflowGatePass = computed(() => workflowGate.value === 'pass')
+
+  async function loadEligibleWorkflows() {
+    workflowGateLoading.value = true
+    workflowGateError.value = ''
+    try {
+      const res = await api.listEmployeeEligibleWorkflows()
+      eligibleWorkflows.value = Array.isArray(res?.workflows) ? res.workflows : []
+      allWorkflowOptions.value = Array.isArray(res?.all_workflows) ? res.all_workflows : eligibleWorkflows.value
+    } catch (e) {
+      eligibleWorkflows.value = []
+      allWorkflowOptions.value = []
+      workflowGateError.value = e?.message || String(e)
+    } finally {
+      workflowGateLoading.value = false
+    }
+  }
 
   return {
     employeeTemplateId,
@@ -110,8 +160,17 @@ export function useEmployeeWorkbenchState({
     linkedManifestSnapshot,
     showLinkedModPanel,
     packageManifestWorkflowId,
+    eligibleWorkflows,
+    allWorkflowOptions,
+    workflowGateLoading,
+    workflowGateError,
     packageScanFlashClass,
     resolvedWorkflowId,
     safeResolvedWorkflowId,
+    selectedWorkflowStatus,
+    workflowGate,
+    workflowGateMessage,
+    workflowGatePass,
+    loadEligibleWorkflows,
   }
 }

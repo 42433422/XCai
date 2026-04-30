@@ -12,6 +12,27 @@
       </div>
       <span class="zoom-chip">{{ Math.round(viewport.scale * 100) }}%</span>
     </div>
+    <div class="workflow-heart-panel">
+      <div>
+        <h3>工作流心脏</h3>
+        <p class="hint">员工必须先绑定已创建且通过沙箱测试的工作流；身份、技能、提示词、声音等模块都围绕它展开。</p>
+      </div>
+      <div class="workflow-heart-panel__control">
+        <select
+          class="input"
+          :value="Number(local?.collaboration?.workflow?.workflow_id || 0)"
+          :disabled="workflowGateLoading || !workflowOptions.length"
+          @change="selectWorkflow($event.target.value)"
+        >
+          <option value="0">选择已通过沙箱的工作流</option>
+          <option v-for="w in workflowOptions" :key="w.id" :value="w.id">{{ w.name }} (#{{ w.id }})</option>
+        </select>
+        <button type="button" class="btn btn-sm" :disabled="workflowGateLoading" @click="$emit('refresh-workflows')">
+          {{ workflowGateLoading ? '刷新中' : '刷新沙箱状态' }}
+        </button>
+      </div>
+      <p :class="['workflow-gate-msg', workflowGateClass]">{{ workflowGateMessage }}</p>
+    </div>
     <div v-if="!immersive || showLibraryDrawer" :class="['col','library', immersive ? 'drawer-floating drawer-floating--left' : '', guideTarget === 'library' ? 'spotlight' : '']">
       <h3>模板与模块库</h3>
       <select class="input" :class="{ spotlight: guideTarget === 'library' }" :value="templateId" @change="$emit('template-change', $event.target.value)">
@@ -102,7 +123,7 @@
         </div>
       </div>
       <p v-if="!immersive" class="hint">画布操作：滚轮缩放（按鼠标位置缩放）、空白拖动画布、拖拽节点调整布局。</p>
-      <p v-if="!immersive" class="hint">心脏模块「协作」已锁定必选，不能移除。</p>
+      <p v-if="!immersive" class="hint">心脏模块「工作流」已锁定必选，不能移除。</p>
       <div v-if="!immersive || showEdgeDrawer" :class="['edge-drawer', immersive ? 'edge-drawer--floating' : '']">
         <h4 class="sub">模块连线</h4>
         <div class="row">
@@ -204,9 +225,9 @@
         </div>
       </div>
 
-      <div v-if="showAllConfigs || selectedModule === 'cognition'" class="cfg-card">
+      <div v-if="showAllConfigs || ['cognition', 'prompt', 'skills'].includes(selectedModule)" class="cfg-card">
         <div class="cfg-head">
-          <h4 class="cfg-title">认知</h4>
+          <h4 class="cfg-title">认知 / 提示词 / 技能</h4>
           <span :class="['cfg-badge', isModuleEnabled('cognition') ? 'ok' : 'off']">{{ moduleStatusLabel('cognition') }}</span>
           <span class="cfg-meta">{{ moduleMeta('cognition') }}</span>
           <button type="button" class="btn btn-sm" @click="toggleModuleEnabled('cognition')">{{ isModuleEnabled('cognition') ? '停用' : '启用' }}</button>
@@ -264,7 +285,7 @@
         </div>
       </div>
 
-      <div v-if="showAllConfigs || selectedModule === 'actions'" class="cfg-card">
+      <div v-if="showAllConfigs || ['actions', 'voice'].includes(selectedModule)" class="cfg-card">
         <div class="cfg-head">
           <h4 class="cfg-title">行动</h4>
           <span :class="['cfg-badge', isModuleEnabled('actions') ? 'ok' : 'off']">{{ moduleStatusLabel('actions') }}</span>
@@ -299,17 +320,18 @@
 
       <div v-if="showAllConfigs || selectedModule === 'collaboration'" class="cfg-card">
         <div class="cfg-head">
-          <h4 class="cfg-title">协作（心脏）</h4>
+          <h4 class="cfg-title">工作流（心脏）</h4>
           <span :class="['cfg-badge', Number(local?.collaboration?.workflow?.workflow_id || 0) > 0 ? 'ok' : 'warn']">{{ moduleStatusLabel('collaboration') }}</span>
           <span class="cfg-meta">{{ moduleMeta('collaboration') }}</span>
           <button type="button" class="btn btn-sm" @click="toggleCollapse('collaboration')">{{ isCollapsed('collaboration') ? '展开' : '折叠' }}</button>
         </div>
         <div v-show="!isCollapsed('collaboration')" class="cfg-body">
-        <input class="input" type="number" min="1" :value="Number(local?.collaboration?.workflow?.workflow_id || 0)" placeholder="workflow_id（心脏）" @input="setPath('collaboration.workflow.workflow_id', Number($event.target.value || 0))" />
-        <select class="input" :value="Number(local?.collaboration?.workflow?.workflow_id || 0)" @change="setPath('collaboration.workflow.workflow_id', Number($event.target.value || 0))">
-          <option value="0">选择工作流</option>
+        <input class="input" type="text" readonly :value="Number(local?.collaboration?.workflow?.workflow_id || 0) > 0 ? `workflow_id: ${Number(local?.collaboration?.workflow?.workflow_id || 0)}` : '尚未选择通过沙箱的工作流'" />
+        <select class="input" :value="Number(local?.collaboration?.workflow?.workflow_id || 0)" @change="selectWorkflow($event.target.value)">
+          <option value="0">选择已通过沙箱的工作流</option>
           <option v-for="w in workflowOptions" :key="w.id" :value="w.id">{{ w.name }} (#{{ w.id }})</option>
         </select>
+        <p :class="['workflow-gate-msg', workflowGateClass]">{{ workflowGateMessage }}</p>
         <label><input type="checkbox" :checked="Boolean(local.collaboration?.handoff?.enabled)" @change="togglePath('collaboration.handoff', $event.target.checked, { enabled: true, conditions: [], targets: [] })" /> 启用任务交接</label>
         <input class="input" :value="(local.collaboration?.handoff?.conditions || []).join(',')" placeholder="交接条件（逗号分隔）" @input="setPath('collaboration.handoff.conditions', splitTags($event.target.value))" />
         <input class="input" :value="(local.collaboration?.handoff?.targets || []).join(',')" placeholder="交接目标（逗号分隔）" @input="setPath('collaboration.handoff.targets', splitTags($event.target.value))" />
@@ -380,22 +402,35 @@ const props = defineProps({
   templateId: { type: String, default: 'workflow' },
   guideTarget: { type: String, default: '' },
   immersive: { type: Boolean, default: false },
+  eligibleWorkflows: { type: Array, default: () => [] },
+  allWorkflowOptions: { type: Array, default: () => [] },
+  workflowGate: { type: String, default: 'idle' },
+  workflowGateMessage: { type: String, default: '请先选择已通过沙箱测试的工作流' },
+  workflowGateLoading: { type: Boolean, default: false },
+  workflowGateError: { type: String, default: '' },
 })
-const emit = defineEmits(['update:config', 'template-change', 'export-zip'])
+const emit = defineEmits(['update:config', 'template-change', 'export-zip', 'refresh-workflows'])
 const moduleDefs = [
-  { key: 'identity', label: '身份' }, { key: 'perception', label: '感知' }, { key: 'memory', label: '记忆' },
-  { key: 'cognition', label: '认知' }, { key: 'actions', label: '行动' }, { key: 'management', label: '管理' }, { key: 'collaboration', label: '协作(心脏)' },
+  { key: 'collaboration', label: '工作流(心脏)' },
+  { key: 'identity', label: '身份' },
+  { key: 'prompt', label: '提示词' },
+  { key: 'skills', label: '技能' },
+  { key: 'voice', label: '声音(TTS)' },
+  { key: 'perception', label: '感知' },
+  { key: 'memory', label: '记忆' },
+  { key: 'actions', label: '行动' },
+  { key: 'management', label: '管理' },
 ]
 const clone = (v) => JSON.parse(JSON.stringify(v))
 const local = ref(clone(props.config || {}))
-const canvasModules = ref(['identity', 'cognition', 'collaboration'])
+const canvasModules = ref(['collaboration', 'identity', 'prompt', 'skills'])
 const selectedModule = ref('collaboration')
-const edgeFrom = ref('cognition')
-const edgeTo = ref('collaboration')
+const edgeFrom = ref('collaboration')
+const edgeTo = ref('prompt')
 const edgeCondition = ref('')
 const editingEdgeIndex = ref(-1)
 const editingEdgeCondition = ref('')
-const workflowOptions = ref([])
+const fetchedWorkflowOptions = ref([])
 const voiceTestText = ref('你好，这是一段声音克隆测试文本。')
 const nodePositions = ref({})
 const viewport = ref({ x: 0, y: 0, scale: 1 })
@@ -422,7 +457,8 @@ watch(selectedModule, (key) => {
 })
 
 function ensureCanvasFromConfig() {
-  const keys = ['identity', 'cognition', 'collaboration']
+  const keys = ['collaboration', 'identity', 'prompt', 'skills']
+  if (local.value?.actions?.voice_output) keys.push('voice')
   if (local.value.perception) keys.push('perception')
   if (local.value.memory) keys.push('memory')
   if (local.value.actions) keys.push('actions')
@@ -433,8 +469,56 @@ function ensureCanvasFromConfig() {
 const emitConfig = () => emit('update:config', clone(local.value))
 const labelOf = (key) => moduleDefs.find((x) => x.key === key)?.label || key
 const isInCanvas = (key) => canvasModules.value.includes(key)
-function addModule(key) { if (!isInCanvas(key)) canvasModules.value.push(key); if (!local.value[key] && key !== 'collaboration') local.value[key] = {}; selectedModule.value = key; emitConfig() }
-function removeModule(key) { if (key === 'collaboration') return; canvasModules.value = canvasModules.value.filter((x) => x !== key); local.value[key] = undefined; emitConfig() }
+function ensureCognitionDefaults() {
+  if (!local.value.cognition || typeof local.value.cognition !== 'object') local.value.cognition = {}
+  if (!local.value.cognition.agent || typeof local.value.cognition.agent !== 'object') {
+    local.value.cognition.agent = {
+      system_prompt: '',
+      role: { name: '', persona: '', tone: 'professional', expertise: [] },
+      behavior_rules: [],
+      few_shot_examples: [],
+      model: { provider: 'deepseek', model_name: 'deepseek-chat', temperature: 0.7, max_tokens: 4000, top_p: 0.9 },
+    }
+  }
+  if (!Array.isArray(local.value.cognition.skills)) local.value.cognition.skills = []
+}
+function ensureVoiceDefaults() {
+  if (!local.value.actions || typeof local.value.actions !== 'object') local.value.actions = {}
+  if (!local.value.actions.voice_output || typeof local.value.actions.voice_output !== 'object') {
+    local.value.actions.voice_output = {
+      enabled: true,
+      tts: { provider: 'aliyun', voice_name: '', sample_rate: 24000 },
+      voice_cloning: { voice_id: '', voice_name: '', source_type: 'preset', source_files: [], settings: { speed: 1, pitch: 0, emotion: 'neutral', language: 'zh-CN' }, status: 'untrained' },
+    }
+  }
+}
+function ensureModuleBacking(key) {
+  if (key === 'prompt' || key === 'skills') ensureCognitionDefaults()
+  else if (key === 'voice') ensureVoiceDefaults()
+  else if (!local.value[key] && key !== 'collaboration') local.value[key] = {}
+}
+function addModule(key) {
+  if (!isInCanvas(key)) canvasModules.value.push(key)
+  ensureModuleBacking(key)
+  selectedModule.value = key
+  emitConfig()
+}
+function removeModule(key) {
+  if (key === 'collaboration') return
+  canvasModules.value = canvasModules.value.filter((x) => x !== key)
+  if (key === 'voice') {
+    if (local.value.actions) delete local.value.actions.voice_output
+  } else if (key === 'skills') {
+    ensureCognitionDefaults()
+    local.value.cognition.skills = []
+  } else if (key === 'prompt') {
+    ensureCognitionDefaults()
+    local.value.cognition.agent.system_prompt = ''
+  } else {
+    local.value[key] = undefined
+  }
+  emitConfig()
+}
 function moveUp(idx) { const a = [...canvasModules.value]; [a[idx - 1], a[idx]] = [a[idx], a[idx - 1]]; canvasModules.value = a }
 function moveDown(idx) { const a = [...canvasModules.value]; [a[idx + 1], a[idx]] = [a[idx], a[idx + 1]]; canvasModules.value = a }
 function ensureNodePositions() {
@@ -555,24 +639,29 @@ function isCollapsed(key) { return Boolean(collapsed.value[key]) }
 function toggleCollapse(key) { collapsed.value = { ...collapsed.value, [key]: !collapsed.value[key] } }
 function isModuleEnabled(key) {
   if (key === 'identity' || key === 'collaboration') return true
+  if (key === 'prompt') return String(local.value?.cognition?.agent?.system_prompt || '').trim().length > 0 || Boolean(local.value?.cognition?.agent)
+  if (key === 'skills') return Array.isArray(local.value?.cognition?.skills)
+  if (key === 'voice') return Boolean(local.value?.actions?.voice_output)
   return Boolean(local.value?.[key])
 }
 function toggleModuleEnabled(key) {
   if (key === 'identity' || key === 'collaboration') return
   if (isModuleEnabled(key)) {
-    local.value[key] = undefined
-    canvasModules.value = canvasModules.value.filter((x) => x !== key)
+    removeModule(key)
+    return
   } else {
     addModule(key)
     return
   }
-  emitConfig()
 }
 function moduleStatusLabel(key) {
   if (key === 'collaboration') {
     const ok = Number(local.value?.collaboration?.workflow?.workflow_id || 0) > 0
-    return ok ? '已配置' : '缺 workflow_id'
+    return ok ? (props.workflowGate === 'pass' ? '沙箱已通过' : '待重新沙箱') : '缺 workflow_id'
   }
+  if (key === 'prompt') return String(local.value?.cognition?.agent?.system_prompt || '').trim() ? '已配置' : '待填写'
+  if (key === 'skills') return Array.isArray(local.value?.cognition?.skills) && local.value.cognition.skills.length ? '已选择' : '可选'
+  if (key === 'voice') return local.value?.actions?.voice_output ? 'TTS 已启用' : '可选'
   if (key === 'identity') {
     const ok = String(local.value?.identity?.id || '').trim() && String(local.value?.identity?.name || '').trim()
     return ok ? '已配置' : '信息缺失'
@@ -581,6 +670,9 @@ function moduleStatusLabel(key) {
 }
 function moduleMeta(key) {
   if (key === 'identity') return String(local.value?.identity?.id || '未设置ID')
+  if (key === 'prompt') return `chars:${String(local.value?.cognition?.agent?.system_prompt || '').length}`
+  if (key === 'skills') return `skills:${Array.isArray(local.value?.cognition?.skills) ? local.value.cognition.skills.length : 0}`
+  if (key === 'voice') return String(local.value?.actions?.voice_output?.tts?.provider || 'tts')
   if (key === 'cognition') return `${String(local.value?.cognition?.agent?.model?.provider || '-')}/${String(local.value?.cognition?.agent?.model?.model_name || '-')}`
   if (key === 'memory') return `ctx:${Number(local.value?.memory?.short_term?.context_window || 0)}`
   if (key === 'collaboration') return `workflow_id:${Number(local.value?.collaboration?.workflow?.workflow_id || 0)}`
@@ -658,7 +750,7 @@ function loadSampleEmployee() {
     workflow_employees: [{ from: 'perception', to: 'cognition', workflow_id: 1, title: '感知到认知', enabled: true }, { from: 'cognition', to: 'actions', workflow_id: 1, title: '认知到执行', enabled: true }],
     metadata: { framework_version: '2.0.0', created_by: 'employee_block_builder_sample' },
   }
-  canvasModules.value = ['identity', 'perception', 'memory', 'cognition', 'actions', 'management', 'collaboration']; selectedModule.value = 'identity'; emitConfig()
+  canvasModules.value = ['collaboration', 'identity', 'perception', 'memory', 'prompt', 'skills', 'voice', 'actions', 'management']; selectedModule.value = 'identity'; emitConfig()
   autoLayout()
 }
 function loadDataAnalystSample() {
@@ -673,7 +765,7 @@ function loadDataAnalystSample() {
     workflow_employees: [{ from: 'perception', to: 'cognition', workflow_id: 1, title: '采集到分析', enabled: true }, { from: 'cognition', to: 'actions', workflow_id: 1, title: '分析到输出', enabled: true }],
     metadata: { framework_version: '2.0.0', created_by: 'employee_block_builder_sample' },
   }
-  canvasModules.value = ['identity', 'perception', 'memory', 'cognition', 'actions', 'management', 'collaboration']; selectedModule.value = 'identity'; emitConfig()
+  canvasModules.value = ['collaboration', 'identity', 'perception', 'memory', 'prompt', 'skills', 'actions', 'management']; selectedModule.value = 'identity'; emitConfig()
   autoLayout()
 }
 const jsonPreview = computed(() => JSON.stringify(local.value, null, 2))
@@ -701,12 +793,30 @@ const renderedEdges = computed(() => {
 })
 const llmProvider = computed(() => String(local.value?.cognition?.agent?.model?.provider || 'deepseek'))
 const llmModel = computed(() => String(local.value?.cognition?.agent?.model?.model_name || 'deepseek-chat'))
+const workflowOptions = computed(() => {
+  const fromProps = Array.isArray(props.eligibleWorkflows) ? props.eligibleWorkflows : []
+  return fromProps.length ? fromProps : fetchedWorkflowOptions.value
+})
+const workflowGateClass = computed(() => {
+  if (props.workflowGate === 'pass') return 'workflow-gate-msg--ok'
+  if (props.workflowGate === 'loading') return 'workflow-gate-msg--info'
+  return 'workflow-gate-msg--warn'
+})
 const isEmptyWorkbench = computed(() => {
   const id = String(local.value?.identity?.id || '').trim()
   const name = String(local.value?.identity?.name || '').trim()
   const wid = Number(local.value?.collaboration?.workflow?.workflow_id || 0)
   return !id && !name && wid <= 0
 })
+
+function selectWorkflow(raw) {
+  const wid = Number.parseInt(String(raw || 0), 10)
+  if (!local.value.collaboration || typeof local.value.collaboration !== 'object') local.value.collaboration = {}
+  if (!local.value.collaboration.workflow || typeof local.value.collaboration.workflow !== 'object') local.value.collaboration.workflow = {}
+  local.value.collaboration.workflow.workflow_id = Number.isFinite(wid) && wid > 0 ? wid : 0
+  selectedModule.value = 'collaboration'
+  emitConfig()
+}
 
 function loadPromptCases() {
   try {
@@ -781,11 +891,12 @@ async function runPromptTest() {
 loadPromptCases()
 ensureNodePositions()
 onMounted(async () => {
+  emit('refresh-workflows')
   try {
-    const ret = await api.listWorkflows()
-    workflowOptions.value = Array.isArray(ret) ? ret : Array.isArray(ret?.items) ? ret.items : []
+    const ret = await api.listEmployeeEligibleWorkflows()
+    fetchedWorkflowOptions.value = Array.isArray(ret?.workflows) ? ret.workflows : []
   } catch {
-    workflowOptions.value = []
+    fetchedWorkflowOptions.value = []
   }
 })
 </script>
@@ -794,6 +905,13 @@ onMounted(async () => {
 .builder{display:grid;grid-template-columns:220px 1fr 1.08fr;gap:.8rem}
 .builder--immersive{grid-template-columns:1fr}
 .canvas-toolbar{grid-column:1/-1;display:flex;gap:.5rem;align-items:center;padding:.55rem .65rem;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:linear-gradient(180deg,rgba(18,18,18,.95),rgba(10,10,10,.92));box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 10px 20px rgba(0,0,0,.45)}
+.workflow-heart-panel{grid-column:1/-1;display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,420px);gap:.7rem;align-items:center;padding:.75rem .85rem;border:1px solid rgba(74,222,128,.28);border-radius:14px;background:linear-gradient(135deg,rgba(22,101,52,.16),rgba(15,23,42,.72));box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 26px rgba(0,0,0,.36)}
+.workflow-heart-panel h3{margin:0 0 .25rem;color:#dcfce7;font-size:15px}
+.workflow-heart-panel__control{display:grid;grid-template-columns:1fr auto;gap:.45rem;align-items:center}
+.workflow-gate-msg{grid-column:1/-1;margin:0;font-size:12px}
+.workflow-gate-msg--ok{color:#86efac}
+.workflow-gate-msg--warn{color:#fde68a}
+.workflow-gate-msg--info{color:#bfdbfe}
 .builder--immersive .canvas-toolbar{
   position: fixed;
   left: 12px;

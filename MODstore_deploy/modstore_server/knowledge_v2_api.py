@@ -114,10 +114,10 @@ def _service_unavailable(e: Exception) -> HTTPException:
 
 @router.get("/status")
 def api_status(user: User = Depends(_get_current_user)) -> Dict[str, Any]:
-    emb = embedding_config_snapshot()
     eng = vector_engine.status()
     sf = get_session_factory()
     with sf() as session:
+        emb = embedding_config_snapshot(session=session, user_id=int(user.id))
         own_count = (
             session.query(KnowledgeCollection)
             .filter(
@@ -209,7 +209,7 @@ def api_create_collection(
         )
         if existing is not None:
             raise HTTPException(409, "同名集合已存在")
-        emb_cfg = embedding_config_snapshot()
+        emb_cfg = embedding_config_snapshot(session=session, user_id=int(user.id))
         coll = KnowledgeCollection(
             owner_kind=owner_kind,
             owner_id=owner_id,
@@ -321,6 +321,8 @@ def api_list_documents(
 async def api_upload_document(
     coll_id: int,
     file: UploadFile = File(...),
+    embedding_provider: str | None = Form(None),
+    embedding_model: str | None = Form(None),
     user: User = Depends(_get_current_user),
 ):
     sf = get_session_factory()
@@ -336,7 +338,14 @@ async def api_upload_document(
     text, chunks, chunk_metas = parse_and_chunk_with_metadata(filename, raw)
     doc_id = make_doc_id(int(user.id), filename, raw)
     try:
-        embeddings = await embed_texts(chunks)
+        sf_embed = get_session_factory()
+        with sf_embed() as session:
+            embeddings = await embed_texts(
+                chunks,
+                session=session,
+                user_id=int(user.id),
+                provider=embedding_provider,
+            )
     except EmbeddingConfigError as e:
         raise _service_unavailable(e)
 
@@ -561,6 +570,8 @@ class RetrieveBody(BaseModel):
     workflow_id: Optional[int] = None
     org_id: Optional[str] = Field(None, max_length=64)
     collection_ids: Optional[List[int]] = None
+    embedding_provider: Optional[str] = Field(None, max_length=64)
+    embedding_model: Optional[str] = Field(None, max_length=128)
 
 
 @router.post("/retrieve")
@@ -578,6 +589,7 @@ async def api_retrieve(
             extra_collection_ids=body.collection_ids,
             top_k=body.top_k,
             min_score=body.min_score,
+            embedding_provider=body.embedding_provider,
         )
     except KnowledgeVectorError as e:
         raise _service_unavailable(e)
