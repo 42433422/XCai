@@ -3,8 +3,10 @@ package com.modstore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.modstore.model.Order;
 import com.modstore.model.User;
+import com.modstore.service.PaymentMetrics;
 import com.modstore.service.WebhookDispatcher;
 import com.sun.net.httpserver.HttpServer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -34,7 +36,8 @@ class WebhookDispatcherTest {
         });
         server.start();
         try {
-            WebhookDispatcher dispatcher = new WebhookDispatcher(new ObjectMapper());
+            WebhookDispatcher dispatcher =
+                    new WebhookDispatcher(new ObjectMapper(), new PaymentMetrics(new SimpleMeterRegistry()));
             ReflectionTestUtils.setField(dispatcher, "webhookUrl", "http://127.0.0.1:" + server.getAddress().getPort() + "/hook");
             ReflectionTestUtils.setField(dispatcher, "webhookSecret", "secret");
             ReflectionTestUtils.setField(dispatcher, "timeoutSeconds", 2);

@@ -72,7 +72,7 @@ if ! command -v mvn >/dev/null 2>&1; then
 fi
 echo "[ok] mvn clean package"
 # 必须 clean：重命名 Flyway 文件后旧版会残留在 target/classes，与新版并存导致「两个 V9」
-mvn -B -q -DskipTests clean package
+mvn -B -q -Dmaven.test.skip=true clean package
 echo "[ok] restart"
 if command -v systemctl >/dev/null 2>&1; then
   systemctl restart modstore || { echo "[err] systemctl restart modstore failed" >&2; exit 1; }
