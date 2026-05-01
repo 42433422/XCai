@@ -90,6 +90,13 @@ class ResetPasswordDTO(BaseModel):
     new_password: str = Field(..., min_length=6, max_length=128)
 
 
+class AdminResetUserPasswordDTO(BaseModel):
+    """线下运维：凭 MODSTORE_ADMIN_RECHARGE_TOKEN 重置指定用户密码（无邮件场景）。"""
+
+    username: str = Field(..., min_length=1, max_length=64)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
 class RechargeDTO(BaseModel):
     amount: float = Field(..., gt=0)
     description: str = ""
@@ -423,6 +430,33 @@ def api_change_password(body: PasswordChangeDTO, user: User = Depends(_get_curre
             raise HTTPException(404, "用户不存在")
         if not verify_password(body.current_password, row.password_hash):
             raise HTTPException(400, "当前密码不正确")
+        row.password_hash = hash_password(body.new_password)
+        session.commit()
+    return {"ok": True}
+
+
+@router.post("/admin/reset-user-password")
+def api_admin_reset_user_password(
+    body: AdminResetUserPasswordDTO,
+    request: Request,
+):
+    """凭 ``MODSTORE_ADMIN_RECHARGE_TOKEN`` 重置用户密码；请求头 ``X-Modstore-Recharge-Token`` 与钱包直充一致。"""
+    admin_token = (os.environ.get("MODSTORE_ADMIN_RECHARGE_TOKEN") or "").strip()
+    if not admin_token:
+        raise HTTPException(503, "未配置 MODSTORE_ADMIN_RECHARGE_TOKEN，无法执行管理员密码重置")
+    client_token = (request.headers.get("X-Modstore-Recharge-Token") or "").strip()
+    if client_token != admin_token:
+        raise HTTPException(403, "无效的管理员授权")
+
+    un = (body.username or "").strip()
+    if not un:
+        raise HTTPException(400, "请填写用户名")
+
+    sf = get_session_factory()
+    with sf() as session:
+        row = session.query(User).filter(User.username == un).first()
+        if not row:
+            raise HTTPException(404, "用户不存在")
         row.password_hash = hash_password(body.new_password)
         session.commit()
     return {"ok": True}

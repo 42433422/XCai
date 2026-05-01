@@ -200,3 +200,62 @@ def test_delete_mod(client, auth_headers: dict):
     r = client.get("/api/mods/del-me", headers=auth_headers)
     # 删除后用户不再拥有该 mod，所有权校验先于「目录是否存在」
     assert r.status_code == 403
+
+
+def test_admin_reset_user_password_requires_token(client, monkeypatch):
+    monkeypatch.setenv("MODSTORE_ADMIN_RECHARGE_TOKEN", "")
+    r = client.post(
+        "/api/admin/reset-user-password",
+        json={"username": "nobody", "new_password": "new-pass-99"},
+        headers={"X-Modstore-Recharge-Token": "x"},
+    )
+    assert r.status_code == 503
+
+
+def test_admin_reset_user_password_wrong_token(client, monkeypatch):
+    monkeypatch.setenv("MODSTORE_ADMIN_RECHARGE_TOKEN", "secret-admin")
+    r = client.post(
+        "/api/admin/reset-user-password",
+        json={"username": "nobody", "new_password": "new-pass-99"},
+        headers={"X-Modstore-Recharge-Token": "wrong"},
+    )
+    assert r.status_code == 403
+
+
+def test_admin_reset_user_password_then_login(client, monkeypatch):
+    import uuid
+
+    monkeypatch.setattr("modstore_server.market_api.assert_email_outbound_configured", lambda: None)
+    monkeypatch.setattr("modstore_server.market_api.generate_verification_code", lambda: "999999")
+    monkeypatch.setattr(
+        "modstore_server.market_api.send_verification_email",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setenv("MODSTORE_ADMIN_RECHARGE_TOKEN", "secret-admin")
+
+    username = f"rst_{uuid.uuid4().hex[:12]}"
+    email = f"rst{uuid.uuid4().hex[:8]}@pytest.local"
+    assert client.post("/api/auth/send-register-code", json={"email": email}).status_code == 202
+    reg = client.post(
+        "/api/auth/register",
+        json={
+            "username": username,
+            "password": "old-pass-12",
+            "email": email,
+            "verification_code": "999999",
+        },
+    )
+    assert reg.status_code == 200, reg.text
+
+    r = client.post(
+        "/api/admin/reset-user-password",
+        json={"username": username, "new_password": "fresh-pass-34"},
+        headers={"X-Modstore-Recharge-Token": "secret-admin"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json().get("ok") is True
+
+    login = client.post("/api/auth/login", json={"username": username, "password": "fresh-pass-34"})
+    assert login.status_code == 200, login.text
+    login_old = client.post("/api/auth/login", json={"username": username, "password": "old-pass-12"})
+    assert login_old.status_code == 401
