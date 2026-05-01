@@ -21,6 +21,7 @@ docker compose --profile app up --build
 
 ## 关键变量
 
+- `APT_MIRROR`：构建 **api** 镜像前换 Debian apt 源（仅影响 `Dockerfile` 里 `apt-get`）。国内示例：在 `.env` 中设置 `APT_MIRROR=https://mirrors.aliyun.com` 或 `https://mirrors.tuna.tsinghua.edu.cn`，然后 `docker compose build api` / `up --build`。不要尾斜杠。
 - `PAYMENT_BACKEND=python|java`：是否由 FastAPI 代理支付/钱包请求到 Java 支付服务。
 - `REDIS_URL` / `REDIS_PASSWORD`：支付幂等、防重放和缓存使用 Redis，生产环境应启用认证并限制网络。
 - `MODSTORE_WEBHOOK_URL` / `MODSTORE_WEBHOOK_SECRET`：支付和退款事件的业务 Webhook 地址与签名密钥。

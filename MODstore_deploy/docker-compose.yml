@@ -82,6 +82,8 @@ services:
   api:
     build:
       context: .
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
     profiles: ["app"]
     depends_on:
       postgres:
@@ -106,6 +108,11 @@ services:
       MODSTORE_PAYMENT_ORDERS_DIR: /data/payment_orders
       MODSTORE_VECTOR_DB_DIR: /data/chroma
       MODSTORE_VECTOR_BACKEND: ${MODSTORE_VECTOR_BACKEND:-chroma}
+      # 空库时自动创建首个管理员；生产请设 MODSTORE_BOOTSTRAP_ADMIN=0 或删除下列变量
+      MODSTORE_BOOTSTRAP_ADMIN: ${MODSTORE_BOOTSTRAP_ADMIN:-1}
+      MODSTORE_BOOTSTRAP_ADMIN_USERNAME: ${MODSTORE_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      MODSTORE_BOOTSTRAP_ADMIN_PASSWORD: ${MODSTORE_BOOTSTRAP_ADMIN_PASSWORD:-admin123}
+      MODSTORE_BOOTSTRAP_ADMIN_EMAIL: ${MODSTORE_BOOTSTRAP_ADMIN_EMAIL:-admin@localhost}
     ports:
       - "${MODSTORE_API_PORT:-8765}:8765"
     volumes:
