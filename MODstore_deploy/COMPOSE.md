@@ -42,6 +42,7 @@ docker compose --profile app up -d --build
 
 远程服务器日常运维入口见：
 
+- `scripts/ssh-install-docker-and-deploy.ps1`：本机 PowerShell 一键「SSH → 安装 Docker（若未就绪）→ `remote-sre` deploy」。需 root 或具备安装 Docker 的 sudo 权限；服务器需能访问 `https://get.docker.com`。
 - `scripts/remote-sre.ps1`：本机通过 SSH 触发远程 preflight、deploy、backup、smoke、loadtest、rollback。
 - `scripts/remote_sre_ops.sh`：远程实际执行脚本。
 - `docs/runbooks/remote-server-operations.md`：完整操作手册。
