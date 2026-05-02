@@ -935,6 +935,21 @@
           >
             {{ finalizeLoading ? orchestrationButtonPendingLabel : orchestrationButtonLabel }}
           </button>
+          <div
+            v-if="finalizeLoading"
+            class="wb-handoff-actions__timing"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="wb-handoff-actions__timing-line">
+              <span class="wb-handoff-actions__k">预计</span>
+              <span class="wb-handoff-actions__v">{{ orchestrationEtaDisplay }}</span>
+            </span>
+            <span class="wb-handoff-actions__timing-line">
+              <span class="wb-handoff-actions__k">已用</span>
+              <span class="wb-handoff-actions__v">{{ orchestrationElapsedDisplay }}</span>
+            </span>
+          </div>
         </div>
         <p class="wb-handoff-foot">{{ handoffFootNote }}</p>
       </section>
@@ -1590,6 +1605,14 @@ const finalizeError = ref('')
 /** 编排轮询中的会话快照（含 steps） */
 const orchestrationSession = ref(null)
 const pollStop = ref(false)
+/** 编排：估算耗时阶段 → 正式执行（估算结束后才开始「已用」计时） */
+const orchPhase = ref('idle')
+const orchestrationEtaSeconds = ref(null)
+const orchestrationEtaReason = ref('')
+let orchElapsedTimer = null
+const orchTimingStartMs = ref(null)
+/** 每 500ms 递增，驱动已用时间的 computed 刷新 */
+const orchElapsedTick = ref(0)
 /** 工作流编排成功后的「关联 Mod」卡片 */
 const workflowLinkOffer = ref(null)
 const linkMods = ref([])
@@ -3108,6 +3131,7 @@ function confirmVoiceAndOpenHandoff() {
     workflowName: '',
     planNotes: intentKey === 'workflow' ? text : '',
     suggestedModId: intentKey === 'mod' ? suggestModIdFromText(text) : '',
+    generateFrontend: intentKey === 'mod' ? modFrontendEnabled.value : false,
     employeeTarget: intentKey === 'employee' ? 'pack_plus_workflow' : 'pack_only',
     employeeWorkflowName: '',
     fhdBaseUrl: '',
@@ -3330,9 +3354,11 @@ const orchestrationButtonLabel = computed(() => {
   return '开始创建并校验'
 })
 
-const orchestrationButtonPendingLabel = computed(() =>
-  finalizeLoading.value ? '执行中…' : orchestrationButtonLabel.value,
-)
+const orchestrationButtonPendingLabel = computed(() => {
+  if (!finalizeLoading.value) return orchestrationButtonLabel.value
+  if (orchPhase.value === 'estimating') return '估算用时…'
+  return '执行中…'
+})
 
 const makeHasActiveTask = computed(() =>
   Boolean(
@@ -3381,6 +3407,107 @@ const handoffRunStatusLine = computed(() => {
   const st = typeof s?.status === 'string' ? s.status.trim() : ''
   if (st && st !== 'done' && st !== 'error') return `编排状态：${st}`
   return '已提交，正在连接编排服务并拉取步骤…'
+})
+
+function formatWallClockSec(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0))
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  if (m >= 60) {
+    const h = Math.floor(m / 60)
+    const mm = m % 60
+    return `${h}:${String(mm).padStart(2, '0')}:${String(r).padStart(2, '0')}`
+  }
+  if (m === 0) return `${r}秒`
+  return `${m}分${String(r).padStart(2, '0')}秒`
+}
+
+function stopOrchestrationElapsedTicker() {
+  if (orchElapsedTimer != null) {
+    clearInterval(orchElapsedTimer)
+    orchElapsedTimer = null
+  }
+}
+
+function startOrchestrationElapsedTicker() {
+  stopOrchestrationElapsedTicker()
+  orchElapsedTick.value = 0
+  orchElapsedTimer = setInterval(() => {
+    orchElapsedTick.value += 1
+  }, 500)
+}
+
+const ORCH_ESTIMATE_SYSTEM = [
+  '你是「工作台异步编排」的 wall-clock 耗时估算助手。用户即将启动一次服务端多步任务（可能含多次 LLM、写盘、工作流/沙箱等）。',
+  '请只根据 intent、需求摘要与清单规模，推断从「开始执行」到「全部完成」的总秒数；不得照抄示例数字，须结合复杂度自行推理。',
+  '只输出一个 JSON 对象，不要用 markdown 代码围栏，不要其它文字。',
+  '字段：estimated_seconds（整数，通常 120～3600，极端不超过 7200），confidence（"low"|"medium"|"high"），one_line_reason（一句中文，≤80 字）。',
+].join('')
+
+function parseOrchestrationEtaFromLlmText(text) {
+  let s = String(text || '').trim()
+  if (!s) return { seconds: null, reason: '' }
+  if (s.startsWith('```')) {
+    s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
+  }
+  const start = s.indexOf('{')
+  const end = s.lastIndexOf('}')
+  if (start < 0 || end <= start) return { seconds: null, reason: '' }
+  try {
+    const o = JSON.parse(s.slice(start, end + 1))
+    const n = Number(o.estimated_seconds)
+    if (!Number.isFinite(n)) return { seconds: null, reason: String(o.one_line_reason || '').trim().slice(0, 120) }
+    const sec = Math.round(Math.max(30, Math.min(n, 7200)))
+    return {
+      seconds: sec,
+      reason: String(o.one_line_reason || '').trim().slice(0, 120),
+    }
+  } catch {
+    return { seconds: null, reason: '' }
+  }
+}
+
+async function estimateOrchestrationSeconds(ctx) {
+  try {
+    const { provider, model } = await resolveChatProviderModel()
+    const lines = [
+      `intent=${ctx.intent}`,
+      `execution_checklist 条数=${ctx.checklistLen}`,
+      ctx.intent === 'mod' ? `generate_frontend=${ctx.generateFrontend}` : '',
+      ctx.intent === 'employee' ? `employee_target=${ctx.employeeTarget || ''}` : '',
+      typeof ctx.scriptFileCount === 'number' && ctx.scriptFileCount > 0
+        ? `script_workflow 附件数=${ctx.scriptFileCount}`
+        : '',
+      '--- 需求摘要（截断） ---',
+      ctx.brief.slice(0, 3500),
+    ].filter(Boolean)
+    const res = await api.llmChat(provider, model, [
+      { role: 'system', content: ORCH_ESTIMATE_SYSTEM },
+      { role: 'user', content: lines.join('\n') },
+    ], 256)
+    return parseOrchestrationEtaFromLlmText(res?.content)
+  } catch {
+    return { seconds: null, reason: '' }
+  }
+}
+
+const orchestrationEtaDisplay = computed(() => {
+  if (!finalizeLoading.value) return '—'
+  if (orchPhase.value === 'estimating') return '模型推算中…'
+  const sec = orchestrationEtaSeconds.value
+  if (sec == null || !Number.isFinite(sec)) {
+    return orchestrationEtaReason.value ? `—（${orchestrationEtaReason.value}）` : '—'
+  }
+  return `约 ${formatWallClockSec(sec)}`
+})
+
+const orchestrationElapsedDisplay = computed(() => {
+  orchElapsedTick.value
+  if (!finalizeLoading.value) return '—'
+  if (orchPhase.value === 'estimating') return '—'
+  const t0 = orchTimingStartMs.value
+  if (t0 == null) return '—'
+  return formatWallClockSec((Date.now() - t0) / 1000)
 })
 
 const canRunOrchestration = computed(() => {
@@ -3710,6 +3837,7 @@ watch(
 
 onBeforeUnmount(() => {
   pollStop.value = true
+  stopOrchestrationElapsedTicker()
   closePlanDiagramPreview()
   if (planLoadingIntervalId !== null) {
     clearInterval(planLoadingIntervalId)
@@ -4437,6 +4565,12 @@ function dismissPendingHandoff() {
   finalizeError.value = ''
   orchestrationSession.value = null
   pollStop.value = true
+  stopOrchestrationElapsedTicker()
+  orchPhase.value = 'idle'
+  orchTimingStartMs.value = null
+  orchestrationEtaSeconds.value = null
+  orchestrationEtaReason.value = ''
+  finalizeLoading.value = false
   dismissWorkflowLinkOffer()
   dismissPlanSession()
   clearWorkbenchHandoffSession()
@@ -4482,9 +4616,30 @@ async function runOrchestration() {
   finalizeLoading.value = true
   pollStop.value = false
   orchestrationSession.value = null
+  orchPhase.value = 'estimating'
+  orchestrationEtaSeconds.value = null
+  orchestrationEtaReason.value = ''
+  orchTimingStartMs.value = null
+  stopOrchestrationElapsedTicker()
   try {
     await persistManualLlmIfNeeded()
     const intent = h.intentKey || 'workflow'
+    const checklist = Array.isArray(h.executionChecklist) ? h.executionChecklist : []
+    const scriptFiles = intent === 'workflow' && Array.isArray(h.files) ? h.files : []
+    const eta = await estimateOrchestrationSeconds({
+      intent,
+      brief: String(h.description || '').trim(),
+      checklistLen: checklist.length,
+      generateFrontend: intent === 'mod' ? modFrontendEnabled.value : false,
+      employeeTarget: intent === 'employee' ? String(h.employeeTarget || '').trim() : '',
+      scriptFileCount: scriptFiles.length,
+    })
+    orchestrationEtaSeconds.value = eta.seconds
+    orchestrationEtaReason.value = eta.reason || ''
+    orchPhase.value = 'running'
+    orchTimingStartMs.value = Date.now()
+    startOrchestrationElapsedTicker()
+
     const body: Record<string, unknown> = {
       intent,
       brief: (h.description || '').trim(),
@@ -4495,9 +4650,10 @@ async function runOrchestration() {
         intent === 'mod' ? (h.suggestedModId || '').trim() || undefined : undefined,
       replace: true,
       planning_messages: Array.isArray(h.planningMessages) ? h.planningMessages : [],
-      execution_checklist: Array.isArray(h.executionChecklist) ? h.executionChecklist : [],
+      execution_checklist: checklist,
       source_documents: Array.isArray(h.sourceDocuments) ? h.sourceDocuments : [],
-      generate_frontend: intent === 'mod' ? h.generateFrontend !== false : false,
+      // 以当前「制作前端」开关为准，避免交接对象上缺失或陈旧的 generateFrontend
+      generate_frontend: intent === 'mod' ? modFrontendEnabled.value : false,
     }
     if (intent === 'employee') {
       const et = String(h.employeeTarget || 'pack_plus_workflow').trim()
@@ -4516,7 +4672,7 @@ async function runOrchestration() {
       body.provider = provider
       body.model = model
     }
-    const useScriptMode = intent === 'workflow' && Array.isArray(h.files) && h.files.length > 0
+    const useScriptMode = intent === 'workflow' && scriptFiles.length > 0
     const started = useScriptMode
       ? await api.workbenchStartScriptSession(
           {
@@ -4525,7 +4681,7 @@ async function runOrchestration() {
             provider: body.provider,
             model: body.model,
           },
-          h.files,
+          scriptFiles,
         )
       : await api.workbenchStartSession(body)
     const sid = started?.session_id
@@ -4622,6 +4778,11 @@ async function runOrchestration() {
       finalizeError.value = m
     }
   } finally {
+    stopOrchestrationElapsedTicker()
+    orchPhase.value = 'idle'
+    orchTimingStartMs.value = null
+    orchestrationEtaSeconds.value = null
+    orchestrationEtaReason.value = ''
     finalizeLoading.value = false
   }
 }
@@ -5159,7 +5320,7 @@ function confirmPlanAndOpenHandoff() {
     planNotes: ik === 'workflow' ? ps.checklistText : '',
     suggestedModId: ik === 'mod' ? suggestModIdFromText(`${ps.initialBrief}\n${ps.checklistText}`) : '',
     files: Array.isArray(ps.files) ? ps.files : [],
-    generateFrontend: ik === 'mod' ? ps.generateFrontend !== false : false,
+    generateFrontend: ik === 'mod' ? modFrontendEnabled.value : false,
     planningMessages: Array.isArray(ps.messages) ? ps.messages.map((m) => ({ role: m.role, content: m.content })) : [],
     executionChecklist: Array.isArray(ps.checklistLines) ? [...ps.checklistLines] : [],
     sourceDocuments: Array.isArray(ps.files)
@@ -8548,7 +8709,42 @@ function onComposerKeydown(e) {
 .wb-handoff-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  justify-content: flex-start;
+}
+
+.wb-handoff-actions__timing {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.48);
+  min-width: 0;
+}
+
+.wb-handoff-actions__timing-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: baseline;
+  justify-content: flex-end;
+}
+
+.wb-handoff-actions__k {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.36);
+}
+
+.wb-handoff-actions__v {
+  font-variant-numeric: tabular-nums;
+  color: rgba(226, 232, 240, 0.9);
+  max-width: 16rem;
+  text-align: right;
+  word-break: break-word;
 }
 
 .wb-handoff-primary {

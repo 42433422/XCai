@@ -12,7 +12,25 @@
           <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'sandbox' }" @click="activeTab = 'sandbox'">高级调试</button>
           <button type="button" class="wf-subtab" :class="{ 'wf-subtab--active': activeTab === 'triggers' }" @click="activeTab = 'triggers'">自动触发</button>
         </nav>
-        <button class="btn btn-primary" @click="showCreateModal = true">创建自动化任务</button>
+        <div class="page-header-actions">
+          <button
+            type="button"
+            class="btn btn-sm btn-danger"
+            :disabled="purgeAutomationBusy || loading"
+            title="删除当前账号下全部自动化任务（含激活与未激活）、节点、边、运行记录、触发器与版本快照；并清空本页沙盒、触发器表单与画布状态。不可恢复"
+            @click="purgeAutomationWorkbenchFull"
+          >{{ purgeAutomationBusy ? '清空中…' : '一键清理' }}</button>
+          <button
+            type="button"
+            class="btn btn-sm btn-danger"
+            title="永久删除当前列表中所有「未激活」任务及其节点、边、运行记录、触发器与版本快照；不可恢复"
+            :disabled="bulkDeleteInactiveBusy || loading || purgeAutomationBusy"
+            @click="bulkDeleteInactiveWorkflows"
+          >
+            {{ bulkDeleteInactiveBusy ? '删除中…' : '一键删除未激活' }}
+          </button>
+          <button class="btn btn-primary" @click="showCreateModal = true">创建自动化任务</button>
+        </div>
       </div>
     </div>
 
@@ -455,6 +473,9 @@ const router = useRouter()
 // 状态管理
 const activeTab = ref('list')
 const loading = ref(false)
+const bulkDeleteInactiveBusy = ref(false)
+/** 一键清理：删除全部任务进行中 */
+const purgeAutomationBusy = ref(false)
 const message = ref('')
 const messageOk = ref(true)
 const workflows = ref([])
@@ -555,6 +576,122 @@ function flash(msg, ok = true) {
   message.value = msg
   messageOk.value = ok
   setTimeout(() => { message.value = '' }, 5000)
+}
+
+/** 仅重置本页 UI / 沙盒 / 触发器 / 画布内存态，不请求删除工作流 */
+function resetAutomationWorkbenchLocalState() {
+  message.value = ''
+  triggersMsg.value = ''
+  triggersCronExpr.value = '0 9 * * *'
+  triggersWebhookJson.value = '{\n  "source": "webhook"\n}'
+
+  sandboxEmployeeId.value = ''
+  sandboxWorkflowCandidates.value = []
+  sandboxMappingLoading.value = false
+  sandboxMappingError.value = ''
+  sandboxMappingNodeHits.value = 0
+  sandboxMappingManifestHits.value = 0
+  sandboxWorkflowId.value = 0
+  sandboxLoading.value = false
+  sandboxAutoCreateBusy.value = false
+  sandboxReport.value = null
+  sandboxError.value = ''
+  lastRunMeta.value = { mode: '', startedAt: '', precheck: null }
+  decomposeNodes.value = []
+  decomposeEdges.value = []
+  decomposeLoading.value = false
+
+  sandboxPresetId.value = 'topic'
+  applySandboxPreset('topic')
+
+  workflowDetailCache.clear()
+  homeLlmHint.value = ''
+  homeIntentHint.value = ''
+  newWorkflow.value = { name: '', description: '' }
+  showCreateModal.value = false
+  showNodeConfigModal.value = false
+
+  activeTab.value = 'list'
+  currentWorkflow.value = null
+  nodes.value = []
+  edges.value = []
+  focusedNodeId.value = 0
+  dragging.value = false
+  connecting.value = false
+  connectStart.value = null
+  connectStartPort.value = ''
+  selectedNode.value = null
+
+  triggersWorkflowId.value = 0
+  triggerRows.value = []
+  executions.value = []
+}
+
+/** 一键清理：删光账号下全部自动化任务 + 重置本页本地状态（与「workflow-page 全删」语义一致） */
+async function purgeAutomationWorkbenchFull() {
+  if (purgeAutomationBusy.value) return
+
+  const list = Array.isArray(workflows.value) ? workflows.value : []
+  const ids = list.map((w) => (w && w.id != null ? Number(w.id) : 0)).filter((n) => Number.isFinite(n) && n > 0)
+
+  if (!ids.length) {
+    if (
+      !window.confirm(
+        '当前没有任何已保存的自动化任务。将仅清空：本页提示、沙盒与触发器表单、运行记录列表缓存、以及未提交的创建弹窗等本地状态。是否继续？',
+      )
+    ) {
+      return
+    }
+    resetAutomationWorkbenchLocalState()
+    flash('已清理本页本地状态', true)
+    await loadWorkflows()
+    if (activeTab.value === 'executions') await loadExecutions()
+    return
+  }
+
+  if (!localStorage.getItem('modstore_token')) {
+    flash('请先登录后再使用一键清理（将删除全部自动化任务）', false)
+    return
+  }
+
+  const activeCount = list.filter((w) => w && w.is_active).length
+  const activeHint =
+    activeCount > 0 ? `\n\n其中有 ${activeCount} 个为「激活」状态，将一并永久删除。` : ''
+
+  if (
+    !window.confirm(
+      `确定删除当前账号下全部 ${ids.length} 个自动化任务？\n含节点、边、运行记录、触发器与版本快照等，不可恢复。${activeHint}\n\n同时将清空本页沙盒、触发器表单与画布状态。是否继续？`,
+    )
+  ) {
+    return
+  }
+
+  purgeAutomationBusy.value = true
+  resetAutomationWorkbenchLocalState()
+  const failed = []
+  try {
+    for (const id of ids) {
+      try {
+        await api.deleteWorkflow(id)
+      } catch (e) {
+        failed.push({ id, err: e?.message || String(e) })
+      }
+    }
+    if (failed.length) {
+      flash(
+        `已删除 ${ids.length - failed.length} 个，失败 ${failed.length} 个：${failed.map((f) => f.id).join(', ')}`,
+        false,
+      )
+    } else {
+      flash(`已清空自动化任务（共删除 ${ids.length} 个）`, true)
+    }
+  } finally {
+    purgeAutomationBusy.value = false
+    workflowDetailCache.clear()
+    await loadWorkflows()
+    if (activeTab.value === 'executions') await loadExecutions()
+    if (activeTab.value === 'triggers') await loadTriggersPanel()
+  }
 }
 
 // 日期格式化
@@ -1449,6 +1586,46 @@ async function deleteWorkflow(workflowId) {
     await loadWorkflows()
   } catch (e) {
     flash('删除工作流失败: ' + (e.message || String(e)), false)
+  }
+}
+
+/** 批量删除列表中所有未激活（is_active === false）的工作流 */
+async function bulkDeleteInactiveWorkflows() {
+  const targets = (workflows.value || []).filter((w) => w && !w.is_active)
+  if (!targets.length) {
+    flash('当前没有「未激活」的自动化任务可删', false)
+    return
+  }
+  if (
+    !window.confirm(
+      `将永久删除 ${targets.length} 个未激活任务（含节点、边、运行记录、触发器与版本快照）。不可恢复。\n\n任务名预览：${targets
+        .slice(0, 5)
+        .map((w) => w.name || `#${w.id}`)
+        .join('、')}${targets.length > 5 ? '…' : ''}\n\n确定继续？`,
+    )
+  ) {
+    return
+  }
+  bulkDeleteInactiveBusy.value = true
+  let okCount = 0
+  try {
+    for (const w of targets) {
+      await api.deleteWorkflow(w.id)
+      okCount += 1
+    }
+    flash(`已删除 ${okCount} 个未激活任务`, true)
+    await loadWorkflows()
+    if (activeTab.value === 'executions') {
+      await loadExecutions()
+    }
+    if (activeTab.value === 'triggers' && triggersWorkflowId.value) {
+      await onTriggersWorkflowChange()
+    }
+  } catch (e) {
+    flash(`批量删除中断（已删 ${okCount} 个）：${e.message || String(e)}`, false)
+    await loadWorkflows()
+  } finally {
+    bulkDeleteInactiveBusy.value = false
   }
 }
 
@@ -2391,6 +2568,13 @@ watch(sandboxWorkflowId, async (id) => {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+}
+
+.page-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .wf-subtabs {

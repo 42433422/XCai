@@ -548,8 +548,16 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
             if not imported.get("ok"):
                 await _fail_session(sid, "repo", imported.get("error") or "Mod 仓库创建失败")
                 return
+            # import 可能补全 parsed.blueprint.frontend_app，与本地 blueprint 变量再对齐
+            blueprint = parsed.get("blueprint") or blueprint
             mod_dir = Path(imported["path"])
-            await _set_step(sid, "repo", "done", f"已写入 {imported.get('id')}")
+            repo_done = f"已写入 {imported.get('id')}"
+            if generate_frontend:
+                repo_done += (
+                    "；含 Vue 定制页（frontend/routes.js、frontend/views/HomeView.vue）"
+                    + ("，frontend_app 由模型省略已自动补齐" if imported.get("had_frontend_fallback") else "")
+                )
+            await _set_step(sid, "repo", "done", repo_done)
 
             await _set_step(sid, "industry", "running", "正在写入行业卡片")
             try:

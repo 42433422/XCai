@@ -50,6 +50,61 @@
           还没有一句话介绍。可以打开「配置 (JSON)」填写 <code class="mono">description</code>，让同事一眼看懂用途。
         </p>
 
+        <div v-if="aiBlueprint" class="ai-blueprint-panel">
+          <div v-if="industryCard" class="ai-blueprint-card">
+            <span class="ai-blueprint-kicker">行业卡片</span>
+            <strong>{{ industryCard.name || '通用' }}</strong>
+            <p>{{ industryCard.scenario || '暂未写入场景说明。' }}</p>
+          </div>
+          <div class="ai-blueprint-card">
+            <span class="ai-blueprint-kicker">API 节点</span>
+            <strong>{{ apiSummary.nodes.length }} 个</strong>
+            <p v-if="apiSummary.warnings.length">{{ apiSummary.warnings.join('；') }}</p>
+            <p v-else>未发现待配置的 OpenAPI 节点。</p>
+          </div>
+          <div class="ai-blueprint-card">
+            <span class="ai-blueprint-kicker">工作流沙箱</span>
+            <strong>{{ workflowSandboxOk ? 'Mock 结构通过' : '需检查' }}</strong>
+            <p>{{ workflowSandboxRows.length }} 条工作流报告；Mock 不代表真实员工已执行。</p>
+          </div>
+          <div class="ai-blueprint-card">
+            <span class="ai-blueprint-kicker">Mod 沙箱</span>
+            <strong>{{ modSandboxOk ? '通过' : '需检查' }}</strong>
+            <p v-if="modSandboxChecks.length">{{ modSandboxChecks.map((c) => c.message).join('；') }}</p>
+            <p v-else>暂无 Mod 沙箱报告。</p>
+          </div>
+        </div>
+
+        <div v-if="employeeReadiness" class="readiness-panel">
+          <div class="readiness-head">
+            <div class="readiness-head-main">
+              <h3 class="sub-title readiness-title">员工可用性闭环</h3>
+              <p class="muted small readiness-sub">
+                做 Mod 成功时应已自动完成：生成员工脚本 · 登记 employee_pack · 修复画布 employee 节点指向同一 pack id（缺 start/end 时会先补骨架再插员工节点）。
+                若仍显示缺口，多为审核、权限或事后改过画布——可点「重试图布对齐」再跑一次服务端修图。
+              </p>
+            </div>
+            <div class="readiness-head-aside">
+              <button
+                type="button"
+                class="btn btn-sm btn-secondary"
+                :disabled="patchWorkflowBusy || loading"
+                title="再次执行画布对齐：补 start/end（若缺）、插入或更新 employee 节点及其 employee_id"
+                @click="() => void patchWorkflowEmployeeNodesRetry()"
+              >
+                {{ patchWorkflowBusy ? '对齐中…' : '重试图布对齐' }}
+              </button>
+              <span :class="['readiness-badge', employeeReadiness.ok ? 'readiness-badge-ok' : 'readiness-badge-warn']">
+                {{ employeeReadiness.ok ? '全部员工已登记并对齐' : readinessSummaryLabel }}
+              </span>
+            </div>
+          </div>
+          <ul v-if="employeeReadinessGaps.length" class="readiness-gaps">
+            <li v-for="(gap, idx) in employeeReadinessGaps" :key="'gap-' + idx">{{ gap }}</li>
+          </ul>
+          <p v-else class="muted small readiness-sub">暂无缺口；仍建议在工作流沙箱里跑一次非 Mock 真实执行。</p>
+        </div>
+
         <h3 class="sub-title">工作流里会用到的「AI 员工名片」</h3>
         <p class="emp-intro">
           这里的每一条，相当于给自动化流程起的一个<strong>角色名片</strong>：名字、说明会出现在工作台和流程配置里。
@@ -72,6 +127,7 @@
                 <th>一句话</th>
                 <th>给用户看的说明</th>
                 <th class="emp-th-link">MODstore 图</th>
+                <th>可用性</th>
                 <th class="emp-th-actions">操作</th>
               </tr>
             </thead>
@@ -107,6 +163,17 @@
                     >写入关联</button>
                   </div>
                 </td>
+                <td class="emp-ready-cell">
+                  <span :class="['readiness-chip', row.ready ? 'readiness-chip-ok' : 'readiness-chip-warn']">
+                    {{ row.ready ? '可工作' : '待补齐' }}
+                  </span>
+                  <p v-if="row.readiness?.expected_pack_id" class="muted small emp-ready-note">
+                    包：<code class="mono">{{ row.readiness.expected_pack_id }}</code>
+                  </p>
+                  <p v-if="row.readiness?.gaps?.length" class="muted small emp-ready-note">
+                    {{ row.readiness.gaps[0] }}
+                  </p>
+                </td>
                 <td class="emp-actions-cell">
                   <button type="button" class="btn btn-sm btn-ghost" @click="openEmployeeModal('edit', row.index)">编辑</button>
                   <button type="button" class="btn btn-sm btn-ghost" @click="goEmployeePrefill(row)">带入员工制作</button>
@@ -114,17 +181,17 @@
                     type="button"
                     class="btn btn-sm btn-primary"
                     :disabled="registerCatalogBusy === row.index"
-                    title="从该条声明生成最小 employee_pack 并写入本地 /v1/packages（需已登录）。依赖 Mod 内 Python 电话路由时请走员工制作页导出完整包。"
+                    :title="row.readiness?.catalog_registered ? '已登记过；重新登记会覆盖现有 employee_pack 并刷新 Catalog 条目' : '做 Mod 时若自动登记失败可点此手工兜底：生成 employee_pack、过五维审核并写入 CatalogItem'"
                     @click="registerWorkflowEmployeeCatalog(row)"
                   >
-                    {{ registerCatalogBusy === row.index ? '登记中…' : '一键登记' }}
+                    {{ registerCatalogBusy === row.index ? '登记中…' : row.readiness?.catalog_registered ? '重新登记' : '手动兜底登记' }}
                   </button>
                   <button
                     v-if="row.linkedWorkflowId"
                     type="button"
                     class="btn btn-sm btn-primary"
                     @click="openWorkflowSandboxDecompose(row)"
-                  >拆解与沙盒测试</button>
+                  >真实/沙盒测试</button>
                   <button type="button" class="btn btn-sm btn-ghost danger" @click="confirmDeleteEmployee(row.index)">删除</button>
                 </td>
               </tr>
@@ -175,6 +242,42 @@
           保存后提示：<span v-for="(w, i) in manifestSaveWarnings" :key="i">{{ w }}<br v-if="i < manifestSaveWarnings.length - 1" /></span>
         </p>
         <textarea v-model="manifestText" class="code-area" spellcheck="false" />
+      </section>
+
+      <!-- 前端 -->
+      <section v-show="tab === 'frontend'" class="panel">
+        <div class="frontend-head">
+          <div>
+            <h2 class="panel-title">专业版界面</h2>
+            <p class="muted small">
+              当前入口：
+              <code class="mono">{{ frontendEntryPath || '尚未生成' }}</code>
+              <span v-if="frontendSpecTitle"> · {{ frontendSpecTitle }}</span>
+            </p>
+          </div>
+          <button
+            type="button"
+            class="btn btn-primary"
+            :disabled="frontendBusy"
+            @click="() => void regenerateFrontend()"
+          >
+            {{ frontendBusy ? '生成中…' : '重新生成前端' }}
+          </button>
+        </div>
+        <textarea
+          v-model="frontendBrief"
+          class="input textarea frontend-brief"
+          rows="4"
+          maxlength="8000"
+          placeholder="可选：补充这次想要的首页风格、业务重点、卡片内容。留空则按 manifest 与 ai_blueprint 重新生成。"
+        />
+        <div class="frontend-files">
+          <span>会覆盖：</span>
+          <code class="mono">{{ frontendConfigPath }}</code>
+          <code class="mono">frontend/routes.js</code>
+          <code class="mono">frontend/views/HomeView.vue</code>
+        </div>
+        <pre v-if="frontendSpecPreview" class="frontend-spec-preview">{{ frontendSpecPreview }}</pre>
       </section>
 
       <!-- 文件 -->
@@ -351,6 +454,7 @@ const router = useRouter()
 const tabs = [
   { id: 'guide', label: '概览与清单' },
   { id: 'manifest', label: '配置 (JSON)' },
+  { id: 'frontend', label: '前端' },
   { id: 'files', label: '编辑文件' },
   { id: 'snapshots', label: '版本与快照' },
   { id: 'scan', label: '路由扫描' },
@@ -369,6 +473,39 @@ function truncatePlain(s, max) {
 const modDescriptionLine = computed(() => {
   const d = modData.value?.manifest?.description
   return typeof d === 'string' && d.trim() ? d.trim() : ''
+})
+
+const employeeReadiness = computed<any>(() => {
+  const fromDetail = modData.value?.employee_readiness
+  if (fromDetail && typeof fromDetail === 'object') return fromDetail
+  const fromSummary = summary.value?.employee_readiness
+  if (fromSummary && typeof fromSummary === 'object') return fromSummary
+  const fromBlueprint = aiBlueprint.value?.employee_readiness
+  if (fromBlueprint && typeof fromBlueprint === 'object') return fromBlueprint
+  return null
+})
+
+const employeeReadinessRowsByIndex = computed(() => {
+  const rows = Array.isArray(employeeReadiness.value?.employees) ? employeeReadiness.value.employees : []
+  const map = new Map<number, any>()
+  for (const row of rows) {
+    const idx = Number(row?.index)
+    if (Number.isFinite(idx) && idx >= 0) map.set(idx, row)
+  }
+  return map
+})
+
+const employeeReadinessGaps = computed(() => {
+  const gaps = employeeReadiness.value?.gaps
+  return Array.isArray(gaps) ? gaps.map((x: any) => String(x)).filter(Boolean).slice(0, 8) : []
+})
+
+const readinessSummaryLabel = computed(() => {
+  const s = employeeReadiness.value?.summary
+  const total = Number(s?.total || 0)
+  const ready = Number(s?.ready || 0)
+  if (!total) return '无员工'
+  return `${ready}/${total} 可工作`
 })
 
 const workflowEmployeesRows = computed(() => {
@@ -391,6 +528,7 @@ const workflowEmployeesRows = computed(() => {
             const n = parseInt(String(widRaw), 10)
             return Number.isFinite(n) && n > 0 ? n : 0
           })()
+    const readiness = employeeReadinessRowsByIndex.value.get(index) || null
     return {
       index,
       raw: { ...o },
@@ -402,6 +540,8 @@ const workflowEmployeesRows = computed(() => {
       bodyShort,
       isEmpty: !id && !label && !panelTitle,
       linkedWorkflowId,
+      readiness,
+      ready: Boolean(readiness?.ready),
     }
   })
 })
@@ -411,6 +551,7 @@ const loading = ref(true)
 const loadError = ref('')
 const modData = ref(null)
 const summary = ref(null)
+const aiBlueprint = ref(null)
 const manifestText = ref('')
 const manifestSaveWarnings = ref([])
 const message = ref('')
@@ -422,6 +563,8 @@ const loadingFile = ref(false)
 const savingFile = ref(false)
 const fileWarnings = ref([])
 const loadingSummary = ref(false)
+const frontendBusy = ref(false)
+const frontendBrief = ref('')
 
 const snapshotsRows = ref([])
 const snapshotsLoadErr = ref('')
@@ -430,13 +573,84 @@ const snapshotLabelDraft = ref('')
 
 const modId = computed(() => String(route.params.modId || ''))
 
+const frontendConfigPath = computed(() => {
+  const cfg = modData.value?.manifest?.config
+  return typeof cfg?.frontend_spec === 'string' && cfg.frontend_spec.trim()
+    ? cfg.frontend_spec.trim()
+    : 'config/frontend_spec.json'
+})
+
+const frontendEntryPath = computed(() => {
+  const frontend = modData.value?.manifest?.frontend
+  if (!frontend || typeof frontend !== 'object') return ''
+  if (typeof frontend.pro_entry_path === 'string' && frontend.pro_entry_path.trim()) return frontend.pro_entry_path.trim()
+  const menu = Array.isArray(frontend.menu) ? frontend.menu : []
+  const first = menu[0]
+  return typeof first?.path === 'string' ? first.path.trim() : ''
+})
+
+const frontendSpecTitle = computed(() => {
+  const spec = aiBlueprint.value?.frontend_app
+  return spec && typeof spec === 'object' ? String(spec.title || spec.mod_name || '') : ''
+})
+
+const frontendSpecPreview = computed(() => {
+  const spec = aiBlueprint.value?.frontend_app
+  if (!spec || typeof spec !== 'object') return ''
+  return JSON.stringify(spec, null, 2)
+})
+
 const PREFILL_KEY = 'modstore_employee_prefill'
+
+const industryCard = computed(() => {
+  const card = aiBlueprint.value?.industry_card
+  if (card && typeof card === 'object') return card
+  const industry = aiBlueprint.value?.industry
+  if (industry && typeof industry === 'object') {
+    return {
+      name: industry.name || '通用',
+      scenario: industry.scenario || '',
+    }
+  }
+  return null
+})
+
+const apiSummary = computed(() => {
+  const src = aiBlueprint.value?.api_summary
+  const nodes = Array.isArray(src?.nodes) ? src.nodes : []
+  const warnings = Array.isArray(src?.warnings) ? src.warnings.map((x) => String(x)) : []
+  return { nodes, warnings }
+})
+
+const workflowSandboxRows = computed(() => {
+  const src = aiBlueprint.value?.workflow_sandbox
+  return Array.isArray(src?.reports) ? src.reports : []
+})
+
+const workflowSandboxOk = computed(() => {
+  const src = aiBlueprint.value?.workflow_sandbox
+  if (!src || typeof src !== 'object') return false
+  return src.ok !== false
+})
+
+const modSandboxChecks = computed(() => {
+  const src = aiBlueprint.value?.mod_sandbox
+  return Array.isArray(src?.checks) ? src.checks : []
+})
+
+const modSandboxOk = computed(() => {
+  const src = aiBlueprint.value?.mod_sandbox
+  if (!src || typeof src !== 'object') return false
+  return src.ok !== false
+})
 
 const linkableWorkflows = ref([])
 const linkPick = reactive({})
 const linkWorkflowBusy = ref(false)
 /** workflow_employees 行 index，一键登记 API 进行中 */
 const registerCatalogBusy = ref(-1)
+/** 重试「画布 employee 对齐」 */
+const patchWorkflowBusy = ref(false)
 
 const empModalOpen = ref(false)
 const empModalMode = ref('add')
@@ -450,6 +664,38 @@ const empScaffoldDone = ref(false)
 
 const EMP_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 
+async function patchWorkflowEmployeeNodesRetry() {
+  if (!localStorage.getItem('modstore_token')) {
+    flash('请先登录后再重试图布对齐', false)
+    return
+  }
+  if (!modId.value) return
+  patchWorkflowBusy.value = true
+  try {
+    const res = await api.patchModWorkflowEmployeeNodes(modId.value)
+    const patches = Array.isArray(res?.graph_patch?.patches) ? res.graph_patch.patches : []
+    const errs = patches.filter((p: any) => p && typeof p.error === 'string' && p.error)
+    const skips = patches.filter((p: any) => p && typeof p.skipped === 'string')
+    if (errs.length) {
+      flash(`修图部分失败：${errs.map((e: any) => e.error).join('；')}`, false)
+    } else if (res?.employee_readiness?.ok) {
+      flash('画布已对齐，员工可用性检查通过', true)
+    } else {
+      const g = Array.isArray(res?.employee_readiness?.gaps) ? res.employee_readiness.gaps[0] : ''
+      const s0 = skips.length ? String(skips[0].skipped || '') : ''
+      let msg = '已执行对齐，请查看下方各行说明'
+      if (g) msg = `已执行对齐，仍有缺口：${g}`
+      if (s0) msg = g ? `${msg}（${s0}）` : `已执行对齐：${s0}`
+      flash(msg, false)
+    }
+    await reload()
+  } catch (e: any) {
+    flash(e?.message || String(e), false)
+  } finally {
+    patchWorkflowBusy.value = false
+  }
+}
+
 async function registerWorkflowEmployeeCatalog(row) {
   if (!localStorage.getItem('modstore_token')) {
     flash('请先登录工作台后再一键登记', false)
@@ -461,10 +707,15 @@ async function registerWorkflowEmployeeCatalog(row) {
     const pkg = res?.package
     const pid = pkg?.id || ''
     const ver = pkg?.version || ''
+    const readyRow = Array.isArray(res?.employee_readiness?.employees)
+      ? res.employee_readiness.employees.find((x: any) => Number(x?.index) === Number(row.index))
+      : null
+    const nextGap = Array.isArray(readyRow?.gaps) && readyRow.gaps.length ? `；下一步：${readyRow.gaps[0]}` : ''
     flash(
-      pid && ver ? `已登记到本地仓库：${pid} @ ${ver}` : '已登记到本地仓库（/v1/packages）',
+      (pid && ver ? `已登记到本地仓库：${pid} @ ${ver}` : '已登记到本地仓库（/v1/packages）') + nextGap,
       true,
     )
+    await reload()
   } catch (e) {
     flash(e?.message || String(e), false)
   } finally {
@@ -845,6 +1096,19 @@ async function refreshSummary() {
   }
 }
 
+async function loadAiBlueprint() {
+  aiBlueprint.value = null
+  if (!modId.value) return
+  if (!fileSet.value.has('config/ai_blueprint.json')) return
+  try {
+    const res = await api.getModFile(modId.value, 'config/ai_blueprint.json')
+    const parsed = JSON.parse(String(res?.content || '{}'))
+    aiBlueprint.value = parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    aiBlueprint.value = null
+  }
+}
+
 async function reload() {
   loadError.value = ''
   loading.value = true
@@ -858,6 +1122,7 @@ async function reload() {
     modData.value = detail
     summary.value = sum
     manifestText.value = JSON.stringify(detail.manifest || {}, null, 2)
+    await loadAiBlueprint()
     void loadLinkableWorkflows()
     void refreshSnapshots()
     if (!selectedPath.value || !fileSet.value.has(normPath(selectedPath.value))) {
@@ -897,6 +1162,30 @@ async function saveManifest() {
     flash(e.message || String(e), false)
   } finally {
     savingManifest.value = false
+  }
+}
+
+async function regenerateFrontend() {
+  if (!modId.value) return
+  frontendBusy.value = true
+  try {
+    const res = await api.regenerateModFrontend(modId.value, frontendBrief.value.trim())
+    flash(`前端已重新生成：${res.entry_path || '入口已写入'}`, true)
+    if (res.frontend_spec && typeof res.frontend_spec === 'object') {
+      aiBlueprint.value = {
+        ...(aiBlueprint.value && typeof aiBlueprint.value === 'object' ? aiBlueprint.value : {}),
+        frontend_app: res.frontend_spec,
+      }
+    }
+    selectedPath.value = 'frontend/views/HomeView.vue'
+    await reload()
+    if (fileSet.value.has(selectedPath.value)) {
+      await loadSelectedFile()
+    }
+  } catch (e) {
+    flash(e.message || String(e), false)
+  } finally {
+    frontendBusy.value = false
   }
 }
 
@@ -1172,6 +1461,43 @@ watch(
   margin-bottom: 0.75rem;
 }
 
+.frontend-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+}
+
+.frontend-brief {
+  width: 100%;
+  min-height: 5.8rem;
+  resize: vertical;
+}
+
+.frontend-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-top: 0.75rem;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.82rem;
+}
+
+.frontend-spec-preview {
+  margin: 1rem 0 0;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.85rem;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(0, 0, 0, 0.24);
+  color: rgba(226, 232, 240, 0.8);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 .snap-lead {
   margin: 0 0 1rem;
   line-height: 1.55;
@@ -1225,6 +1551,125 @@ watch(
 
 .guide-list li {
   margin-bottom: 0.35rem;
+}
+
+.ai-blueprint-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+}
+
+.ai-blueprint-card {
+  min-width: 0;
+  padding: 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  background: rgba(59, 130, 246, 0.07);
+}
+
+.ai-blueprint-kicker {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.72rem;
+  color: rgba(147, 197, 253, 0.9);
+}
+
+.ai-blueprint-card strong {
+  display: block;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.95rem;
+}
+
+.ai-blueprint-card p {
+  margin: 0.35rem 0 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.readiness-panel {
+  margin: 0.75rem 0 1.25rem;
+  padding: 0.9rem;
+  border-radius: 12px;
+  border: 1px solid rgba(251, 191, 36, 0.22);
+  background: rgba(251, 191, 36, 0.06);
+}
+
+.readiness-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.readiness-head-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.readiness-head-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+.readiness-title {
+  margin-top: 0;
+}
+
+.readiness-sub {
+  margin: 0.25rem 0 0;
+  line-height: 1.5;
+}
+
+.readiness-badge,
+.readiness-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.readiness-badge {
+  padding: 0.35rem 0.6rem;
+}
+
+.readiness-chip {
+  padding: 0.2rem 0.5rem;
+}
+
+.readiness-badge-ok,
+.readiness-chip-ok {
+  color: rgba(74, 222, 128, 0.95);
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.readiness-badge-warn,
+.readiness-chip-warn {
+  color: rgba(251, 191, 36, 0.95);
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.readiness-gaps {
+  margin: 0.65rem 0 0;
+  padding-left: 1.1rem;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.emp-ready-cell {
+  min-width: 11rem;
+}
+
+.emp-ready-note {
+  margin: 0.3rem 0 0;
+  line-height: 1.35;
 }
 
 .checklist {

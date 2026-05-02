@@ -1,4 +1,4 @@
-import { requestJson, fetchZipBlob } from './infrastructure/http/client'
+import { requestJson, fetchZipBlob, requestBlob } from './infrastructure/http/client'
 import { clearAuthTokens, getAccessToken, setAuthTokens } from './infrastructure/storage/tokenStore'
 
 const req = requestJson
@@ -153,12 +153,14 @@ export const api: any = {
       body: JSON.stringify({ action, admin_note: adminNote }),
     }),
 
-  catalog: (q = '', artifact = '', limit = 50, offset = 0, industry = '', securityLevel = '') => {
+  catalog: (q = '', artifact = '', limit = 50, offset = 0, industry = '', securityLevel = '', materialCategory = '', licenseScope = '') => {
     const p = new URLSearchParams({ limit: String(limit), offset: String(offset) })
     if (q) p.set('q', q)
     if (artifact) p.set('artifact', artifact)
     if (industry) p.set('industry', industry)
     if (securityLevel) p.set('security_level', securityLevel)
+    if (materialCategory) p.set('material_category', materialCategory)
+    if (licenseScope) p.set('license_scope', licenseScope)
     return req(`/api/market/catalog?${p}`)
   },
   catalogFacets: () => req('/api/market/facets'),
@@ -166,6 +168,11 @@ export const api: any = {
   catalogReviews: (id: string | number) => req(`/api/market/catalog/${encodeURIComponent(String(id))}/reviews`),
   catalogSubmitReview: (id: string | number, rating: number, content = '') =>
     req(`/api/market/catalog/${encodeURIComponent(String(id))}/review`, { method: 'POST', body: JSON.stringify({ rating, content }) }),
+  catalogSubmitComplaint: (id: string | number, complaintType: string, reason: string, evidence: Record<string, unknown> = {}) =>
+    req(`/api/market/catalog/${encodeURIComponent(String(id))}/complaints`, {
+      method: 'POST',
+      body: JSON.stringify({ complaint_type: complaintType, reason, evidence }),
+    }),
   catalogToggleFavorite: (id: string | number) => req(`/api/market/catalog/${encodeURIComponent(String(id))}/favorite`, { method: 'POST', body: '{}' }),
   buyItem: (id: string | number) => req(`/api/market/catalog/${encodeURIComponent(String(id))}/buy`, { method: 'POST' }),
   downloadItem: async (id: string | number) => {
@@ -189,12 +196,23 @@ export const api: any = {
   adminUpload: (formData: FormData) => req('/api/admin/catalog', { method: 'POST', body: formData }),
   adminListCatalog: (limit = 200, offset = 0) => req(`/api/admin/catalog?limit=${limit}&offset=${offset}`),
   adminDeleteCatalog: (id: string | number) => req(`/api/admin/catalog/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  adminListCatalogComplaints: (status = '', limit = 50, offset = 0) => {
+    const p = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+    if (status) p.set('status', status)
+    return req(`/api/admin/catalog/complaints?${p}`)
+  },
+  adminReviewCatalogComplaint: (id: string | number, action: string, adminNote = '', extra: Record<string, unknown> = {}) =>
+    req(`/api/admin/catalog/complaints/${encodeURIComponent(String(id))}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ action, admin_note: adminNote, ...extra }),
+    }),
   adminListUsers: (limit = 200, offset = 0) => req(`/api/admin/users?limit=${limit}&offset=${offset}`),
   adminSetUserAdmin: (userId: string | number, isAdmin: boolean) => req(`/api/admin/users/${userId}/admin?is_admin=${isAdmin}`, { method: 'PUT' }),
   adminListWallets: (limit = 200, offset = 0) => req(`/api/admin/wallets?limit=${limit}&offset=${offset}`),
   adminListTransactions: (limit = 200, offset = 0) => req(`/api/admin/transactions?limit=${limit}&offset=${offset}`),
 
   listMods: () => req('/api/mods'),
+  deleteMod: (modId: string) => req(`/api/mods/${encodeURIComponent(modId)}`, { method: 'DELETE' }),
   createMod: (mod_id: string, display_name: string) => req('/api/mods/create', { method: 'POST', body: JSON.stringify({ mod_id, display_name }) }),
   importZIP: (file: File, replace = true) => {
     const fd = new FormData()
@@ -205,10 +223,16 @@ export const api: any = {
     req('/api/mods/ai-scaffold', { method: 'POST', body: JSON.stringify({ brief, suggested_id: suggestedId || undefined, replace, provider, model }) }),
   push: (mod_ids: unknown = null) => req('/api/sync/push', { method: 'POST', body: JSON.stringify({ mod_ids }) }),
   pull: (mod_ids: unknown = null) => req('/api/sync/pull', { method: 'POST', body: JSON.stringify({ mod_ids }) }),
+  /** 库路径、XCAGI 根目录、宿主后端 URL（与 modstore_server GET/PUT /api/config 对齐） */
+  getRepoConfig: () => req('/api/config'),
+  putRepoConfig: (body: { library_root?: string; xcagi_root?: string; xcagi_backend_url?: string }) =>
+    req('/api/config', { method: 'PUT', body: JSON.stringify(body || {}) }),
   getMod: (modId: string) => req(`/api/mods/${encodeURIComponent(modId)}`),
   putModManifest: (modId: string, manifest: unknown) => req(`/api/mods/${encodeURIComponent(modId)}/manifest`, { method: 'PUT', body: JSON.stringify({ manifest }) }),
   getModFile: (modId: string, path: string) => req(`/api/mods/${encodeURIComponent(modId)}/file?path=${encodeURIComponent(path)}`),
   putModFile: (modId: string, path: string, content: string) => req(`/api/mods/${encodeURIComponent(modId)}/file`, { method: 'PUT', body: JSON.stringify({ path, content }) }),
+  regenerateModFrontend: (modId: string, brief = '') =>
+    req(`/api/mods/${encodeURIComponent(modId)}/frontend/regenerate`, { method: 'POST', body: JSON.stringify({ brief }) }),
   listModSnapshots: (modId: string) => req(`/api/mods/${encodeURIComponent(modId)}/snapshots`),
   captureModSnapshot: (modId: string, label = '') => req(`/api/mods/${encodeURIComponent(modId)}/snapshots`, { method: 'POST', body: JSON.stringify({ label }) }),
   restoreModSnapshot: (modId: string, snapId: string) => req(`/api/mods/${encodeURIComponent(modId)}/snapshots/${encodeURIComponent(snapId)}/restore`, { method: 'POST', body: '{}' }),
@@ -299,6 +323,9 @@ export const api: any = {
       method: 'POST',
       body: JSON.stringify({ workflow_index: workflowIndex, industry: opts.industry || '通用', price: opts.price ?? 0, release_channel: opts.release_channel || 'stable' }),
     }),
+  /** 再次对齐画布 employee 节点与 manifest 推导的 pack id（可补 start/end 骨架） */
+  patchModWorkflowEmployeeNodes: (modId: string) =>
+    req(`/api/mods/${encodeURIComponent(modId)}/patch-workflow-employee-nodes`, { method: 'POST' }),
 
   // ----- 脚本即工作流（替代节点图）-----
   listScriptWorkflows: (status: string = '') =>
@@ -504,8 +531,32 @@ export const api: any = {
   llmConversations: (limit = 30, offset = 0) => req(`/api/llm/conversations?limit=${limit}&offset=${offset}`),
   llmConversationDetail: (id: string | number) => req(`/api/llm/conversations/${encodeURIComponent(String(id))}`),
   llmAdminSavePrice: (data: any) => req('/api/llm/admin/pricing', { method: 'PUT', body: JSON.stringify(data || {}) }),
-  llmChat: (provider: string, model: string, messages: unknown[], maxTokens: number | null = null, conversationId: number | null = null) =>
-    req('/api/llm/chat', { method: 'POST', body: JSON.stringify({ provider, model, messages, max_tokens: maxTokens, conversation_id: conversationId }) }),
+  llmAdminModelCapabilities: (opts?: { provider?: string; q?: string; limit?: number }) => {
+    const p = new URLSearchParams()
+    if (opts?.provider) p.set('provider', opts.provider)
+    if (opts?.q) p.set('q', opts.q)
+    if (opts?.limit != null) p.set('limit', String(opts.limit))
+    const qs = p.toString()
+    return req(`/api/llm/admin/model-capabilities${qs ? `?${qs}` : ''}`)
+  },
+  llmAdminModelCapabilityReview: (body: { provider: string; model: string; l3_status: string; notes?: string }) =>
+    req('/api/llm/admin/model-capabilities/review', { method: 'PUT', body: JSON.stringify(body) }),
+  llmChat: async (
+    provider: string,
+    model: string,
+    messages: unknown[],
+    maxTokens: number | null = null,
+    conversationId: number | null = null,
+  ) => {
+    const res = (await req('/api/llm/chat', {
+      method: 'POST',
+      body: JSON.stringify({ provider, model, messages, max_tokens: maxTokens, conversation_id: conversationId }),
+    })) as { billed?: boolean; charge_amount?: number }
+    if (res && (res.billed === true || (Number(res.charge_amount) || 0) > 0)) {
+      void import('./utils/llmBillingRefresh').then((m) => m.refreshLevelAndWalletAfterLlm())
+    }
+    return res
+  },
   llmChatStream: (provider: string, model: string, messages: unknown[], maxTokens: number | null = null, conversationId: number | null = null, signal?: AbortSignal) => {
     const headers = new Headers(authHeaders())
     headers.set('Content-Type', 'application/json')
@@ -559,6 +610,16 @@ export const api: any = {
     return req('/api/workbench/script-sessions', { method: 'POST', body: fd })
   },
   workbenchGetSession: (sessionId: string) => req(`/api/workbench/sessions/${encodeURIComponent(sessionId)}`),
+  /** 微软在线神经 TTS（服务端 edge-tts），返回 MP3 Blob */
+  workbenchEdgeTts: (text: string, voice?: string, rate?: number) =>
+    requestBlob('/api/workbench/tts/edge', {
+      method: 'POST',
+      body: JSON.stringify({
+        text,
+        ...(voice ? { voice } : {}),
+        ...(rate != null && Number.isFinite(rate) ? { rate } : {}),
+      }),
+    }),
 
   knowledgeStatus: () => req('/api/knowledge/status'),
   knowledgeListDocuments: () => req('/api/knowledge/documents'),
@@ -687,6 +748,34 @@ export const api: any = {
     }),
   openApiListLogs: (id: number | string, limit = 50, offset = 0) =>
     req(`/api/openapi-connectors/${encodeURIComponent(String(id))}/logs?limit=${limit}&offset=${offset}`),
+
+  customerServiceChat: (payload: { message: string; session_id?: number | null; context?: Record<string, unknown> }) =>
+    req('/api/customer-service/chat', { method: 'POST', body: JSON.stringify(payload) }),
+  customerServiceSessions: () => req('/api/customer-service/sessions'),
+  customerServiceSessionDetail: (id: number | string) =>
+    req(`/api/customer-service/sessions/${encodeURIComponent(String(id))}`),
+  customerServiceTickets: (status = '') =>
+    req(`/api/customer-service/tickets${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  customerServiceTicketDetail: (id: number | string) =>
+    req(`/api/customer-service/tickets/${encodeURIComponent(String(id))}`),
+  customerServiceActions: (ticketId?: number | string) =>
+    req(`/api/customer-service/actions${ticketId ? `?ticket_id=${encodeURIComponent(String(ticketId))}` : ''}`),
+  customerServiceStandards: () => req('/api/customer-service/standards'),
+  customerServiceCreateStandard: (payload: unknown) =>
+    req('/api/customer-service/standards', { method: 'POST', body: JSON.stringify(payload || {}) }),
+  customerServiceUpdateStandard: (id: number | string, payload: unknown) =>
+    req(`/api/customer-service/standards/${encodeURIComponent(String(id))}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload || {}),
+    }),
+  customerServiceIntegrations: () => req('/api/customer-service/integrations'),
+  customerServiceCreateIntegration: (payload: unknown) =>
+    req('/api/customer-service/integrations', { method: 'POST', body: JSON.stringify(payload || {}) }),
+  customerServiceUpdateIntegration: (id: number | string, payload: unknown) =>
+    req(`/api/customer-service/integrations/${encodeURIComponent(String(id))}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload || {}),
+    }),
 }
 
 export { clearAuthTokens }

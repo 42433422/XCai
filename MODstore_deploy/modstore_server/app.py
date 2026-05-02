@@ -18,6 +18,32 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from modstore_server.api.dto import (
+    ConfigDTO,
+    HealthResponse,
+    CreateModDTO,
+    ModAiScaffoldDTO,
+    FrontendRegenerateDTO,
+    SyncDTO,
+    ManifestPutDTO,
+    ModFilePutDTO,
+    WorkflowEmployeeCatalogDTO,
+    SandboxDTO,
+    FocusPrimaryDTO,
+    ExportFhdShellDTO,
+)
+from modstore_server.api.auth_deps import (
+    get_optional_user as _get_optional_user,
+    require_user as _require_user,
+    assert_user_owns_mod as _assert_user_owns_mod,
+)
+from modstore_server.api.middleware import (
+    request_id_middleware,
+    payment_backend_proxy_middleware,
+    market_history_spa_middleware,
+    payment_backend_is_java as _payment_backend_is_java,
+)
+
 try:
     from dotenv import load_dotenv
 
@@ -57,13 +83,29 @@ from modman.store import (
 from modstore_server.authoring import slim_openapi_paths
 from modstore_server.constants import DEFAULT_API_PORT, DEFAULT_XCAGI_BACKEND_URL
 from modstore_server.file_safe import read_text_file, resolve_under_mod, write_text_file
+from modstore_server.mod_snapshots import capture_manifest_snapshot
 from modstore_server.workflow_employee_scaffold import (
     WorkflowEmployeeScaffoldDTO,
     run_workflow_employee_scaffold,
     scaffold_auto_merge_default,
 )
 from modstore_server.auth_service import decode_access_token, get_user_by_id
-from modstore_server.models import User, add_user_mod, get_user_mod_ids, user_owns_mod, remove_user_mod
+from modstore_server.models import (
+    User,
+    add_user_mod,
+    get_session_factory,
+    get_user_mod_ids,
+    remove_user_mod,
+    user_owns_mod,
+)
+from modstore_server.employee_pack_export import build_employee_pack_zip_from_workflow
+from modstore_server.mod_ai_scaffold import render_frontend_routes_js, render_generated_home_vue
+from modstore_server.mod_scaffold_runner import (
+    analyze_mod_employee_readiness,
+    patch_workflow_graph_employee_nodes,
+    run_mod_suite_ai_scaffold_async,
+)
+from modstore_server.package_sandbox_audit import run_package_audit_async
 from fastapi import Depends, Header
 
 _TAGS = [
@@ -78,6 +120,7 @@ _TAGS = [
     {"name": "webhooks", "description": "业务 Webhook 投递与重放"},
     {"name": "refunds", "description": "退款申请与审核"},
     {"name": "catalog", "description": "公开目录与市场检索"},
+    {"name": "catalog-mod-sync", "description": "公网机器令牌：库与 XCAGI/mods 推送/拉回（/v1/mod-sync）"},
 ]
 
 app = FastAPI(
@@ -110,7 +153,7 @@ try:
     from modstore_server.eventing.subscribers import install_default_subscribers
 
     install_default_subscribers()
-except Exception:  # 启动期失败必须降级，不能影响进程拉起
+except Exception:  # 启动期降级：事件订阅器安装失败不应阻止进程启动，但需告警
     logging.getLogger(__name__).exception(
         "domain event subscribers failed to install"
     )
@@ -123,28 +166,15 @@ try:
     from modstore_server.eventing.db_outbox import start_default_worker
 
     start_default_worker()
-except Exception:
+except Exception:  # 启动期降级：outbox worker 启动失败不应阻止进程启动
     logging.getLogger(__name__).exception(
         "outbox dispatcher worker failed to start"
     )
 
 
-def _request_id_from_headers(request: Request) -> str:
-    raw = request.headers.get("x-request-id") or request.headers.get("x-correlation-id")
-    if raw:
-        cleaned = raw.strip()
-        if cleaned:
-            return cleaned[:128]
-    return uuid.uuid4().hex
-
-
 @app.middleware("http")
 async def _request_id_middleware(request: Request, call_next):
-    request_id = _request_id_from_headers(request)
-    request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers["X-Request-Id"] = request_id
-    return response
+    return await request_id_middleware(request, call_next)
 
 def _get_allowed_origins() -> list[str]:
     """从环境变量获取允许的跨域来源，默认包含本地开发地址。"""
@@ -237,49 +267,6 @@ def _save_state(updates: Dict[str, Any]) -> None:
     p.write_text(json.dumps(st, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-class ConfigDTO(BaseModel):
-    library_root: str = ""
-    xcagi_root: str = ""
-    xcagi_backend_url: str = ""
-
-
-class HealthResponse(BaseModel):
-    ok: bool = True
-
-
-class CreateModDTO(BaseModel):
-    mod_id: str = Field(..., min_length=1, max_length=128)
-    display_name: str = Field(..., min_length=1, max_length=256)
-
-
-class SyncDTO(BaseModel):
-    mod_ids: Optional[List[str]] = None
-
-
-class ManifestPutDTO(BaseModel):
-    manifest: Dict[str, Any]
-
-
-class ModFilePutDTO(BaseModel):
-    path: str = Field(..., min_length=1)
-    content: str = ""
-
-
-class SandboxDTO(BaseModel):
-    mod_id: str = Field(..., min_length=1)
-    mode: str = Field(default="copy", pattern="^(copy|symlink)$")
-
-
-class FocusPrimaryDTO(BaseModel):
-    mod_id: str = Field(..., min_length=1)
-
-
-class ExportFhdShellDTO(BaseModel):
-    """空字符串表示写入默认路径 ``<FHD>/backend/shell/fhd_shell_mods.json``。"""
-
-    output_path: str = ""
-
-
 def _fhd_repo_root() -> Path:
     """MODstore 位于 ``<FHD>/MODstore`` 时的上级目录。"""
     return Path(__file__).resolve().parent.parent.parent
@@ -301,59 +288,9 @@ def _mod_dir(mod_id: str) -> Path:
     return d
 
 
-def _get_optional_user(authorization: Optional[str] = Header(None)) -> Optional[User]:
-    """获取当前用户（可选，未登录返回 None）。"""
-    raw = (authorization or "").strip()
-    if not raw.startswith("Bearer "):
-        return None
-    token = raw[7:]
-    payload = decode_access_token(token)
-    if not payload:
-        return None
-    user_id = int(payload["sub"])
-    return get_user_by_id(user_id)
-
-
-def _require_user(authorization: Optional[str] = Header(None)) -> User:
-    """强制要求登录，未登录抛出 401。"""
-    raw = (authorization or "").strip()
-    if not raw.startswith("Bearer "):
-        raise HTTPException(401, "请先登录")
-    token = raw[7:]
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(401, "登录凭证无效或已过期，请重新登录")
-    user_id = int(payload["sub"])
-    user = get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(401, "用户不存在")
-    return user
-
-
-def _assert_user_owns_mod(user: User, mod_id: str) -> None:
-    """检查用户是否拥有指定 MOD，管理员可访问所有 MOD。"""
-    if not user.is_admin and not user_owns_mod(user.id, mod_id):
-        raise HTTPException(403, "您无权访问此 MOD")
-
-
 @app.get("/api/health", tags=["health"], response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(ok=True)
-
-
-@app.get("/api/auth/me", tags=["auth"])
-def api_get_current_user(user: Optional[User] = Depends(_get_optional_user)):
-    """获取当前用户信息，未登录返回 null。"""
-    if user is None:
-        return {"user": None}
-    return {
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "is_admin": user.is_admin,
-        }
-    }
 
 
 @app.get("/api/config", tags=["config"])
@@ -431,6 +368,97 @@ def api_list_mods(user: Optional[User] = Depends(_get_optional_user)):
     return {"data": rows}
 
 
+def _read_mod_json_file(mod_dir: Path, rel_path: str) -> Dict[str, Any]:
+    rel = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
+    if not rel or rel.startswith("/") or any(part == ".." for part in rel.split("/")):
+        return {}
+    p = mod_dir / rel
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _mod_shell_ui_row(mod_dir: Path, manifest: Dict[str, Any]) -> Dict[str, Any]:
+    frontend = manifest.get("frontend") if isinstance(manifest.get("frontend"), dict) else {}
+    config = manifest.get("config") if isinstance(manifest.get("config"), dict) else {}
+    shell_from_manifest = frontend.get("shell") if isinstance(frontend.get("shell"), dict) else {}
+    ui_shell = _read_mod_json_file(mod_dir, str(config.get("ui_shell") or "config/ui_shell.json"))
+    if not ui_shell:
+        ui_shell = dict(shell_from_manifest)
+    industry_card = _read_mod_json_file(mod_dir, str(config.get("industry_card") or "config/industry_card.json"))
+    industry = manifest.get("industry") if isinstance(manifest.get("industry"), dict) else {}
+    industry_name = (
+        str(industry_card.get("name") or industry.get("name") or manifest.get("industry") or "通用").strip()
+        or "通用"
+    )
+    settings = ui_shell.get("settings") if isinstance(ui_shell.get("settings"), dict) else {}
+    raw_options = settings.get("industry_options") if isinstance(settings.get("industry_options"), list) else []
+    industry_options: List[str] = []
+    for raw in [industry_name, *raw_options]:
+        text = str(raw or "").strip()
+        if text and text not in industry_options:
+            industry_options.append(text)
+    return {
+        "id": manifest.get("id") or mod_dir.name,
+        "name": manifest.get("name") or mod_dir.name,
+        "primary": bool(manifest.get("primary")),
+        "frontend": frontend,
+        "industry": industry,
+        "industry_card": industry_card or {"schema_version": 1, "name": industry_name},
+        "ui_shell": ui_shell,
+        "sidebar_menu": ui_shell.get("sidebar_menu") if isinstance(ui_shell.get("sidebar_menu"), list) else [],
+        "menu_overrides": (
+            ui_shell.get("menu_overrides")
+            if isinstance(ui_shell.get("menu_overrides"), list)
+            else frontend.get("menu_overrides") if isinstance(frontend.get("menu_overrides"), list) else []
+        ),
+        "industry_options": industry_options or ["通用"],
+        "config_paths": {
+            "industry_card": config.get("industry_card") or "config/industry_card.json",
+            "ui_shell": config.get("ui_shell") or "config/ui_shell.json",
+        },
+    }
+
+
+@app.get("/api/mods/shell-ui", tags=["mods"])
+def api_mods_shell_ui(mod_id: str = ""):
+    """供传统模式宿主读取：聚合已安装 Mod 的行业、侧栏菜单和菜单覆盖配置。"""
+    rows: List[Dict[str, Any]] = []
+    for d in iter_mod_dirs(_lib()):
+        data, err = read_manifest(d)
+        if err or not data:
+            continue
+        rows.append(_mod_shell_ui_row(d, data))
+    selected = None
+    wanted = str(mod_id or "").strip()
+    if wanted:
+        selected = next((row for row in rows if row.get("id") == wanted), None)
+    if selected is None:
+        selected = next((row for row in rows if row.get("primary")), None)
+    if selected is None and rows:
+        selected = rows[0]
+    industry_options: List[str] = []
+    for row in rows:
+        for raw in row.get("industry_options") or []:
+            text = str(raw or "").strip()
+            if text and text not in industry_options:
+                industry_options.append(text)
+    return {
+        "ok": True,
+        "selected_mod_id": selected.get("id") if selected else "",
+        "mods": rows,
+        "industry_options": industry_options or ["通用"],
+        "sidebar_menu": selected.get("sidebar_menu") if selected else [],
+        "menu_overrides": selected.get("menu_overrides") if selected else [],
+        "settings": (selected.get("ui_shell") or {}).get("settings", {}) if selected else {},
+        "make_scene": (selected.get("ui_shell") or {}).get("make_scene", {}) if selected else {},
+    }
+
+
 @app.get("/api/mods/{mod_id}", tags=["mods"])
 def api_get_mod(mod_id: str, user: User = Depends(_require_user)):
     _assert_user_owns_mod(user, mod_id)
@@ -443,12 +471,16 @@ def api_get_mod(mod_id: str, user: User = Depends(_require_user)):
     if fn:
         ve = list(ve) + [fn]
     files = list_mod_relative_files(d)
+    sf = get_session_factory()
+    with sf() as db:
+        employee_readiness = analyze_mod_employee_readiness(db, user, d)
     return {
         "id": mod_id,
         "manifest": data,
         "validation_ok": len(ve) == 0,
         "warnings": ve,
         "files": files,
+        "employee_readiness": employee_readiness,
     }
 
 
@@ -523,6 +555,9 @@ def api_mod_authoring_summary(mod_id: str, user: User = Depends(_require_user)):
             bp_file = rel
             bp_routes = scan_fastapi_router_routes(p)
             break
+    sf = get_session_factory()
+    with sf() as db:
+        employee_readiness = analyze_mod_employee_readiness(db, user, d)
     return {
         "ok": True,
         "id": mod_id,
@@ -532,6 +567,7 @@ def api_mod_authoring_summary(mod_id: str, user: User = Depends(_require_user)):
         "warnings": ve,
         "blueprint_file": bp_file,
         "blueprint_routes": bp_routes,
+        "employee_readiness": employee_readiness,
     }
 
 
@@ -548,6 +584,149 @@ def api_mod_workflow_employee_scaffold(
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@app.get("/api/mods/{mod_id}/export-employee-pack", tags=["authoring"])
+def api_export_workflow_employee_pack(
+    mod_id: str,
+    workflow_index: int = 0,
+    user: User = Depends(_require_user),
+):
+    _assert_user_owns_mod(user, mod_id)
+    d = _mod_dir(mod_id)
+    data, err = read_manifest(d)
+    if err or not data:
+        raise HTTPException(400, err or "manifest 无效")
+    rows = data.get("workflow_employees")
+    if not isinstance(rows, list) or workflow_index < 0 or workflow_index >= len(rows):
+        raise HTTPException(400, "workflow_index 越界或 workflow_employees 非数组")
+    raw, build_err, pack_id = build_employee_pack_zip_from_workflow(
+        mod_id,
+        data,
+        rows[workflow_index] if isinstance(rows[workflow_index], dict) else {},
+        workflow_index=workflow_index,
+        mod_dir=d,
+    )
+    if build_err or not raw or not pack_id:
+        raise HTTPException(400, build_err or "生成员工包失败")
+    return StreamingResponse(
+        io.BytesIO(raw),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{pack_id}.xcemp"'},
+    )
+
+
+@app.post("/api/mods/{mod_id}/register-workflow-employee-catalog", tags=["authoring"])
+async def api_register_workflow_employee_catalog(
+    mod_id: str,
+    body: WorkflowEmployeeCatalogDTO,
+    user: User = Depends(_require_user),
+):
+    """把 workflow_employees[i] 落成可执行 employee_pack，并同步写入本地目录与运行时 DB。"""
+    _assert_user_owns_mod(user, mod_id)
+    d = _mod_dir(mod_id)
+    data, err = read_manifest(d)
+    if err or not data:
+        raise HTTPException(400, err or "manifest 无效")
+    rows = data.get("workflow_employees")
+    idx = int(body.workflow_index)
+    if not isinstance(rows, list) or idx < 0 or idx >= len(rows):
+        raise HTTPException(400, "workflow_index 越界或 workflow_employees 非数组")
+    entry = rows[idx] if isinstance(rows[idx], dict) else {}
+    raw, build_err, pack_id = build_employee_pack_zip_from_workflow(
+        mod_id,
+        data,
+        entry,
+        workflow_index=idx,
+        mod_dir=d,
+    )
+    if build_err or not raw or not pack_id:
+        raise HTTPException(400, build_err or "生成员工包失败")
+
+    audit = await run_package_audit_async(raw, {"artifact": "employee_pack"})
+    if not audit.get("ok"):
+        raise HTTPException(400, str(audit.get("error") or "包审核失败"))
+    summary = audit.get("summary") if isinstance(audit.get("summary"), dict) else {}
+    if summary and summary.get("pass") is False:
+        raise HTTPException(400, "五维审核未通过，禁止登记")
+
+    from modstore_server.catalog_store import append_package
+    from modstore_server.models import CatalogItem
+    import tempfile
+
+    manifest_zip, manifest_err, _pid = build_employee_pack_zip_from_workflow(
+        mod_id,
+        data,
+        entry,
+        workflow_index=idx,
+        mod_dir=d,
+    )
+    if manifest_err or not manifest_zip:
+        raise HTTPException(400, manifest_err or "生成员工包失败")
+    from modstore_server.employee_pack_export import build_employee_pack_manifest_from_workflow
+
+    manifest, manifest_build_err = build_employee_pack_manifest_from_workflow(
+        mod_id,
+        data,
+        entry,
+        workflow_index=idx,
+    )
+    if manifest_build_err or not manifest:
+        raise HTTPException(400, manifest_build_err or "生成员工包 manifest 失败")
+
+    rec: Dict[str, Any] = {
+        "id": pack_id,
+        "name": str(manifest.get("name") or pack_id),
+        "version": str(manifest.get("version") or "1.0.0"),
+        "description": str(manifest.get("description") or ""),
+        "artifact": "employee_pack",
+        "industry": body.industry.strip() or "通用",
+        "release_channel": body.release_channel,
+        "commerce": {"mode": "free" if body.price <= 0 else "paid", "price": body.price},
+        "license": {"type": "personal" if body.price <= 0 else "commercial", "verify_url": None},
+        "probe_mod_id": mod_id,
+    }
+    with tempfile.NamedTemporaryFile(suffix=".xcemp", delete=False) as tmp:
+        tmp.write(manifest_zip)
+        tmp_path = Path(tmp.name)
+    try:
+        saved = append_package(rec, tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    sf = get_session_factory()
+    with sf() as db:
+        row = db.query(CatalogItem).filter(CatalogItem.pkg_id == pack_id).first()
+        if not row:
+            row = CatalogItem(pkg_id=pack_id, author_id=user.id)
+            db.add(row)
+        row.version = saved.get("version") or rec["version"]
+        row.name = saved.get("name") or rec["name"]
+        row.description = saved.get("description") or rec["description"]
+        row.price = float(body.price or 0)
+        row.artifact = "employee_pack"
+        row.industry = saved.get("industry") or rec["industry"]
+        row.stored_filename = saved.get("stored_filename") or ""
+        row.sha256 = saved.get("sha256") or ""
+        db.commit()
+        readiness = analyze_mod_employee_readiness(db, user, d)
+
+    return {"ok": True, "package": saved, "audit": audit, "employee_readiness": readiness}
+
+
+@app.post("/api/mods/{mod_id}/patch-workflow-employee-nodes", tags=["authoring"])
+def api_patch_workflow_employee_nodes(mod_id: str, user: User = Depends(_require_user)):
+    """
+    再次执行「画布 employee 节点与 manifest 推导的 employee_pack id 对齐」逻辑：
+    含缺 start/end 时的最小骨架补全、插入或更新 employee 节点。用于制作页手工兜底。
+    """
+    _assert_user_owns_mod(user, mod_id)
+    d = _mod_dir(mod_id)
+    sf = get_session_factory()
+    with sf() as db:
+        out = patch_workflow_graph_employee_nodes(db, user, mod_dir=d, workflow_results=[])
+        readiness = analyze_mod_employee_readiness(db, user, d)
+    return {"ok": bool(out.get("ok")), "graph_patch": out, "employee_readiness": readiness}
 
 
 @app.put("/api/mods/{mod_id}/manifest", tags=["mods"])
@@ -608,6 +787,127 @@ def api_create_mod(body: CreateModDTO, user: User = Depends(_require_user)):
     return {"ok": True, "path": str(dest), "id": mid}
 
 
+@app.post("/api/mods/ai-scaffold", tags=["mods"])
+async def api_mod_ai_scaffold(body: ModAiScaffoldDTO, user: User = Depends(_require_user)):
+    """兼容仓库页旧入口：内部统一走文档驱动 full-suite Mod 生成器。"""
+    sf = get_session_factory()
+    with sf() as db:
+        res = await run_mod_suite_ai_scaffold_async(
+            db,
+            user,
+            brief=body.brief,
+            suggested_id=body.suggested_id,
+            replace=body.replace,
+            provider=body.provider,
+            model=body.model,
+        )
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "AI 生成 Mod 失败")
+    return res
+
+
+def _frontend_spec_for_existing_mod(mod_dir: Path, manifest: Dict[str, Any], brief: str = "") -> Dict[str, Any]:
+    mod_id = str(manifest.get("id") or mod_dir.name).strip() or mod_dir.name
+    mod_name = str(manifest.get("name") or mod_id).strip() or mod_id
+    desc = str(manifest.get("description") or "").strip()
+    frontend = manifest.get("frontend") if isinstance(manifest.get("frontend"), dict) else {}
+    config = manifest.get("config") if isinstance(manifest.get("config"), dict) else {}
+    blueprint = _read_mod_json_file(mod_dir, str(config.get("ai_blueprint") or "config/ai_blueprint.json"))
+    spec = blueprint.get("frontend_app") if isinstance(blueprint.get("frontend_app"), dict) else {}
+    spec = dict(spec) if isinstance(spec, dict) else {}
+    menu = frontend.get("menu") if isinstance(frontend.get("menu"), list) else []
+    first_menu = menu[0] if menu and isinstance(menu[0], dict) else {}
+    entry_path = str(frontend.get("pro_entry_path") or first_menu.get("path") or f"/{mod_id}").strip() or f"/{mod_id}"
+    subtitle = str(brief or "").strip() or str(spec.get("subtitle") or desc).strip()
+    employees = manifest.get("workflow_employees") if isinstance(manifest.get("workflow_employees"), list) else []
+    if not isinstance(spec.get("sections"), list) or not spec.get("sections"):
+        spec["sections"] = [
+            {
+                "title": str(row.get("label") or row.get("id") or "AI 员工"),
+                "description": str(row.get("panel_summary") or row.get("summary") or desc),
+                "items": [str(row.get("panel_title") or "自动化业务处理")],
+            }
+            for row in employees[:4]
+            if isinstance(row, dict)
+        ] or [{"title": "业务驾驶舱", "description": desc or "面向本 Mod 的专业版首页。", "items": ["查看能力", "启动流程", "沉淀业务配置"]}]
+    if not isinstance(spec.get("metrics"), list) or not spec.get("metrics"):
+        spec["metrics"] = [
+            {"label": "AI 员工", "value": str(len(employees) or 1), "hint": "来自 manifest.workflow_employees"},
+            {"label": "前端入口", "value": "1", "hint": entry_path},
+        ]
+    if not isinstance(spec.get("hero_actions"), list) or not spec.get("hero_actions"):
+        spec["hero_actions"] = [
+            {"label": "打开专业对话", "kind": "primary", "target": "chat"},
+            {"label": "查看工作流", "kind": "secondary", "target": "workflow"},
+        ]
+    manifest_industry = manifest.get("industry") if isinstance(manifest.get("industry"), dict) else {}
+    industry_name = str(spec.get("industry") or manifest_industry.get("name") or "通用")
+    spec.update(
+        {
+            "schema_version": 1,
+            "mod_id": mod_id,
+            "mod_name": mod_name,
+            "entry_path": entry_path,
+            "title": str(spec.get("title") or mod_name),
+            "subtitle": subtitle or desc or f"{mod_name} 专业版前端",
+            "theme": str(spec.get("theme") or "aurora"),
+            "industry": industry_name,
+            "workflow_entry_label": str(spec.get("workflow_entry_label") or "查看工作流"),
+            "chat_entry_label": str(spec.get("chat_entry_label") or "打开专业对话"),
+        }
+    )
+    return spec
+
+
+@app.post("/api/mods/{mod_id}/frontend/regenerate", tags=["authoring"])
+def api_mod_frontend_regenerate(
+    mod_id: str,
+    body: FrontendRegenerateDTO,
+    user: User = Depends(_require_user),
+):
+    _assert_user_owns_mod(user, mod_id)
+    mod_dir = _mod_dir(mod_id)
+    manifest, err = read_manifest(mod_dir)
+    if not manifest or err:
+        raise HTTPException(400, err or "无法读取 manifest")
+    try:
+        snap = capture_manifest_snapshot(mod_dir, f"重新生成前端前 {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception:  # noqa: BLE001
+        snap = None
+    spec = _frontend_spec_for_existing_mod(mod_dir, manifest, body.brief)
+    mod_name = str(manifest.get("name") or mod_id)
+    frontend = manifest.get("frontend") if isinstance(manifest.get("frontend"), dict) else {}
+    menu = frontend.get("menu") if isinstance(frontend.get("menu"), list) and frontend.get("menu") else [
+        {"id": f"{mod_id}-home", "label": mod_name, "icon": "fa-cube", "path": spec["entry_path"]}
+    ]
+    frontend.update(
+        {
+            "routes": frontend.get("routes") or "frontend/routes",
+            "menu": menu,
+            "pro_entry_path": spec["entry_path"],
+            "app": "config/frontend_spec.json",
+        }
+    )
+    manifest["frontend"] = frontend
+    config = manifest.get("config") if isinstance(manifest.get("config"), dict) else {}
+    config["frontend_spec"] = "config/frontend_spec.json"
+    manifest["config"] = config
+    warnings = save_manifest_validated(mod_dir, manifest)
+    (mod_dir / "config").mkdir(parents=True, exist_ok=True)
+    (mod_dir / "frontend" / "views").mkdir(parents=True, exist_ok=True)
+    (mod_dir / "config" / "frontend_spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (mod_dir / "frontend" / "routes.js").write_text(render_frontend_routes_js(mod_id, mod_name, spec["entry_path"]), encoding="utf-8")
+    (mod_dir / "frontend" / "views" / "HomeView.vue").write_text(render_generated_home_vue(mod_id, mod_name, spec), encoding="utf-8")
+    return {
+        "ok": True,
+        "frontend_spec": spec,
+        "entry_path": spec["entry_path"],
+        "snapshot": snap,
+        "manifest_warnings": warnings,
+        "files": ["config/frontend_spec.json", "frontend/routes.js", "frontend/views/HomeView.vue"],
+    }
+
+
 @app.delete("/api/mods/{mod_id}", tags=["mods"])
 def api_delete_mod(mod_id: str, user: User = Depends(_require_user)):
     _assert_user_owns_mod(user, mod_id)
@@ -665,7 +965,7 @@ def api_sync_push(body: SyncDTO, user: User = Depends(_require_user)):
     cfg = _cfg()
     xc = resolved_xcagi(cfg)
     if not xc:
-        raise HTTPException(400, "未配置有效的 XCAGI 根目录（设置页）")
+        raise HTTPException(400, "未配置有效的 XCAGI 根目录（Mod 源码库页「路径与同步」或环境变量 XCAGI_ROOT）")
     if not user.is_admin and body.mod_ids:
         for mod_id in body.mod_ids:
             _assert_user_owns_mod(user, mod_id)
@@ -887,17 +1187,22 @@ def api_xcagi_installed_mods():
 
 
 from modstore_server.catalog_api import router as catalog_public_router
+from modstore_server.mod_sync_catalog_api import router as mod_sync_catalog_router
 
 app.include_router(catalog_public_router)
+app.include_router(mod_sync_catalog_router)
 
 # 其余功能 router：之前只挂了 market/payment/catalog，导致 /api/llm、/api/notifications、
 # /api/knowledge、/api/realtime/ws 等前端常用接口全部 404。统一在此集中挂载，缺包则跳过。
 def _include_optional(module_path: str) -> None:
     try:
         mod = __import__(module_path, fromlist=["router"])
-    except Exception as exc:  # noqa: BLE001 — 启动期容忍可选 router 引入失败
-        logging.getLogger(__name__).warning("skip router %s: %s", module_path, exc)
+    except ImportError as exc:
+        logging.getLogger(__name__).info("skip optional router %s: %s", module_path, exc)
         return
+    except Exception as exc:
+        logging.getLogger(__name__).exception("FATAL: router %s failed to load", module_path)
+        raise
     router = getattr(mod, "router", None)
     if router is None:
         return
@@ -922,6 +1227,7 @@ for _m in (
     "modstore_server.webhook_api",
     "modstore_server.health_api",
     "modstore_server.openapi_connector_api",
+    "modstore_server.customer_service_api",
     "modstore_server.developer_api",
     "modstore_server.developer_key_export_api",
     "modstore_server.webhook_subscription_api",
@@ -983,125 +1289,11 @@ def _maybe_mount_ui() -> None:
 _maybe_mount_ui()
 
 
-def _gateway() -> "PaymentGatewayService":
-    from modstore_server.application.payment_gateway import PaymentGatewayService
-
-    return PaymentGatewayService()
-
-
-def _payment_backend_is_java(request: Request) -> bool:
-    return _gateway().should_proxy_to_java(request.url.path)
-
-
-_HOP_BY_HOP_HEADERS = frozenset(
-    {
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailers",
-        "transfer-encoding",
-        "upgrade",
-        "host",
-        "content-length",
-    }
-)
-
-_PROXY_RESPONSE_DROP_HEADERS = _HOP_BY_HOP_HEADERS | frozenset(
-    {
-        # httpx 自动解压上游 gzip/br/deflate 内容；若原样转发 content-encoding，
-        # 浏览器会再次解压明文 JSON，表现为 fetch 直接失败（ERR_CONTENT_DECODING_FAILED）。
-        "content-encoding",
-    }
-)
-
-
 @app.middleware("http")
 async def _payment_backend_proxy_middleware(request: Request, call_next):
-    """PAYMENT_BACKEND=java 时，把 /api/payment、/api/wallet、/api/refunds 透传到 Java 支付服务。
-
-    避免 Python SQLite 与 Java PostgreSQL 双源（订单/会员/钱包/退款一律以 Java 为准）。
-    若中间件不在位，前端拿到的 my-plan / orders 都是 Python 本地空表，会员状态会"消失"。
-    """
-    gateway = _gateway()
-    if not gateway.should_proxy_to_java(request.url.path):
-        return await call_next(request)
-    method = request.method
-    target_url = f"{gateway.target_base_url()}{request.url.path}"
-    if request.url.query:
-        target_url = f"{target_url}?{request.url.query}"
-    fwd_headers = {
-        k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS
-    }
-    request_id = getattr(request.state, "request_id", "") or _request_id_from_headers(request)
-    fwd_headers["X-Request-Id"] = request_id
-    body_bytes = await request.body() if method not in ("GET", "HEAD") else b""
-    started = time.perf_counter()
-    try:
-        timeout = httpx.Timeout(
-            gateway.read_timeout_seconds,
-            connect=gateway.connect_timeout_seconds,
-        )
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            up = await client.request(
-                method,
-                target_url,
-                content=body_bytes if body_bytes else None,
-                headers=fwd_headers,
-            )
-    except httpx.HTTPError as exc:
-        from modstore_server.application.payment_gateway import java_payment_unreachable_message
-
-        observe_payment_proxy(method, request.url.path, 502, time.perf_counter() - started)
-        return JSONResponse(
-            {"ok": False, "message": java_payment_unreachable_message(exc)},
-            headers={"X-Request-Id": request_id},
-            status_code=502,
-        )
-    observe_payment_proxy(method, request.url.path, up.status_code, time.perf_counter() - started)
-    out_headers = {
-        k: v for k, v in up.headers.items() if k.lower() not in _PROXY_RESPONSE_DROP_HEADERS
-    }
-    out_headers["X-Request-Id"] = request_id
-    return Response(
-        content=up.content,
-        status_code=up.status_code,
-        headers=out_headers,
-        media_type=up.headers.get("content-type"),
-    )
+    return await payment_backend_proxy_middleware(request, call_next)
 
 
 @app.middleware("http")
 async def _market_history_spa_middleware(request: Request, call_next):
-    """
-    在路由匹配之前处理 ``/market`` 和 ``/new`` 前缀：真实文件直接返回，否则回退 ``index.html``。
-    避免其它宽泛路由或注册顺序导致 ``/market/register``、``/new/register`` 等返回 404。
-    """
-    if request.scope["type"] != "http":
-        return await call_next(request)
-    if request.method not in ("GET", "HEAD"):
-        return await call_next(request)
-    path = request.url.path
-
-    for prefix in ("/market", "/new"):
-        if path == prefix or path == prefix + "/" or path.startswith(prefix + "/"):
-            idx = _MARKET_DIST / "index.html"
-            if not _MARKET_DIST.is_dir() or not idx.is_file():
-                return await call_next(request)
-
-            dist_root = _MARKET_DIST.resolve()
-            rel = path[len(prefix):].lstrip("/")
-            if rel:
-                if ".." in rel.split("/"):
-                    return JSONResponse({"detail": "非法路径"}, status_code=400)
-                candidate = (_MARKET_DIST / rel).resolve()
-                try:
-                    candidate.relative_to(dist_root)
-                except ValueError:
-                    return await call_next(request)
-                if candidate.is_file():
-                    return FileResponse(candidate)
-            return FileResponse(idx)
-
-    return await call_next(request)
+    return await market_history_spa_middleware(request, call_next)

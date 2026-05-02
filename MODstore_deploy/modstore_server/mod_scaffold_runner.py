@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import py_compile
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -36,6 +37,9 @@ from modstore_server.mod_ai_scaffold import (
     render_frontend_routes_js,
     render_generated_home_vue,
     render_suite_blueprints_py,
+    _normalize_frontend_app,
+    _normalize_frontend_menu,
+    _sanitize_industry,
 )
 from modstore_server.models import User, Workflow, WorkflowNode, add_user_mod
 
@@ -144,7 +148,10 @@ def analyze_mod_employee_readiness(
                     f"{expected_pack_id}（当前: {', '.join(workflow_employee_ids[:6])}）"
                 )
             else:
-                gaps.append("工作流中没有 employee 节点")
+                gaps.append(
+                    "工作流中没有可用的 employee 节点（缺少类型为 employee 的节点，或节点未配置 employee_id）。"
+                    "可在自动化任务画布添加「员工」节点并指向已登记包 id；或在 Mod 制作页点「重试图布对齐」由服务端自动插入/修正。"
+                )
 
         real_status = "not_run"
         real_message = "尚未触发非 Mock 真实执行"
@@ -652,6 +659,40 @@ def import_mod_suite_repository(
         "config/ui_shell.json": json.dumps(_mod_suite_ui_shell_payload(blueprint), ensure_ascii=False, indent=2) + "\n",
     }
     frontend_app = blueprint.get("frontend_app") if isinstance(blueprint.get("frontend_app"), dict) else {}
+    had_frontend_fallback = False
+    # 注意：Python 中空 dict 为假；此前 generate_frontend=True 但 LLM/修复 JSON 未带 frontend_app 时不会落 frontend/*，与「制作前端」开关语义不符。
+    if generate_frontend and not frontend_app:
+        desc = str(manifest.get("description") or "").strip()
+        industry_payload = _sanitize_industry(
+            blueprint.get("industry") if isinstance(blueprint.get("industry"), dict) else {},
+            mod_name=mname,
+            description=desc,
+        )
+        fe = manifest.get("frontend") if isinstance(manifest.get("frontend"), dict) else {}
+        menu_raw = fe.get("menu") if isinstance(fe.get("menu"), list) else None
+        fm = _normalize_frontend_menu(menu_raw, mod_id=mid, mod_name=mname)
+        bp_emp = blueprint.get("employees") if isinstance(blueprint.get("employees"), list) else []
+        emp_for_fe = employees if employees else bp_emp
+        if not isinstance(emp_for_fe, list):
+            emp_for_fe = []
+        frontend_app = _normalize_frontend_app(
+            {},
+            mod_id=mid,
+            mod_name=mname,
+            description=desc,
+            industry=industry_payload,
+            employees=emp_for_fe,
+            frontend_menu=fm,
+        )
+        had_frontend_fallback = True
+        if isinstance(blueprint, dict):
+            blueprint["frontend_app"] = frontend_app
+        if isinstance(parsed, dict):
+            bp_store = parsed.get("blueprint")
+            if not isinstance(bp_store, dict):
+                parsed["blueprint"] = {}
+                bp_store = parsed["blueprint"]
+            bp_store["frontend_app"] = frontend_app
     if generate_frontend and frontend_app:
         entry_path = str(frontend_app.get("entry_path") or f"/{mid}")
         extra_files.update(
@@ -685,6 +726,7 @@ def import_mod_suite_repository(
         "employees": employees,
         "blueprint": blueprint,
         "frontend_app": frontend_app if generate_frontend else None,
+        "had_frontend_fallback": had_frontend_fallback,
     }
 
 
@@ -1367,6 +1409,104 @@ def _employee_node_ids_for_workflow_cfg(db: Session, workflow_id: int) -> List[D
     return out
 
 
+def _ensure_workflow_start_end_skeleton(db: Session, workflow_id: int) -> List[str]:
+    """
+    若画布缺 start/end（常见于 NL 生成异常或手工删改），补最小骨架，便于插入 employee 节点。
+    不单独 commit，由调用方提交。
+    """
+    from modstore_server.models import WorkflowEdge, WorkflowNode
+
+    wf_id = int(workflow_id)
+    notes: List[str] = []
+
+    def _degree_maps(
+        node_rows: List[WorkflowNode], edge_rows: List[WorkflowEdge]
+    ) -> Tuple[Dict[int, int], Dict[int, int], set[int]]:
+        ids = {n.id for n in node_rows}
+        inn: Dict[int, int] = defaultdict(int)
+        out: Dict[int, int] = defaultdict(int)
+        for e in edge_rows:
+            if e.source_node_id in ids and e.target_node_id in ids:
+                out[e.source_node_id] += 1
+                inn[e.target_node_id] += 1
+        return inn, out, ids
+
+    nodes = db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf_id).all()
+    edges = db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wf_id).all()
+    start = next((n for n in nodes if n.node_type == "start"), None)
+    end = next((n for n in nodes if n.node_type == "end"), None)
+    if start and end:
+        return notes
+
+    if not nodes:
+        s = WorkflowNode(
+            workflow_id=wf_id,
+            node_type="start",
+            name="开始",
+            config="{}",
+            position_x=40.0,
+            position_y=120.0,
+        )
+        e = WorkflowNode(
+            workflow_id=wf_id,
+            node_type="end",
+            name="结束",
+            config="{}",
+            position_x=520.0,
+            position_y=120.0,
+        )
+        db.add(s)
+        db.add(e)
+        db.flush()
+        db.add(WorkflowEdge(workflow_id=wf_id, source_node_id=s.id, target_node_id=e.id, condition=""))
+        notes.append("empty_graph_start_end")
+        return notes
+
+    inn, out, ids = _degree_maps(nodes, edges)
+
+    if not start:
+        s = WorkflowNode(
+            workflow_id=wf_id,
+            node_type="start",
+            name="开始",
+            config="{}",
+            position_x=40.0,
+            position_y=120.0,
+        )
+        db.add(s)
+        db.flush()
+        roots = [n for n in nodes if inn.get(n.id, 0) == 0]
+        targets = roots if roots else [min(nodes, key=lambda x: int(x.id or 0))]
+        for t in targets:
+            db.add(WorkflowEdge(workflow_id=wf_id, source_node_id=s.id, target_node_id=t.id, condition=""))
+        notes.append("inserted_start")
+        nodes = db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf_id).all()
+        edges = db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wf_id).all()
+        inn, out, ids = _degree_maps(nodes, edges)
+
+    end = next((n for n in nodes if n.node_type == "end"), None)
+    if not end:
+        end_node = WorkflowNode(
+            workflow_id=wf_id,
+            node_type="end",
+            name="结束",
+            config="{}",
+            position_x=640.0,
+            position_y=120.0,
+        )
+        db.add(end_node)
+        db.flush()
+        tails = [n for n in nodes if n.id != end_node.id and out.get(n.id, 0) == 0]
+        if not tails:
+            others = [n for n in nodes if n.id != end_node.id]
+            tails = [max(others, key=lambda x: int(x.id or 0))] if others else []
+        for t in tails:
+            db.add(WorkflowEdge(workflow_id=wf_id, source_node_id=t.id, target_node_id=end_node.id, condition=""))
+        notes.append("inserted_end")
+
+    return notes
+
+
 def patch_workflow_graph_employee_nodes(
     db: Session,
     user: User,
@@ -1481,11 +1621,24 @@ def patch_workflow_graph_employee_nodes(
                 .first()
             )
             if not start or not end:
+                sk_notes = _ensure_workflow_start_end_skeleton(db, wf_id)
+                db.flush()
+                start = (
+                    db.query(WorkflowNode)
+                    .filter(WorkflowNode.workflow_id == wf_id, WorkflowNode.node_type == "start")
+                    .first()
+                )
+                end = (
+                    db.query(WorkflowNode)
+                    .filter(WorkflowNode.workflow_id == wf_id, WorkflowNode.node_type == "end")
+                    .first()
+                )
+            if not start or not end:
                 patches.append(
                     {
                         "workflow_index": idx,
                         "workflow_id": wf_id,
-                        "skipped": "图缺 start/end，无法插入员工节点",
+                        "skipped": "图缺 start/end，自动补全后仍无法插入员工节点",
                     }
                 )
                 continue

@@ -3,34 +3,24 @@
     <div class="page-header">
       <h1 class="page-title">Mod 源码库</h1>
       <p class="page-desc">
-        对应 XCAGI 宿主 <code class="mono">mods/&lt;mod_id&gt;/</code> 侧扩展包：维护
-        <strong>manifest.json</strong>、backend、frontend；推送到 XCAGI 的 <code class="mono">mods/</code> 目录。
-        详细契约见宿主仓库 <strong>MOD_AUTHORING_GUIDE.md</strong>。支持导入标准 <strong>.xcmod</strong>（与 .zip 相同容器）。在卡片上点「制作 / 编辑」打开制作页（含指南 Tab 与清单）。
+        维护 <strong>manifest.json</strong>、backend、frontend 与 AI 生成配置。同步到 XCAGI 不再要求在网页里填写服务器绝对路径：
+        用含 <code class="mono">mod:sync</code> 权限的 Developer Token 拉取即可。支持导入标准 <strong>.xcmod</strong>（与 .zip 相同容器），在卡片上点「制作 / 编辑」打开制作页。
       </p>
       <div class="header-actions">
+        <button
+          type="button"
+          class="btn btn-sm btn-danger"
+          :disabled="purgeLibraryBusy"
+          title="删除当前账号 Mod 源码库中的全部包（需登录），并清除本页提示与「带入员工制作」预填缓存；不可恢复"
+          @click="purgeRepoLibraryAndLocalState"
+        >
+          {{ purgeLibraryBusy ? '清空中…' : '一键清理' }}
+        </button>
         <button class="btn btn-primary" @click="showCreate = true">新建 Mod</button>
         <label class="btn">
           导入包（.zip / .xcmod）
           <input type="file" accept=".zip,.xcmod,.xcemp" class="hidden-input" @change="onImport" />
         </label>
-        <button
-          type="button"
-          class="btn"
-          :disabled="syncing"
-          title="从 XCAGI 工作区的 mods/ 拉回副本到本机库"
-          @click="doPull"
-        >
-          从 XCAGI 拉回
-        </button>
-        <button
-          type="button"
-          class="btn"
-          :disabled="syncing"
-          title="将本机库中的 Mod 复制到 XCAGI 的 mods/。新路由通常需重启 XCAGI 主进程后生效。"
-          @click="doPush"
-        >
-          推送到 XCAGI
-        </button>
         <button
           type="button"
           class="btn btn-secondary"
@@ -41,6 +31,18 @@
         </button>
       </div>
     </div>
+
+    <section class="path-sync-card remote-pull-card" aria-labelledby="remote-pull-title">
+      <h2 id="remote-pull-title" class="path-sync-title">密钥同步到 XCAGI</h2>
+      <p class="path-sync-lead">
+        在「账户中心 → API 密钥」创建含 <code class="mono">mod:sync</code> 的 Developer Token，然后在 XCAGI 所在机器执行命令。
+        工具会优先使用 <code class="mono">XCAGI_ROOT</code> 或自动发现相邻 <code class="mono">../XCAGI</code>，无需在网页里填写路径。
+      </p>
+      <pre class="remote-cmd-block" tabindex="0">{{ remoteDeployCmd }}</pre>
+      <div class="path-sync-actions">
+        <button type="button" class="btn btn-secondary" @click="copyRemoteDeployCmd">复制命令</button>
+      </div>
+    </section>
 
     <div v-if="message" :class="['flash', messageOk ? 'flash-ok' : 'flash-err']">{{ message }}</div>
 
@@ -88,6 +90,15 @@
         </div>
         <div class="mod-card-actions">
           <button class="btn btn-sm" @click="viewMod(m.id)">制作 / 编辑</button>
+          <button
+            type="button"
+            class="btn btn-sm btn-danger"
+            :disabled="deleteModBusy === m.id"
+            title="从当前账号的 Mod 库中整包删除（需已登录）；不可恢复"
+            @click="deleteModFromLibrary(m)"
+          >
+            {{ deleteModBusy === m.id ? '删除中…' : '删除 Mod' }}
+          </button>
         </div>
       </div>
     </div>
@@ -151,7 +162,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 
@@ -160,7 +171,6 @@ const mods = ref([])
 const loading = ref(true)
 const message = ref('')
 const messageOk = ref(true)
-const syncing = ref(false)
 const showCreate = ref(false)
 const createId = ref('')
 const createName = ref('')
@@ -171,13 +181,140 @@ const scaffoldReplace = ref(true)
 const scaffoldBusy = ref(false)
 /** `${modId}:${workflowIndex}` 登记中 */
 const registerBusy = ref('')
+/** 正在删除的 manifest.id */
+const deleteModBusy = ref('')
+/** 一键清理：批量删库进行中 */
+const purgeLibraryBusy = ref(false)
+
+const remoteApiOrigin = ref('')
+
+const remoteDeployCmd = computed(() => {
+  const base = (remoteApiOrigin.value || 'https://xiu-ci.com').replace(/\/$/, '')
+  return `set MODSTORE_PAT=pat_你的令牌\npython -m modman remote-deploy --base-url ${base} --token %MODSTORE_PAT% --mods 你的mod_id\n# 一次拉取当前账号可见且校验通过的全部 Mod：\npython -m modman remote-deploy --base-url ${base} --token %MODSTORE_PAT% --all\n# 如果自动发现不到本机 XCAGI，再临时追加：--xcagi \"本机XCAGI绝对路径\"`
+})
 
 const PREFILL_KEY = 'modstore_employee_prefill'
+
+async function copyRemoteDeployCmd() {
+  const t = remoteDeployCmd.value
+  try {
+    await navigator.clipboard.writeText(t)
+    flash('已复制到剪贴板', true)
+  } catch {
+    flash('复制失败，请手动全选复制', false)
+  }
+}
 
 function flash(msg, ok = true) {
   message.value = msg
   messageOk.value = ok
   setTimeout(() => { message.value = '' }, 5000)
+}
+
+function clearRepoPageLocalOnly() {
+  message.value = ''
+  try {
+    sessionStorage.removeItem(PREFILL_KEY)
+  } catch {
+    /* ignore */
+  }
+  showCreate.value = false
+  showScaffold.value = false
+  scaffoldBrief.value = ''
+  scaffoldIdHint.value = ''
+}
+
+/** 清空源码库：删账号下全部 Mod 包 + 清本页本地状态（与「repo-page 全删」语义一致） */
+async function purgeRepoLibraryAndLocalState() {
+  if (purgeLibraryBusy.value) return
+  if (!localStorage.getItem('modstore_token')) {
+    flash('请先登录后再使用一键清理（将删除账号下全部 Mod）', false)
+    return
+  }
+
+  const list = Array.isArray(mods.value) ? mods.value : []
+  const ids = list.map((m) => String(m?.id || '').trim()).filter(Boolean)
+  const primaryCount = list.filter((m) => m && m.primary).length
+  const primaryHint =
+    primaryCount > 0
+      ? `\n\n其中有 ${primaryCount} 个包在 manifest 中标记为主扩展（primary），删除后请确认 XCAGI / 宿主侧不再依赖对应 id。`
+      : ''
+
+  if (ids.length === 0) {
+    if (
+      !window.confirm(
+        '库中当前没有 Mod。将仅清除：本页提示、新建/脚手架弹窗未提交内容、以及「带入员工制作」预填缓存。是否继续？',
+      )
+    ) {
+      return
+    }
+    clearRepoPageLocalOnly()
+    flash('已清理本页本地状态', true)
+    void load()
+    return
+  }
+
+  if (
+    !window.confirm(
+      `确定删除当前账号 Mod 源码库中的全部 ${ids.length} 个包？\n本地库目录将整包删除且从账号关联中移除，不可恢复。${primaryHint}\n\n同时将清除本页提示与员工制作预填缓存。`,
+    )
+  ) {
+    return
+  }
+
+  purgeLibraryBusy.value = true
+  clearRepoPageLocalOnly()
+  const failed = []
+  try {
+    for (const id of ids) {
+      try {
+        await api.deleteMod(id)
+      } catch (e) {
+        failed.push({ id, err: e?.message || String(e) })
+      }
+    }
+    if (failed.length) {
+      flash(
+        `已删除 ${ids.length - failed.length} 个，失败 ${failed.length} 个：${failed.map((f) => f.id).join(', ')}`,
+        false,
+      )
+    } else {
+      flash(`已清空源码库（共删除 ${ids.length} 个包）`, true)
+    }
+  } finally {
+    purgeLibraryBusy.value = false
+    await load()
+  }
+}
+
+async function deleteModFromLibrary(m) {
+  const id = m && typeof m === 'object' ? String(m.id || '').trim() : ''
+  if (!id) return
+  if (!localStorage.getItem('modstore_token')) {
+    flash('请先登录后再删除 Mod', false)
+    return
+  }
+  const label = (m.name && String(m.name).trim()) || id
+  const prim = m.primary
+    ? '\n\n注意：该包在 manifest 中标记为主扩展（primary），删除后请确认 XCAGI / 宿主侧不再依赖该 id。'
+    : ''
+  if (
+    !window.confirm(
+      `确定从 Mod 源码库删除「${label}」（${id}）？\n本地库目录将整包删除，且会从你的账号关联中移除。此操作不可恢复。${prim}`,
+    )
+  ) {
+    return
+  }
+  deleteModBusy.value = id
+  try {
+    await api.deleteMod(id)
+    flash(`已删除 Mod：${id}`, true)
+    await load()
+  } catch (e) {
+    flash(e?.message || String(e), false)
+  } finally {
+    deleteModBusy.value = ''
+  }
 }
 
 function getBlurb(m) {
@@ -320,33 +457,12 @@ async function onImport(ev) {
   }
 }
 
-async function doPull() {
-  syncing.value = true
-  try {
-    const res = await api.pull(null)
-    flash(`已拉回: ${(res.pulled || []).join(', ') || '无'}`)
-    await load()
-  } catch (e) {
-    flash(e.message || String(e), false)
-  } finally {
-    syncing.value = false
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    remoteApiOrigin.value = window.location.origin || ''
   }
-}
-
-async function doPush() {
-  syncing.value = true
-  try {
-    const res = await api.push(null)
-    flash(`已部署: ${(res.deployed || []).join(', ') || '无'}`)
-    await load()
-  } catch (e) {
-    flash(e.message || String(e), false)
-  } finally {
-    syncing.value = false
-  }
-}
-
-onMounted(load)
+  void load()
+})
 </script>
 
 <style scoped>
@@ -356,6 +472,79 @@ onMounted(load)
   margin: 0 auto;
   padding: var(--page-pad-y) var(--layout-pad-x);
   box-sizing: border-box;
+}
+
+.path-sync-card {
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.path-sync-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  color: #e5e7eb;
+}
+
+.path-sync-lead,
+.path-sync-warn,
+.path-sync-ok {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.path-sync-warn {
+  color: #fbbf24;
+}
+
+.path-sync-ok {
+  color: #86efac;
+}
+
+.path-sync-card .mono {
+  font-size: 0.78rem;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+}
+
+.path-sync-grid {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+@media (min-width: 720px) {
+  .path-sync-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .path-sync-grid .form-group:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+.path-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.remote-cmd-block {
+  margin: 0 0 0.75rem;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
 }
 
 .page-header {
@@ -498,6 +687,10 @@ onMounted(load)
 
 .mod-card-actions {
   margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .empty-state {
