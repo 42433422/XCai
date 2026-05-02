@@ -16,8 +16,11 @@
       <div
         v-if="hasWorkflow"
         class="wb-gear-layout"
-        :class="{ 'wb-gear-layout--make': activeGear === 'make' }"
-        @wheel.passive="onGearWheel"
+        :class="{
+          'wb-gear-layout--make': activeGear === 'make',
+          'wb-gear-layout--nav-locked': gearNavHardLocked,
+        }"
+        @wheel="onGearWheel"
       >
         <nav class="wb-gear-rail" aria-label="工作台挡位">
           <div
@@ -55,6 +58,15 @@
           </div>
         </nav>
         <div class="wb-gear-viewport">
+          <div
+            v-if="gearNavHardLocked"
+            class="wb-gear-nav-lock"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="wb-gear-nav-lock__text">一档已有聊天记录，挡位已锁定，避免滚轮误切。</span>
+            <button type="button" class="wb-gear-nav-lock__btn" @click="unlockGearNav">解锁挡位</button>
+          </div>
           <div class="wb-gear-track" :style="{ transform: `translateY(-${gearIndex * (100 / gearScenes.length)}%)` }">
             <section class="wb-gear-scene wb-direct-scene" aria-label="一档直接聊天" :style="directFontPxStyle">
               <div v-if="!directMessages.length" class="wb-direct-empty-title">
@@ -102,14 +114,13 @@
                     </div>
                   </header>
 
-                  <div
+                  <p
                     v-if="directMessages.length"
-                    class="wb-direct-hero"
-                    :class="{ 'wb-direct-hero--compact': directMessages.length }"
+                    class="wb-direct-hero wb-direct-hero--compact"
+                    :title="directTaskLine"
                   >
-                    <h1 class="wb-direct-title">{{ activeBot ? activeBot.name : '有什么想问的？' }}</h1>
-                    <p class="wb-direct-sub">{{ activeBot?.desc || '像聊天一样提问，我直接帮你分析、总结和给出可执行答案。' }}</p>
-                  </div>
+                    {{ directTaskLine }}
+                  </p>
                   <TransitionGroup
                     v-if="directMessages.length"
                     ref="directThreadRef"
@@ -124,54 +135,64 @@
                       class="wb-direct-msg"
                       :class="msg.role === 'user' ? 'wb-direct-msg--user' : 'wb-direct-msg--assistant'"
                     >
-                      <header class="wb-direct-msg__head">
-                        <span class="wb-direct-msg__role">{{ msg.role === 'user' ? '你' : 'AI' }}</span>
-                        <span v-if="msg.skills && msg.skills.length" class="wb-direct-msg__skills">
-                          <span
-                            v-for="s in msg.skills"
-                            :key="`s-${msg.id}-${s}`"
-                            class="wb-direct-msg__skill-chip"
-                          >{{ s }}</span>
-                        </span>
-                        <span v-if="msg.attachments && msg.attachments.length" class="wb-direct-msg__atts">
-                          <span
-                            v-for="a in msg.attachments"
-                            :key="`a-${msg.id}-${a.name}`"
-                            class="wb-direct-msg__att-chip"
-                            :title="`${a.name} · ${formatDirectFileSize(a.size)} · ${a.status}`"
-                          >📎 {{ a.name }}</span>
-                        </span>
-                      </header>
-                      <template v-if="msg.role === 'user' && editingMessageId === msg.id">
-                        <div class="wb-direct-edit">
-                          <textarea
-                            v-model="editingDraft"
-                            class="wb-direct-edit__input"
-                            rows="3"
-                            spellcheck="false"
-                          />
-                          <div class="wb-direct-edit__ops">
-                            <button type="button" class="wb-direct-edit__btn wb-direct-edit__btn--ghost" @click="cancelEditUserMessage">取消</button>
-                            <button type="button" class="wb-direct-edit__btn wb-direct-edit__btn--primary" :disabled="!editingDraft.trim() || directLoading" @click="() => void commitEditedUserMessage()">改后重发</button>
-                          </div>
-                        </div>
-                      </template>
-                      <template v-else>
-                        <MessageBody :content="msg.content" :streaming="!!msg.pending" />
-                        <p v-if="msg.error" class="wb-direct-msg__err" role="alert">{{ msg.error }}</p>
-                        <div v-if="msg.role === 'assistant' && msg.citations && msg.citations.length" class="wb-direct-cites" aria-label="引用来源">
-                          <div class="wb-direct-cites__head">引用资料</div>
-                          <details
-                            v-for="(cite, ci) in msg.citations"
-                            :key="`cite-${msg.id}-${ci}`"
-                            class="wb-direct-cite"
+                      <div class="wb-direct-msg__persona" aria-hidden="true">
+                        <span class="wb-direct-msg__avatar">{{ msg.role === 'user' ? '你' : 'AI' }}</span>
+                        <span class="wb-direct-msg__name">{{ msg.role === 'user' ? '你' : 'AI 助手' }}</span>
+                      </div>
+                      <div class="wb-direct-msg__stack">
+                        <div class="wb-direct-msg__bubble">
+                          <header
+                            v-if="(msg.skills && msg.skills.length) || (msg.attachments && msg.attachments.length)"
+                            class="wb-direct-msg__head"
                           >
-                            <summary class="wb-direct-cite__sum">
-                              <span aria-hidden="true">📄</span>
-                              <span>{{ cite.title }}</span>
-                            </summary>
-                            <p class="wb-direct-cite__snip">{{ cite.snippet }}</p>
-                          </details>
+                            <span v-if="msg.skills && msg.skills.length" class="wb-direct-msg__skills">
+                              <span
+                                v-for="s in msg.skills"
+                                :key="`s-${msg.id}-${s}`"
+                                class="wb-direct-msg__skill-chip"
+                              >{{ s }}</span>
+                            </span>
+                            <span v-if="msg.attachments && msg.attachments.length" class="wb-direct-msg__atts">
+                              <span
+                                v-for="a in msg.attachments"
+                                :key="`a-${msg.id}-${a.name}`"
+                                class="wb-direct-msg__att-chip"
+                                :title="`${a.name} · ${formatDirectFileSize(a.size)} · ${a.status}`"
+                              >📎 {{ a.name }}</span>
+                            </span>
+                          </header>
+                          <template v-if="msg.role === 'user' && editingMessageId === msg.id">
+                            <div class="wb-direct-edit">
+                              <textarea
+                                v-model="editingDraft"
+                                class="wb-direct-edit__input"
+                                rows="3"
+                                spellcheck="false"
+                              />
+                              <div class="wb-direct-edit__ops">
+                                <button type="button" class="wb-direct-edit__btn wb-direct-edit__btn--ghost" @click="cancelEditUserMessage">取消</button>
+                                <button type="button" class="wb-direct-edit__btn wb-direct-edit__btn--primary" :disabled="!editingDraft.trim() || directLoading" @click="() => void commitEditedUserMessage()">改后重发</button>
+                              </div>
+                            </div>
+                          </template>
+                          <template v-else>
+                            <MessageBody :content="msg.content" :streaming="!!msg.pending" />
+                            <p v-if="msg.error" class="wb-direct-msg__err" role="alert">{{ msg.error }}</p>
+                            <div v-if="msg.role === 'assistant' && msg.citations && msg.citations.length" class="wb-direct-cites" aria-label="引用来源">
+                              <div class="wb-direct-cites__head">引用资料</div>
+                              <details
+                                v-for="(cite, ci) in msg.citations"
+                                :key="`cite-${msg.id}-${ci}`"
+                                class="wb-direct-cite"
+                              >
+                                <summary class="wb-direct-cite__sum">
+                                  <span aria-hidden="true">📄</span>
+                                  <span>{{ cite.title }}</span>
+                                </summary>
+                                <p class="wb-direct-cite__snip">{{ cite.snippet }}</p>
+                              </details>
+                            </div>
+                          </template>
                         </div>
                         <MessageActions
                           :role="msg.role"
@@ -184,7 +205,7 @@
                           @speak="speakMessage(msg.id)"
                           @feedback="(v) => setMessageFeedback(msg.id, v)"
                         />
-                      </template>
+                      </div>
                     </article>
                   </TransitionGroup>
 
@@ -407,7 +428,20 @@
                       {{ directAttachHint }}
                     </p>
                   </div>
+                  <div class="wb-direct-new-row">
+                    <button
+                      type="button"
+                      class="wb-direct-new-btn"
+                      title="新开一档对话：清空输入与附件，并回到初始会话"
+                      @click="newConversationHandler"
+                    >新建</button>
+                  </div>
                   <p v-if="directError" class="wb-direct-error" role="alert">{{ directError }}</p>
+                  <p class="wb-direct-prefs-row">
+                    <button type="button" class="wb-direct-prefs-btn" @click="personalSettingsOpen = true">
+                      个性化与朗读设置
+                    </button>
+                  </p>
                 </div>
               </div>
 
@@ -425,6 +459,12 @@
                 :on-turn="handleVoicePhoneTurn"
                 @close="showVoicePhone = false"
               />
+              <PersonalSettings
+                :open="personalSettingsOpen"
+                :model-value="personalSettings"
+                @close="personalSettingsOpen = false"
+                @update:model-value="onPersonalSettingsUpdate"
+              />
               <MediaGenPanel
                 :open="showMediaGen"
                 :runner="mediaGenRunner"
@@ -436,7 +476,7 @@
             <section class="wb-gear-scene wb-make-scene" aria-label="二档制作流程">
       <header class="wb-make-hero">
         <p v-if="greetingLine" class="wb-hero-kicker">{{ greetingLine }}</p>
-        <h1 class="wb-hero-title">今天有什么安排？</h1>
+        <h1 class="wb-hero-title">{{ makeHeroTitle }}</h1>
       </header>
       <section
         v-if="hasWorkflow && planSession"
@@ -451,13 +491,29 @@
               <button type="button" class="wb-plan-close" aria-label="关闭规划" @click="dismissPlanSession">×</button>
             </div>
             <p class="wb-plan-kicker">
-              类型：{{ planSession.intentTitle }} · {{ planSession.phase === 'summary' ? '先确认任务摘要，再进入规划选择。' : '类似 Cursor Plan：先多轮澄清，再生成执行清单，最后进入制作与生成。' }}
+              类型：{{ planSession.intentTitle }} · {{ planSession.phase === 'summary' ? '先确认任务摘要，再进入规划选择。' : '先通过对话澄清需求，再生成执行清单，确认后进入制作与生成。' }}
             </p>
             <div v-if="planSession.loading" class="wb-plan-loading-block" aria-live="polite">
               <div class="wb-plan-loading-track" aria-hidden="true">
                 <div class="wb-plan-loading-bar" />
               </div>
-              <p class="wb-plan-loading">{{ planSession.phase === 'summary' ? '正在总结任务…' : '正在请求模型…' }}</p>
+              <p class="wb-plan-loading-lead">
+                {{ planSession.phase === 'summary' ? '正在生成任务摘要' : '正在请求规划模型' }}
+              </p>
+              <ol class="wb-plan-loading-steps" aria-label="加载步骤">
+                <li
+                  v-for="(label, i) in planLoadingStepLabelsForUi"
+                  :key="i"
+                  class="wb-plan-loading-steps__li"
+                  :class="{
+                    'wb-plan-loading-steps__li--done': i < planLoadingAdvance,
+                    'wb-plan-loading-steps__li--active': i === planLoadingAdvance,
+                    'wb-plan-loading-steps__li--pending': i > planLoadingAdvance,
+                  }"
+                >
+                  {{ label }}
+                </li>
+              </ol>
             </div>
             <TransitionGroup v-if="planSession.phase !== 'summary'" name="wb-plan-msg" tag="ul" class="wb-plan-thread" aria-live="polite">
               <li
@@ -473,6 +529,15 @@
                 <template v-else>
                   <div class="wb-plan-msg-assistant-grid">
                     <div class="wb-plan-diagram-col">
+                      <button
+                        v-if="planAssistantParts(m.content).hasDiagram && !planDiagramError[idx]"
+                        type="button"
+                        class="wb-plan-diagram-preview-open"
+                        title="完整查看架构图（可滚动）"
+                        @click="() => void openPlanDiagramPreview(idx)"
+                      >
+                        完整预览
+                      </button>
                       <div
                         v-if="!planAssistantParts(m.content).hasDiagram"
                         class="wb-plan-diagram-fallback"
@@ -483,6 +548,10 @@
                         v-else
                         :id="'wb-plan-mer-' + idx"
                         class="wb-plan-diagram-host"
+                        :class="{
+                          'wb-plan-diagram-host--with-preview':
+                            planAssistantParts(m.content).hasDiagram && !planDiagramError[idx],
+                        }"
                         aria-hidden="false"
                       />
                       <p v-if="planDiagramError[idx]" class="wb-plan-diagram-err" role="alert">
@@ -524,7 +593,11 @@
               </div>
             </template>
             <template v-if="planSession.phase === 'chat'">
-              <div v-if="planQuickOptions.length" class="wb-plan-quick" aria-label="快捷选择">
+              <div
+                v-if="planQuickOptions.length"
+                class="wb-plan-quick"
+                :aria-label="planSession.intentKey === 'mod' ? '需求澄清（宿主为 FHD，技术栈已固定）' : '快捷选择'"
+              >
                 <div class="wb-plan-quick-main">
                   <div v-for="q in planQuickOptions" :key="q.id" class="wb-plan-quick-block">
                   <div class="wb-plan-quick-title">{{ q.title }}</div>
@@ -589,32 +662,10 @@
                   </button>
                 </aside>
               </div>
-              <details class="wb-plan-reply-fold">
-                <summary class="wb-plan-reply-fold__summary">其他说明（可选）</summary>
-                <div class="wb-plan-reply-expand">
-                  <div class="wb-plan-reply-expand-inner">
-                    <label class="wb-sr-only" for="wb-plan-reply">补充或回答</label>
-                    <textarea
-                      id="wb-plan-reply"
-                      v-model="planReplyDraft"
-                      class="wb-plan-reply"
-                      rows="2"
-                      placeholder="自由补充…（Enter 发送，Shift+Enter 换行）"
-                      spellcheck="false"
-                      @keydown="onPlanReplyKeydown"
-                    />
-                  </div>
-                </div>
-              </details>
+              <p class="wb-plan-reply-hint" role="note">
+                文字补充请在下方主输入框输入；Enter 发送，Shift+Enter 换行。
+              </p>
               <div class="wb-plan-actions">
-                <button
-                  type="button"
-                  class="wb-plan-secondary"
-                  :disabled="planSession.loading || !planReplyDraft.trim()"
-                  @click="() => void sendPlanReply()"
-                >
-                  发送补充
-                </button>
                 <button
                   type="button"
                   class="wb-plan-secondary"
@@ -653,7 +704,11 @@
       </section>
 
       <section
-        v-if="hasWorkflow && orchestrationSession?.steps?.length"
+        v-if="
+          hasWorkflow &&
+          orchestrationSession?.steps?.length &&
+          !(finalizeLoading && pendingHandoff)
+        "
         class="wb-orch"
         aria-label="制作进度"
       >
@@ -795,7 +850,8 @@
             />
           </template>
           <template v-else-if="pendingHandoff.intentKey === 'mod'">
-            <label class="wb-handoff-label" for="wb-handoff-suggest">建议 Mod ID <span class="wb-handoff-opt">选填</span></label>
+            <label class="wb-handoff-label" for="wb-handoff-suggest"
+              >Mod ID（已预填，可改）<span class="wb-handoff-opt">选填</span></label>
             <input
               id="wb-handoff-suggest"
               v-model="pendingHandoff.suggestedModId"
@@ -805,8 +861,71 @@
               autocomplete="off"
             />
           </template>
+          <template v-else-if="pendingHandoff.intentKey === 'employee'">
+            <label class="wb-handoff-label" for="wb-handoff-emp-target">员工包模式</label>
+            <select id="wb-handoff-emp-target" v-model="pendingHandoff.employeeTarget" class="wb-handoff-input">
+              <option value="pack_only">仅员工包（快速）</option>
+              <option value="pack_plus_workflow">员工包 + 画布工作流</option>
+            </select>
+            <label class="wb-handoff-label" for="wb-handoff-emp-wf">
+              画布工作流名称 <span class="wb-handoff-opt">选填</span>
+            </label>
+            <input
+              id="wb-handoff-emp-wf"
+              v-model="pendingHandoff.employeeWorkflowName"
+              type="text"
+              class="wb-handoff-input"
+              placeholder="留空则使用包目录名"
+              autocomplete="off"
+            />
+            <label class="wb-handoff-label" for="wb-handoff-fhd-url">
+              FHD 根 URL（末尾 GET /api/mods/ 探测）<span class="wb-handoff-opt">选填</span>
+            </label>
+            <input
+              id="wb-handoff-fhd-url"
+              v-model="pendingHandoff.fhdBaseUrl"
+              type="url"
+              class="wb-handoff-input"
+              placeholder="https://宿主:端口"
+              autocomplete="off"
+            />
+          </template>
         </div>
         <p v-if="finalizeError" class="wb-handoff-error" role="alert">{{ finalizeError }}</p>
+        <div
+          v-if="finalizeLoading"
+          class="wb-handoff-run"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <p class="wb-handoff-run__status">{{ handoffRunStatusLine }}</p>
+          <div
+            v-if="orchestrationSession?.steps?.length"
+            class="wb-handoff-run__bar-wrap"
+            aria-hidden="true"
+          >
+            <span class="wb-handoff-run__bar">
+              <span class="wb-handoff-run__fill" :style="{ width: `${orchestrationProgress.percent}%` }"></span>
+            </span>
+            <span class="wb-handoff-run__counts">{{ orchestrationProgress.done }}/{{ orchestrationProgress.total }}</span>
+          </div>
+          <p v-else class="wb-handoff-run__boot">正在创建编排会话并拉取步骤，通常数秒内显示进度。</p>
+          <ol v-if="orchestrationSession?.steps?.length" class="wb-steps wb-handoff-run__steps">
+            <li
+              v-for="st in orchestrationSession.steps"
+              :key="st.id"
+              class="wb-step"
+              :class="orchStepClass(st)"
+            >
+              <span class="wb-step-dot" aria-hidden="true" />
+              <span class="wb-step-body">
+                <span class="wb-step-label">{{ st.label }}</span>
+                <span v-if="st.message" class="wb-step-msg">{{ st.message }}</span>
+              </span>
+            </li>
+          </ol>
+        </div>
         <div class="wb-handoff-actions">
           <button
             type="button"
@@ -820,7 +939,11 @@
         <p class="wb-handoff-foot">{{ handoffFootNote }}</p>
       </section>
 
-      <div v-if="hasWorkflow" class="wb-composer-column">
+      <div
+        v-if="hasWorkflow"
+        class="wb-composer-column"
+        :class="{ 'wb-composer-column--task-slim': makeHasActiveTask }"
+      >
         <div class="wb-composer-panel" @keydown="onComposerKeydown">
           <div class="wb-composer-body">
             <aside
@@ -924,14 +1047,14 @@
               @dragleave.prevent="onKnowledgeDragLeave"
               @drop.prevent="onKnowledgeDrop"
             >
-              <label class="wb-sr-only" for="wb-home-input">描述想法</label>
+              <label class="wb-sr-only" for="wb-home-input">{{ makeComposerInputLabel }}</label>
               <textarea
                 id="wb-home-input"
                 ref="inputRef"
-                v-model="draft"
+                v-model="makeComposerInput"
                 class="wb-input"
-                rows="4"
-                :placeholder="placeholder"
+                :rows="makeComposerRows"
+                :placeholder="makeComposerPlaceholder"
                 spellcheck="false"
               />
               <input
@@ -1006,9 +1129,32 @@
                 >@附件{{ i + 1 }} {{ m }}</span>
               </div>
               <div class="wb-input-footer">
-                <div class="wb-input-hint">
-                  <span class="wb-input-hint__intent">当前：{{ composerMainTitle }}</span>
-                  <span class="wb-input-hint__keys">Enter 发送 · Shift+Enter 换行</span>
+                <div
+                  class="wb-input-hint"
+                  title="Enter 发送 · Shift+Enter 换行"
+                >
+                  <div class="wb-input-hint__primary">
+                    <span class="wb-input-hint__intent"
+                      >当前：{{ composerMainTitle
+                      }}<template v-if="planSession?.phase === 'chat'"> · 规划追问</template></span
+                    >
+                    <button
+                      v-if="composerIntent === 'mod'"
+                      type="button"
+                      class="wb-frontend-toggle"
+                      :class="{ 'wb-frontend-toggle--on': modFrontendEnabled }"
+                      role="switch"
+                      :aria-checked="modFrontendEnabled"
+                      title="打开后会为本 Mod 生成可路由 Vue 前端页面；关闭则只生成 Mod 骨架、员工和工作流"
+                      @click="modFrontendEnabled = !modFrontendEnabled"
+                    >
+                      <span class="wb-frontend-toggle__label">制作前端</span>
+                      <span class="wb-frontend-toggle__switch" aria-hidden="true">
+                        <span class="wb-frontend-toggle__knob"></span>
+                      </span>
+                    </button>
+                    <span class="wb-input-hint__keys">Enter 发送 · Shift+Enter 换行</span>
+                  </div>
                 </div>
                 <div class="wb-footer-trailing">
               <div class="wb-llm-inline" aria-label="模型">
@@ -1135,9 +1281,9 @@
               <button
                 type="button"
                 class="wb-input-send"
-                :disabled="!draft.trim() || !!planSession"
-                aria-label="发送"
-                @click="() => void submitDraft()"
+                :disabled="composerSendDisabled"
+                :aria-label="planSession?.phase === 'chat' ? '发送追问' : '发送'"
+                @click="() => void onComposerSendClick()"
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
                   <path d="M12 19V5M5 12l7-7 7 7" />
@@ -1150,7 +1296,8 @@
         </div>
         <p class="wb-composer-note">
           Enter 发送后先进入「需求规划」：多轮澄清并生成执行清单，确认后再打开「制作草稿」启动生成与校验。
-          <template v-if="planSession">当前请在上方面板继续对话。</template>
+          <template v-if="planSession && planSession.phase !== 'chat'">当前请在上方完成摘要或清单。</template>
+          <template v-else-if="planSession?.phase === 'chat'">澄清阶段在本框继续输入即可。</template>
           Auto 会按账户默认模型调用；若默认厂商没有可用密钥，会自动改用已配置密钥的厂商与模型（可在钱包页固定默认）。
         </p>
       </div>
@@ -1191,16 +1338,22 @@
         >
           <div class="wb-starter-text">
             <span class="wb-starter-title">做工作流</span>
-            <span class="wb-starter-sub">节点与自动化 · 填入描述</span>
+            <span class="wb-starter-sub">画布编排（调度图）· 填入描述；可执行程序见脚本工作流</span>
           </div>
           <span class="wb-starter-arrow" aria-hidden="true">→</span>
         </button>
       </nav>
 
       <footer class="wb-foot">
-        <span v-if="hasWorkflow">选择类型后输入想法：Enter 先进入需求规划（多轮问答与清单），确认后再在制作草稿中启动生成；顶部可查看执行进度。</span>
+        <span v-if="hasWorkflow"
+          >选择类型后输入想法：Enter 先进入需求规划（多轮问答与清单），确认后再在制作草稿中启动生成；顶部可查看执行进度。
+          <template v-if="hasScriptWorkflowRoute">
+            若你要的是<strong>可执行、完成任务的程序</strong>，请用
+            <router-link :to="{ name: 'script-workflow-new' }" class="wb-foot-link">新建脚本工作流</router-link>
+            （与画布「调度图」并列，脚本即程序本体）。</template>
+        </span>
         <span v-else>从顶栏「工作台」进入 Mod 库、员工制作或工作流管理。</span>
-        <router-link :to="{ name: 'ai-store' }" class="wb-foot-link">AI 员工商店</router-link>
+        <router-link :to="{ name: 'ai-store' }" class="wb-foot-link">AI 市场</router-link>
         <template v-if="hasPlans">
           <span class="wb-foot-dot" aria-hidden="true">·</span>
           <router-link :to="{ name: 'plans' }" class="wb-foot-link">套餐</router-link>
@@ -1277,7 +1430,7 @@
     </div>
     <Teleport to="body">
       <div
-        v-if="hasWorkflow"
+        v-if="showDirectTierFab"
         class="wb-direct-tier-fab"
         role="region"
         aria-label="消费档位悬浮控件"
@@ -1285,16 +1438,74 @@
         <ConsumptionTierControl v-model="consumptionTier" />
       </div>
     </Teleport>
+    <Teleport to="body">
+      <div
+        v-if="planDiagramPreviewIdx !== null"
+        class="wb-plan-diagram-preview-backdrop"
+        role="presentation"
+        @click.self="closePlanDiagramPreview"
+      >
+        <div
+          class="wb-plan-diagram-preview-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="wb-plan-diagram-preview-title"
+        >
+          <div class="wb-plan-diagram-preview-head">
+            <h2 id="wb-plan-diagram-preview-title" class="wb-plan-diagram-preview-title">架构图预览</h2>
+            <button
+              type="button"
+              class="wb-plan-diagram-preview-close"
+              aria-label="关闭预览"
+              @click="closePlanDiagramPreview"
+            >
+              ×
+            </button>
+          </div>
+          <div class="wb-plan-diagram-preview-body">
+            <div class="wb-plan-diagram-preview-toolbar" @pointerdown.stop>
+              <button type="button" class="wb-plan-preview-tool" aria-label="缩小" @click="planDiagramPreviewZoomStep(-1)">−</button>
+              <button type="button" class="wb-plan-preview-tool wb-plan-preview-tool--primary" @click="planDiagramPreviewFitView">
+                适应窗口
+              </button>
+              <button type="button" class="wb-plan-preview-tool" aria-label="放大" @click="planDiagramPreviewZoomStep(1)">+</button>
+              <span class="wb-plan-preview-hint">滚轮缩放 · 按住左键拖拽平移</span>
+            </div>
+            <div
+              ref="planDiagramPreviewViewportRef"
+              class="wb-plan-diagram-preview-viewport"
+              @wheel.prevent="onPlanDiagramPreviewWheel"
+              @pointerdown="onPlanDiagramPreviewPointerDown"
+            >
+              <div class="wb-plan-diagram-preview-panlayer" :style="planDiagramPreviewPanStyle">
+                <div ref="planDiagramPreviewMountRef" class="wb-plan-diagram-preview-canvas" tabindex="-1" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, onUnmounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import {
+  ref,
+  computed,
+  reactive,
+  onMounted,
+  onActivated,
+  onUnmounted,
+  onBeforeUnmount,
+  nextTick,
+  watch,
+} from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import ConsumptionTierControl from '../components/workbench/ConsumptionTierControl.vue'
 import MessageBody from '../components/workbench/MessageBody.vue'
 import MessageActions from '../components/workbench/MessageActions.vue'
 import VoicePhoneModal from '../components/workbench/VoicePhoneModal.vue'
+import PersonalSettings from '../components/workbench/PersonalSettings.vue'
 import AgentMarket from '../components/workbench/AgentMarket.vue'
 import MediaGenPanel from '../components/workbench/MediaGenPanel.vue'
 import type { AgentBot } from '../utils/agentBots'
@@ -1311,6 +1522,7 @@ import type { PersonalSettings as PersonalSettingsValue } from '../utils/persona
 import {
   defaultPersonalSettings,
   loadPersonalSettings,
+  savePersonalSettings,
   applyThemeToDocument,
 } from '../utils/personalSettings'
 import { api } from '../api'
@@ -1341,10 +1553,32 @@ import {
   resolveDirectAttachmentOutcome,
 } from '../utils/directAttachments'
 
+/** 从需求正文猜一个 Mod ID（与后端 normalize_mod_id 规则对齐，可全中文时回退为 mod-<时间戳>） */
+function suggestModIdFromText(raw: string): string {
+  const normalize = (x: string) =>
+    x
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+  let t = normalize(String(raw || ''))
+  if (!t || !/^[a-z0-9]/.test(t)) {
+    t = `mod-${Date.now().toString(36)}`
+  }
+  if (t.length > 48) {
+    t = normalize(t.slice(0, 48))
+  }
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(t)) {
+    t = `mod-${Date.now().toString(36)}`
+  }
+  return t
+}
+
 /** 与后端 llm_model_taxonomy.CATEGORY_ORDER 一致 */
 const LLM_CATEGORY_ORDER = ['llm', 'vlm', 'image', 'video', 'other']
 
 const router = useRouter()
+const route = useRoute()
 const draft = ref('')
 const displayName = ref('')
 const inputRef = ref(null)
@@ -1363,7 +1597,7 @@ const linkModId = ref('')
 const linkBusy = ref(false)
 const linkError = ref('')
 
-/** Cursor Plan 式：多轮澄清 → 执行清单 → 再进入制作草稿 */
+/** 需求规划：多轮澄清 → 执行清单 → 再进入制作草稿 */
 const planSession = ref(null)
 const planReplyDraft = ref('')
 /** 快捷选项：题目 id -> 选中的 choice id（含 UI 专用「其他」） */
@@ -1381,6 +1615,30 @@ function clearPlanOptionOtherText() {
 const planPanelRef = ref(null)
 /** 每次打开规划会话递增，用于 Transition 内层 :key 触发动画 */
 const planSurfaceKey = ref(0)
+
+/** 需求规划加载区：分步提示（定时推进当前步，减少「卡住」感） */
+const planLoadingStepsSummary = Object.freeze([
+  '校验登录与默认模型',
+  '读取任务描述与上传材料',
+  '请求模型生成摘要（较慢时可能需数十秒）',
+  '写入确认卡片',
+])
+const planLoadingStepsChat = Object.freeze([
+  '校验登录与默认模型',
+  '整理本轮对话与隐藏上下文',
+  '发起模型上游请求',
+  '等待模型输出（长任务可能需数十秒）',
+  '解析流程图与快捷选项格式',
+  '写入本条助手回复',
+])
+const planLoadingAdvance = ref(0)
+let planLoadingIntervalId = null
+
+const planLoadingStepLabelsForUi = computed(() => {
+  if (!planSession.value?.loading) return []
+  return planSession.value.phase === 'summary' ? planLoadingStepsSummary : planLoadingStepsChat
+})
+
 const knowledgeStatus = ref(null)
 const knowledgeDocs = ref([])
 const knowledgeLoading = ref(false)
@@ -1390,6 +1648,7 @@ const knowledgeFileInputRef = ref(null)
 const knowledgeDragActive = ref(false)
 /** 与下方 starter 同步：仅标记制作类型，不写入输入框 */
 const composerIntent = ref('workflow')
+const modFrontendEnabled = ref(true)
 const activeGear = ref('make')
 const gearScenes = [
   { key: 'direct', num: '1', label: '聊' },
@@ -1435,6 +1694,17 @@ let currentStreamHandle: StreamHandle | null = null
 const editingMessageId = ref<string>('')
 const editingDraft = ref<string>('')
 const personalSettings = ref<PersonalSettingsValue>(defaultPersonalSettings())
+const personalSettingsOpen = ref(false)
+
+function onPersonalSettingsUpdate(v: PersonalSettingsValue) {
+  personalSettings.value = v
+  try {
+    savePersonalSettings(v)
+    applyThemeToDocument(v.theme)
+  } catch {
+    /* ignore */
+  }
+}
 const showAgentMarket = ref(false)
 const showVoicePhone = ref(false)
 const showMediaGen = ref(false)
@@ -1443,8 +1713,41 @@ const activeBotId = ref<string>('')
 const activeBot = computed<AgentBot | null>(
   () => allBots.value.find((b) => b.id === activeBotId.value) || null,
 )
+/** 对话进行中：左上角一行当前主题（会话标题或最近用户提问摘要） */
+const directTaskLine = computed(() => {
+  const convTitle = String(activeConversation.value?.title || '').trim()
+  if (convTitle && convTitle !== '新对话') return convTitle
+  const latestUser = [...directMessages.value].reverse().find((m) => m.role === 'user')
+  const raw = stripInternalMarkers(latestUser?.content || '').replace(/\s+/g, ' ').trim()
+  if (raw) return summarizeForTitle(raw)
+  if (activeBot.value?.name) return `${activeBot.value.name} · 对话中`
+  return '对话中'
+})
 const speakingMessageId = ref<string>('')
 let phoneSynth: SpeechSynthesis | null = null
+let directTtsAudio: HTMLAudioElement | null = null
+let directTtsObjectUrl: string | null = null
+
+function stopDirectTtsPlayback() {
+  if (directTtsAudio) {
+    try {
+      directTtsAudio.pause()
+      directTtsAudio.removeAttribute('src')
+      directTtsAudio.load()
+    } catch {
+      /* ignore */
+    }
+  }
+  directTtsAudio = null
+  if (directTtsObjectUrl) {
+    try {
+      URL.revokeObjectURL(directTtsObjectUrl)
+    } catch {
+      /* ignore */
+    }
+  }
+  directTtsObjectUrl = null
+}
 
 const directSendDisabled = computed(
   () =>
@@ -1465,6 +1768,14 @@ const directAttachHint = computed(() => {
   if (uploading) parts.push(`${uploading} 个读取中`)
   if (ready) parts.push(`${ready} 个已纳入资料库（提问时按相关度自动召回）`)
   if (inlined) parts.push(`${inlined} 个已读取，可直接发送给模型`)
+  const embLabels = Array.from(
+    new Set(
+      list
+        .map((f) => formatEmbeddingLabel(f.embedding))
+        .filter(Boolean),
+    ),
+  )
+  if (embLabels.length) parts.push(`向量索引：${embLabels.join('、')}`)
   if (skipped) parts.push(`${skipped} 个未受支持，仅附文件名给模型参考`)
   if (errored) parts.push(`${errored} 个上传失败，仅附文件名给模型参考`)
   return parts.join(' · ')
@@ -1540,6 +1851,7 @@ function isGearAxisLocked() {
 
 function setGear(key) {
   if (!gearScenes.some((it) => it.key === key)) return
+  if (key !== activeGear.value && gearNavHardLocked.value) return
   if (key !== activeGear.value && isGearAxisLocked()) return
   gearDragOffset.value = 0
   gearDragging.value = false
@@ -1552,6 +1864,15 @@ function gearStopPercent(index) {
 }
 
 function onGearWheel(e) {
+  if (gearNavHardLocked.value) {
+    try {
+      e.preventDefault()
+    } catch {
+      /* ignore */
+    }
+    gearWheelAccum = 0
+    return
+  }
   if (isGearAxisLocked()) {
     gearWheelAccum = 0
     return
@@ -1574,6 +1895,7 @@ function onGearWheel(e) {
 }
 
 function onGearPointerDown(e) {
+  if (gearNavHardLocked.value) return
   if (isGearAxisLocked()) return
   const el = e.currentTarget
   const rect = el?.getBoundingClientRect?.()
@@ -1592,6 +1914,11 @@ function onGearPointerMove(e) {
 
 function settleGearDrag() {
   if (!gearDragging.value) return
+  if (gearNavHardLocked.value) {
+    gearDragging.value = false
+    gearDragOffset.value = 0
+    return
+  }
   if (isGearAxisLocked()) {
     gearDragging.value = false
     gearDragOffset.value = 0
@@ -1621,16 +1948,26 @@ function onGearPointerCancel(e) {
 
 function directFileChipTitle(f) {
   if (!f) return ''
+  const emb = formatEmbeddingLabel(f.embedding)
   if (f.status === 'uploading') return `${f.name}：正在读取文件内容…`
-  if (f.status === 'ready') return `${f.name}：已纳入资料库，提问时会按相关度自动召回片段`
+  if (f.status === 'ready') return `${f.name}：已纳入资料库，提问时会按相关度自动召回片段${emb ? `；向量模型：${emb}` : ''}`
   if (f.status === 'inline') {
     return f.ingestError
       ? `${f.name}：已读取文本，可直接发送；${f.ingestError}`
-      : `${f.name}：已读取文本，将直接注入模型上下文${f.ingesting ? '，资料库入库中' : ''}`
+      : `${f.name}：已读取文本，将直接注入模型上下文${f.ingesting ? '，资料库入库中' : ''}${emb ? `；向量模型：${emb}` : ''}`
   }
   if (f.status === 'skipped') return `${f.name}：${f.error || '该格式暂不解析；将仅附文件名供模型参考'}`
   if (f.status === 'error') return `${f.name}：${f.error || '上传失败'}（仅附文件名给模型参考）`
   return f.name
+}
+
+function formatEmbeddingLabel(embedding) {
+  if (!embedding || typeof embedding !== 'object') return ''
+  const provider = String(embedding.provider || '').trim()
+  const model = String(embedding.model || '').trim()
+  const dim = Number(embedding.dim || 0) || 0
+  if (!provider && !model) return ''
+  return `${provider || '默认'} / ${model || '默认模型'}${dim ? ` · ${dim}维` : ''}`
 }
 
 function directAttachmentKind(f) {
@@ -1644,7 +1981,7 @@ function directAttachmentKindLabel(f) {
 function directAttachmentStatusText(f) {
   if (!f) return ''
   if (f.status === 'uploading') return '读取中'
-  if (f.status === 'ready') return '已入库'
+  if (f.status === 'ready') return f.embedding ? '已入库 · 向量' : '已入库'
   if (f.status === 'inline') {
     if (f.ingesting) return '可发送 · 入库中'
     if (f.ingestError) return '可发送 · 入库失败'
@@ -1764,6 +2101,7 @@ async function uploadDirectAttachedFile(item) {
       error: outcome.error,
       ingesting: false,
       ingestError: outcome.ingestError,
+      embedding: res?.embedding || null,
     }
   } catch (e) {
     const idx = directAttachedFiles.value.findIndex((x) => x.id === item.id)
@@ -2168,25 +2506,28 @@ function getPhoneSynth(): SpeechSynthesis | null {
   return phoneSynth
 }
 
-function speakMessage(messageId: string) {
+function pickDirectSpeakVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
+  const voices = synth.getVoices()
+  const want = String(personalSettings.value.ttsVoiceName || '').trim()
+  if (want) {
+    const named = voices.find((v) => v.name === want)
+    if (named) return named
+  }
+  return voices.find((v) => /^zh/i.test(v.lang)) || voices[0] || null
+}
+
+function speakMessageBrowser(messageId: string, text: string) {
   const synth = getPhoneSynth()
   if (!synth) {
     directError.value = '当前浏览器不支持语音合成。'
     return
   }
-  if (speakingMessageId.value === messageId) {
-    synth.cancel()
-    speakingMessageId.value = ''
-    return
-  }
-  const m = directMessages.value.find((x) => x.id === messageId)
-  if (!m?.content) return
   synth.cancel()
-  const u = new SpeechSynthesisUtterance(stripInternalMarkers(m.content).slice(0, 1500))
-  const voices = synth.getVoices()
-  const zh = voices.find((v) => /^zh/i.test(v.lang))
-  if (zh) u.voice = zh
-  u.rate = 1
+  const u = new SpeechSynthesisUtterance(text)
+  const voice = pickDirectSpeakVoice(synth)
+  if (voice) u.voice = voice
+  const rr = Number(personalSettings.value.ttsRate)
+  u.rate = Number.isFinite(rr) ? Math.max(0.6, Math.min(1.6, rr)) : 1
   u.onend = () => {
     if (speakingMessageId.value === messageId) speakingMessageId.value = ''
   }
@@ -2195,6 +2536,60 @@ function speakMessage(messageId: string) {
   }
   speakingMessageId.value = messageId
   synth.speak(u)
+}
+
+async function speakMessage(messageId: string) {
+  if (speakingMessageId.value === messageId) {
+    stopDirectTtsPlayback()
+    getPhoneSynth()?.cancel()
+    speakingMessageId.value = ''
+    return
+  }
+  const m = directMessages.value.find((x) => x.id === messageId)
+  if (!m?.content) return
+
+  stopDirectTtsPlayback()
+  getPhoneSynth()?.cancel()
+
+  const text = stripInternalMarkers(m.content).slice(0, 1500)
+
+  if (personalSettings.value.ttsEngine === 'edge-online') {
+    speakingMessageId.value = messageId
+    try {
+      const blob = await api.workbenchEdgeTts(
+        text,
+        personalSettings.value.ttsEdgeVoice || undefined,
+        personalSettings.value.ttsRate,
+      )
+      const url = URL.createObjectURL(blob)
+      directTtsObjectUrl = url
+      const audio = new Audio(url)
+      directTtsAudio = audio
+      const done = () => {
+        if (speakingMessageId.value === messageId) speakingMessageId.value = ''
+        stopDirectTtsPlayback()
+      }
+      audio.addEventListener('ended', done, { once: true })
+      audio.addEventListener(
+        'error',
+        () => {
+          directError.value = '云端朗读播放失败，已尝试本机朗读。'
+          done()
+          speakMessageBrowser(messageId, text)
+        },
+        { once: true },
+      )
+      await audio.play()
+    } catch {
+      speakingMessageId.value = ''
+      stopDirectTtsPlayback()
+      directError.value = '云端朗读不可用（需登录且服务端安装 edge-tts），已尝试本机朗读。'
+      speakMessageBrowser(messageId, text)
+    }
+    return
+  }
+
+  speakMessageBrowser(messageId, text)
 }
 
 function copyConversationLink(c: Conversation) {
@@ -2209,6 +2604,29 @@ function copyConversationLink(c: Conversation) {
 }
 
 function newConversationHandler() {
+  if (currentStreamHandle) {
+    currentStreamHandle.abort()
+    currentStreamHandle = null
+  }
+  directLoading.value = false
+  stopDirectTtsPlayback()
+  speakingMessageId.value = ''
+  editingMessageId.value = ''
+  editingDraft.value = ''
+  directDraft.value = ''
+  directError.value = ''
+  directIsDragging.value = false
+  directDragDepth.value = 0
+  llmDdOpen.value = null
+  const files = directAttachedFiles.value.slice()
+  directAttachedFiles.value = []
+  for (const item of files as Array<{ docId?: string }>) {
+    if (item.docId) {
+      void api.knowledgeDeleteDocument(item.docId).catch(() => {
+        /* 与移除单附件一致：删库失败不阻塞新建 */
+      })
+    }
+  }
   ensureActiveConversation({ forceNew: true })
 }
 
@@ -2418,6 +2836,75 @@ function clearActiveBot() {
   saveActiveBotId('')
 }
 
+function customerServiceQueryContext(): string {
+  const q = route.query || {}
+  if (String(q.assistant || '') !== 'customer-service') return ''
+  const scene = String(q.scene || 'general')
+  const parts = [
+    '我从市场或导航进入 AI 客服，需要处理以下问题：',
+    `场景：${scene}`,
+  ]
+  const catalogId = String(q.catalog_id || '').trim()
+  const pkgId = String(q.pkg_id || '').trim()
+  const itemName = String(q.item_name || '').trim()
+  const materialCategory = String(q.material_category || '').trim()
+  const orderNo = String(q.order_no || '').trim()
+  const complaintType = String(q.complaint_type || '').trim()
+  if (catalogId) parts.push(`商品 ID：${catalogId}`)
+  if (pkgId) parts.push(`包名：${pkgId}`)
+  if (itemName) parts.push(`商品名称：${itemName}`)
+  if (materialCategory) parts.push(`市场类目：${materialCategory}`)
+  if (orderNo) parts.push(`订单号：${orderNo}`)
+  if (complaintType) parts.push(`问题类型：${complaintType}`)
+  parts.push('请先告诉我还需要补充哪些证据材料，并给出下一步处理路径。')
+  return parts.join('\n')
+}
+
+function stripCustomerServiceEntryQueryFromUrl() {
+  const q = { ...(route.query as Record<string, string | string[] | undefined>) }
+  const keys = [
+    'assistant',
+    'scene',
+    'catalog_id',
+    'pkg_id',
+    'item_name',
+    'material_category',
+    'order_no',
+    'complaint_type',
+  ]
+  let changed = false
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(q, k)) {
+      delete q[k]
+      changed = true
+    }
+  }
+  if (!changed) return
+  void router.replace({ path: route.path, query: q })
+}
+
+/** 避免 keep-alive 下 onMounted 与 onActivated 同一帧各跑一次，重复 forceNew 会话 */
+let lastAppliedCustomerServiceQueryKey = ''
+
+function applyCustomerServiceRouteContext() {
+  if (String(route.query?.assistant || '') !== 'customer-service') return
+  const bot = allBots.value.find((b) => b.id === 'customer-service')
+  if (!bot) return
+  const dedupeKey = JSON.stringify(route.query)
+  if (dedupeKey === lastAppliedCustomerServiceQueryKey) return
+  lastAppliedCustomerServiceQueryKey = dedupeKey
+  activeBotId.value = bot.id
+  saveActiveBotId(bot.id)
+  const ctx = customerServiceQueryContext()
+  const conv = ensureActiveConversation({ forceNew: true, bot })
+  if (ctx) {
+    conv.messages.push(makeMessage('user', ctx, { agentLabel: bot.name }))
+    conv.messages.push(makeMessage('assistant', '我已收到这些上下文。请继续补充证据截图、链接、订单号或你希望平台采取的处理结果；如果信息已完整，我会帮你整理成可提交给管理员的工单摘要。', { agentLabel: bot.name }))
+    persistConversations()
+  }
+  stripCustomerServiceEntryQueryFromUrl()
+}
+
 const directFontPxStyle = computed(() => ({
   '--wb-direct-font-px': `${personalSettings.value.fontPx}px`,
 }))
@@ -2613,13 +3100,17 @@ async function submitVoiceTurn() {
 function confirmVoiceAndOpenHandoff() {
   if (!voiceMessages.value.length) return
   const text = formatPlanMessagesForBrief(voiceMessages.value)
+  const intentKey = composerIntent.value
   pendingHandoff.value = {
     description: `【语音规划记录】\n${text}`,
     intentTitle: intentMeta.value.title,
-    intentKey: composerIntent.value,
+    intentKey,
     workflowName: '',
-    planNotes: composerIntent.value === 'workflow' ? text : '',
-    suggestedModId: '',
+    planNotes: intentKey === 'workflow' ? text : '',
+    suggestedModId: intentKey === 'mod' ? suggestModIdFromText(text) : '',
+    employeeTarget: intentKey === 'employee' ? 'pack_plus_workflow' : 'pack_only',
+    employeeWorkflowName: '',
+    fhdBaseUrl: '',
   }
   activeGear.value = 'make'
   nextTick(() => {
@@ -2656,7 +3147,7 @@ const llmDdOpen = ref(null)
 const INTENT_META = {
   mod: {
     title: '做 Mod',
-    sub: '先建 Mod 库仓库，按行业写好 manifest/JSON 骨架，把需要的员工在 workflow_employees 里命名占位即可；表结构、规则与接口可后续迭代。',
+    sub: '可先生成仓库与名片骨架，也可以继续补齐员工包登记、工作流绑定和真实执行验证。只有名片不等于可工作的员工。',
   },
   employee: {
     title: '做员工',
@@ -2664,7 +3155,7 @@ const INTENT_META = {
   },
   workflow: {
     title: '做工作流',
-    sub: '节点与自动化 · 在下方用自然语言描述触发与步骤',
+    sub: '本入口生成画布编排（节点图调度）。要「工作流就是程序」——可运行、可调试、完成任务的脚本——请用顶部「脚本工作流」新建。',
   },
 }
 
@@ -2853,6 +3344,11 @@ const makeHasActiveTask = computed(() =>
   ),
 )
 
+const makeComposerRows = computed(() => {
+  if (planSession.value?.phase === 'chat') return 2
+  return makeHasActiveTask.value ? 1 : 4
+})
+
 const orchestrationProgress = computed(() => {
   const steps = Array.isArray(orchestrationSession.value?.steps) ? orchestrationSession.value.steps : []
   const total = Math.max(steps.length, 1)
@@ -2860,6 +3356,31 @@ const orchestrationProgress = computed(() => {
   const running = steps.some((s) => s.status === 'running') ? 0.45 : 0
   const percent = Math.min(100, Math.max(0, ((done + running) / total) * 100))
   return { total: steps.length, done, percent }
+})
+
+/** 制作草稿执行中：紧邻按钮的可读状态，避免只看到「执行中…」误以为卡住 */
+const handoffRunStatusLine = computed(() => {
+  if (!finalizeLoading.value) return ''
+  const s = orchestrationSession.value
+  const steps = Array.isArray(s?.steps) ? s.steps : []
+  const running = steps.find((x: { status?: string }) => x.status === 'running')
+  if (running) {
+    const lab = String(running.label || '编排').trim() || '编排'
+    const msg = typeof running.message === 'string' && running.message.trim() ? ` — ${running.message.trim()}` : ''
+    return `进行中：${lab}${msg}`
+  }
+  if (steps.length) {
+    const done = steps.filter((x: { status?: string }) => x.status === 'done').length
+    const next = steps.find((x: { status?: string }) => x.status === 'pending')
+    if (next && done < steps.length) {
+      const nl = String(next.label || '下一步').trim() || '下一步'
+      return `排队中：${nl}（已完成 ${done}/${steps.length}）`
+    }
+    return `编排进度：${done}/${steps.length} 步`
+  }
+  const st = typeof s?.status === 'string' ? s.status.trim() : ''
+  if (st && st !== 'done' && st !== 'error') return `编排状态：${st}`
+  return '已提交，正在连接编排服务并拉取步骤…'
 })
 
 const canRunOrchestration = computed(() => {
@@ -2872,7 +3393,7 @@ const canRunOrchestration = computed(() => {
 const handoffFootNote = computed(() => {
   const k = pendingHandoff.value?.intentKey
   if (k === 'mod') {
-    return '生成成功后进入 Mod 制作页。首期只需仓库 + 行业相关 JSON + 员工命名即可落库，校验与 Python 扫描的警告不阻塞继续迭代。'
+    return '生成成功后进入 Mod 制作页。页面会区分“名片已生成”和“员工可工作”：未登记员工包、未绑定工作流或未真实执行都会列为缺口。'
   }
   if (k === 'employee') {
     return '员工包写入你的本地库；上架请到「员工制作」上传。商店执行器以已上架包为准。'
@@ -2885,8 +3406,41 @@ const handoffFootNote = computed(() => {
 
 const hasRepo = computed(() => router.hasRoute('workbench-repository'))
 const hasWorkflow = computed(() => router.hasRoute('workbench-workflow'))
+/** Teleport 到 body；keep-alive 下切到统一工作台等路由时首页仍缓存，需按当前路由隐藏 FAB */
+const showDirectTierFab = computed(() => {
+  if (!hasWorkflow.value) return false
+  const n = String(route.name || '')
+  return n === 'home' || n === 'workbench-home'
+})
+const hasScriptWorkflowRoute = computed(() => router.hasRoute('script-workflow-new'))
 const hasEmployee = computed(() => router.hasRoute('workbench-employee'))
 const hasPlans = computed(() => router.hasRoute('plans'))
+
+/** 一档有聊天记录时默认锁定挡位切换，需用户显式解锁（同一会话内保持） */
+const gearNavUserUnlocked = ref(false)
+const gearNavHardLocked = computed(
+  () => Boolean(hasWorkflow.value && directMessages.value.length && !gearNavUserUnlocked.value),
+)
+
+function unlockGearNav() {
+  gearNavUserUnlocked.value = true
+}
+
+watch(activeConversationId, () => {
+  gearNavUserUnlocked.value = false
+})
+
+watch(
+  () => directMessages.value.length,
+  (len, prev) => {
+    if (!len) {
+      gearNavUserUnlocked.value = false
+      return
+    }
+    /* 从「无消息」到「有消息」时强制重新解锁；避免空会话里提前点解锁绕过 */
+    if (!prev) gearNavUserUnlocked.value = false
+  },
+)
 
 const greetingLine = computed(() => {
   const n = displayName.value.trim()
@@ -2896,12 +3450,51 @@ const greetingLine = computed(() => {
 
 const placeholder = computed(() => {
   if (composerIntent.value === 'mod') {
-    return '例如：行业「物流」、新建仓库 my-track；manifest 里 industry/library 等 JSON 字段先填齐骨架；workflow_employees 里命名「路由调度员」「异常件跟进员」各一条，接口与规则写「待补充」即可…'
+    return '例如：行业「物流」、新建仓库 my-track；先生成 Mod 骨架，再把「路由调度员」登记成 employee_pack，绑定工作流，并用非 Mock 沙盒跑通一次…'
   }
   if (composerIntent.value === 'employee') {
     return '例如：岗位负责核对发票金额与税号，输出结构化结果给财务系统…'
   }
   return '例如：每天把 Excel 出货单里的品名和数量同步到仓库表…'
+})
+
+/** 「做」模式主输入：无规划或与助手对话时合并到底栏，避免双文本框 */
+const makeComposerInput = computed({
+  get() {
+    if (planSession.value?.phase === 'chat') return planReplyDraft.value
+    return draft.value
+  },
+  set(v: string) {
+    if (planSession.value?.phase === 'chat') {
+      planReplyDraft.value = v
+    } else {
+      draft.value = v
+    }
+  },
+})
+
+const makeComposerInputLabel = computed(() =>
+  planSession.value?.phase === 'chat' ? '补充或追问' : '描述想法',
+)
+
+const makeComposerPlaceholder = computed(() =>
+  planSession.value?.phase === 'chat'
+    ? '自由补充…（Enter 发送，Shift+Enter 换行）'
+    : placeholder.value,
+)
+
+const composerSendDisabled = computed(() => {
+  if (knowledgeUploading.value) return true
+  const ps = planSession.value
+  if (ps?.phase === 'chat') {
+    return ps.loading || !String(planReplyDraft.value || '').trim()
+  }
+  if (ps) return true
+  if (!hasWorkflow.value) return true
+  const text = String(draft.value || '').trim()
+  const uploading = directAttachedFiles.value.some((f: any) => f.status === 'uploading')
+  if (uploading) return true
+  return !text && !directAttachedFiles.value.length
 })
 
 const currentLlmBlock = computed(() => {
@@ -3043,6 +3636,31 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  /* 须在首个 await 之前完成：否则 keep-alive 下 onActivated 可能先于 bots/会话加载执行，客服深链会漏处理 */
+  try {
+    refreshAllBots()
+    activeBotId.value = loadActiveBotId() || ''
+  } catch {
+    /* ignore */
+  }
+  try {
+    conversations.value = loadConversations()
+    const storedActive = loadActiveId()
+    if (storedActive && conversations.value.some((c) => c.id === storedActive)) {
+      activeConversationId.value = storedActive
+    } else if (conversations.value.length) {
+      activeConversationId.value = conversations.value[0].id
+      saveActiveId(activeConversationId.value)
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    applyCustomerServiceRouteContext()
+  } catch {
+    /* ignore */
+  }
+
   try {
     const me = await api.me()
     const u = typeof me.username === 'string' ? me.username.trim() : ''
@@ -3058,30 +3676,51 @@ onMounted(async () => {
   try {
     personalSettings.value = loadPersonalSettings()
     applyThemeToDocument(personalSettings.value.theme)
-  } catch { /* ignore */ }
-  try {
-    refreshAllBots()
-    activeBotId.value = loadActiveBotId() || ''
-  } catch { /* ignore */ }
-  try {
-    conversations.value = loadConversations()
-    const storedActive = loadActiveId()
-    if (storedActive && conversations.value.some((c) => c.id === storedActive)) {
-      activeConversationId.value = storedActive
-    } else if (conversations.value.length) {
-      activeConversationId.value = conversations.value[0].id
-      saveActiveId(activeConversationId.value)
-    }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 })
+
+onActivated(() => {
+  try {
+    applyCustomerServiceRouteContext()
+  } catch {
+    /* ignore */
+  }
+})
+
+watch(
+  () => Boolean(planSession.value?.loading),
+  (loading) => {
+    if (planLoadingIntervalId !== null) {
+      clearInterval(planLoadingIntervalId)
+      planLoadingIntervalId = null
+    }
+    planLoadingAdvance.value = 0
+    if (!loading) return
+    const step = () => {
+      const ps = planSession.value
+      const list = ps?.phase === 'summary' ? planLoadingStepsSummary : planLoadingStepsChat
+      const max = Math.max(0, list.length - 1)
+      if (planLoadingAdvance.value < max) planLoadingAdvance.value += 1
+    }
+    planLoadingIntervalId = window.setInterval(step, 2000)
+  },
+)
 
 onBeforeUnmount(() => {
   pollStop.value = true
+  closePlanDiagramPreview()
+  if (planLoadingIntervalId !== null) {
+    clearInterval(planLoadingIntervalId)
+    planLoadingIntervalId = null
+  }
 })
 
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onLlmDocPointerDown, true)
   window.removeEventListener('keydown', onLlmEscape)
+  stopDirectTtsPlayback()
 })
 
 function clearWorkbenchHandoffSession() {
@@ -3093,6 +3732,16 @@ function clearWorkbenchHandoffSession() {
   } catch {
     /* ignore */
   }
+}
+
+/** 做 Mod 时屏蔽「选语言 / 选 API 风格 / 选 UI 库」等通用脚手架题（旧回复或误遵指令时兜底） */
+function isModHostStackSurveyQuestion(q) {
+  const t = String(q?.title || '').trim()
+  if (!t) return false
+  if (/员工包.*语言|后端.*语言|^语言$/i.test(t)) return true
+  if (/API\s*(设计|风格)|RESTful|RPC\s*风格|统一前缀/i.test(t)) return true
+  if (/前端\s*UI|UI\s*框架|Element\s*Plus|Ant\s*Design|Vant/i.test(t)) return true
+  return false
 }
 
 function normalizePlanOptions(raw) {
@@ -3153,8 +3802,12 @@ const planQuickOptions = computed(() => {
   if (!ps?.messages?.length) return []
   for (let i = ps.messages.length - 1; i >= 0; i--) {
     if (ps.messages[i].role === 'assistant') {
-      const o = parsePlanAssistantContent(ps.messages[i].content).options
-      return Array.isArray(o) ? o : []
+      let o = parsePlanAssistantContent(ps.messages[i].content).options
+      if (!Array.isArray(o)) return []
+      if (ps.intentKey === 'mod') {
+        o = o.filter((q) => !isModHostStackSurveyQuestion(q))
+      }
+      return o
     }
   }
   return []
@@ -3211,6 +3864,62 @@ function compactPlanVisibleText(text, max = 260) {
   if (!s) return '请根据上传内容和输入描述进行规划'
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
+
+/** 制作区大标题：从交接描述里优先取「初始想法」段，否则整段压缩 */
+function extractInitialIdeaFromHandoff(description) {
+  const s = String(description || '')
+  const m = s.match(/【初始想法】\s*\n+([\s\S]*?)(?=\n\n---|\n【|$)/)
+  const chunk = m?.[1]?.trim() ? m[1].trim() : s.trim()
+  if (!chunk) return ''
+  return compactPlanVisibleText(chunk, 900)
+}
+
+const MAKE_HERO_TITLE_MAX = 64
+
+const makeHeroTitle = computed(() => {
+  if (!makeHasActiveTask.value) return '今天有什么安排？'
+  const ps = planSession.value
+  if (ps) {
+    const title = String(ps.summaryTitle || '').trim()
+    if (title) return truncateWorkbenchText(title, MAKE_HERO_TITLE_MAX)
+    if (ps.phase === 'summary') {
+      const body = String(ps.summaryText || '').replace(/\s+/g, ' ').trim()
+      if (body) return truncateWorkbenchText(body, MAKE_HERO_TITLE_MAX)
+    }
+    const firstUser = ps.messages?.find((m) => m.role === 'user')
+    if (firstUser?.content) {
+      return truncateWorkbenchText(compactPlanVisibleText(String(firstUser.content), 800), MAKE_HERO_TITLE_MAX)
+    }
+    return truncateWorkbenchText(planPanelTitle.value, MAKE_HERO_TITLE_MAX)
+  }
+  if (finalizeLoading.value) {
+    const h = pendingHandoff.value
+    const nm = h?.workflowName?.trim()
+    if (nm) return truncateWorkbenchText(nm, MAKE_HERO_TITLE_MAX)
+    return '正在启动制作…'
+  }
+  const h = pendingHandoff.value
+  if (h) {
+    if (h.intentKey === 'workflow' && h.workflowName?.trim()) {
+      return truncateWorkbenchText(h.workflowName.trim(), MAKE_HERO_TITLE_MAX)
+    }
+    const idea = extractInitialIdeaFromHandoff(h.description)
+    if (idea) return truncateWorkbenchText(idea, MAKE_HERO_TITLE_MAX)
+    return truncateWorkbenchText(h.intentTitle || '制作草稿', MAKE_HERO_TITLE_MAX)
+  }
+  const orch = orchestrationSession.value
+  if (orch?.steps?.length) {
+    const art = orch.artifact || {}
+    const nm = String(art.workflow_name || art.workflowName || art.name || orch.workflow_name || '').trim()
+    if (nm) return truncateWorkbenchText(nm, MAKE_HERO_TITLE_MAX)
+    const st = orch.steps.find((s) => s.status === 'running') || orch.steps[0]
+    if (st?.label) return truncateWorkbenchText(String(st.label), MAKE_HERO_TITLE_MAX)
+    return '制作进行中'
+  }
+  const wf = workflowLinkOffer.value
+  if (wf?.workflowName) return truncateWorkbenchText(String(wf.workflowName), MAKE_HERO_TITLE_MAX)
+  return '进行中的任务'
+})
 
 function buildPlanSummarySystemPrompt(intentTitle) {
   return [
@@ -3288,6 +3997,173 @@ function sanitizeMermaidSource(src) {
 
 /** 助手气泡 Mermaid 渲染错误（按消息下标） */
 const planDiagramError = ref({})
+
+/** 规划流程图：完整预览浮层（消息下标，null 为关闭） */
+const planDiagramPreviewIdx = ref(null)
+const planDiagramPreviewMountRef = ref(null)
+const planDiagramPreviewViewportRef = ref(null)
+const planPreviewScale = ref(1)
+const planPreviewTx = ref(0)
+const planPreviewTy = ref(0)
+let planDiagramPreviewEscUnlisten = null
+let planDiagramPreviewPointerCleanup = null
+
+const planDiagramPreviewPanStyle = computed(() => ({
+  transform: `translate(${planPreviewTx.value}px, ${planPreviewTy.value}px) scale(${planPreviewScale.value})`,
+  transformOrigin: '0 0',
+}))
+
+function clearPlanDiagramPreviewPointerListeners() {
+  if (planDiagramPreviewPointerCleanup) {
+    planDiagramPreviewPointerCleanup()
+    planDiagramPreviewPointerCleanup = null
+  }
+  planDiagramPreviewViewportRef.value?.classList.remove('wb-plan-diagram-preview-viewport--drag')
+}
+
+function onPlanDiagramPreviewWheel(e: WheelEvent) {
+  const vp = planDiagramPreviewViewportRef.value
+  if (!vp) return
+  const rect = vp.getBoundingClientRect()
+  const mx = e.clientX - rect.left
+  const my = e.clientY - rect.top
+  const oldS = planPreviewScale.value
+  const factor = e.deltaY > 0 ? 0.9 : 1.1
+  const newS = Math.min(6, Math.max(0.06, oldS * factor))
+  if (Math.abs(newS - oldS) < 1e-6) return
+  planPreviewTx.value = mx - ((mx - planPreviewTx.value) * newS) / oldS
+  planPreviewTy.value = my - ((my - planPreviewTy.value) * newS) / oldS
+  planPreviewScale.value = newS
+}
+
+function onPlanDiagramPreviewPointerDown(e: PointerEvent) {
+  if (e.button !== 0) return
+  const vp = planDiagramPreviewViewportRef.value
+  if (!vp || !planDiagramPreviewMountRef.value) return
+  clearPlanDiagramPreviewPointerListeners()
+  const sx = e.clientX
+  const sy = e.clientY
+  const stx = planPreviewTx.value
+  const sty = planPreviewTy.value
+  vp.classList.add('wb-plan-diagram-preview-viewport--drag')
+  const move = (ev: PointerEvent) => {
+    planPreviewTx.value = stx + (ev.clientX - sx)
+    planPreviewTy.value = sty + (ev.clientY - sy)
+  }
+  const end = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', end)
+    window.removeEventListener('pointercancel', end)
+    vp.classList.remove('wb-plan-diagram-preview-viewport--drag')
+    planDiagramPreviewPointerCleanup = null
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', end)
+  window.addEventListener('pointercancel', end)
+  planDiagramPreviewPointerCleanup = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', end)
+    window.removeEventListener('pointercancel', end)
+    vp.classList.remove('wb-plan-diagram-preview-viewport--drag')
+  }
+}
+
+function planDiagramPreviewZoomStep(dir: number) {
+  const vp = planDiagramPreviewViewportRef.value
+  if (!vp) return
+  const mx = vp.clientWidth / 2
+  const my = vp.clientHeight / 2
+  const oldS = planPreviewScale.value
+  const factor = dir < 0 ? 1 / 1.22 : 1.22
+  const newS = Math.min(6, Math.max(0.06, oldS * factor))
+  planPreviewTx.value = mx - ((mx - planPreviewTx.value) * newS) / oldS
+  planPreviewTy.value = my - ((my - planPreviewTy.value) * newS) / oldS
+  planPreviewScale.value = newS
+}
+
+async function planDiagramPreviewFitView() {
+  await nextTick()
+  const vp = planDiagramPreviewViewportRef.value
+  const mount = planDiagramPreviewMountRef.value
+  const svg = mount?.querySelector('svg')
+  if (!vp || !svg) return
+  planPreviewScale.value = 1
+  planPreviewTx.value = 0
+  planPreviewTy.value = 0
+  await nextTick()
+  await new Promise<void>((r) => requestAnimationFrame(() => r()))
+  let nw = 0
+  let nh = 0
+  try {
+    const bb = svg.getBBox()
+    nw = bb.width
+    nh = bb.height
+  } catch {
+    /* ignore */
+  }
+  if (!nw || !nh) {
+    const r = svg.getBoundingClientRect()
+    nw = r.width || 1
+    nh = r.height || 1
+  }
+  const pad = 36
+  const vw = Math.max(64, vp.clientWidth - pad * 2)
+  const vh = Math.max(64, vp.clientHeight - pad * 2)
+  const s = Math.min(vw / nw, vh / nh, 3)
+  const fit = Number.isFinite(s) && s > 0 ? s : 1
+  planPreviewScale.value = fit
+  const bw = nw * fit
+  const bh = nh * fit
+  planPreviewTx.value = (vp.clientWidth - bw) / 2
+  planPreviewTy.value = (vp.clientHeight - bh) / 2
+}
+
+async function openPlanDiagramPreview(idx) {
+  planDiagramPreviewIdx.value = idx
+  planPreviewScale.value = 1
+  planPreviewTx.value = 0
+  planPreviewTy.value = 0
+  if (planDiagramPreviewEscUnlisten) {
+    planDiagramPreviewEscUnlisten()
+    planDiagramPreviewEscUnlisten = null
+  }
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') closePlanDiagramPreview()
+  }
+  window.addEventListener('keydown', onKey)
+  planDiagramPreviewEscUnlisten = () => window.removeEventListener('keydown', onKey)
+  await nextTick()
+  await nextTick()
+  const host = document.getElementById(`wb-plan-mer-${idx}`)
+  const svg = host?.querySelector('svg')
+  const target = planDiagramPreviewMountRef.value
+  if (!target) return
+  target.innerHTML = ''
+  if (svg) {
+    const clone = svg.cloneNode(true) as SVGElement
+    clone.style.maxWidth = 'none'
+    clone.style.width = 'auto'
+    clone.style.height = 'auto'
+    target.appendChild(clone)
+  } else {
+    const p = document.createElement('p')
+    p.className = 'wb-plan-diagram-preview-empty'
+    p.textContent = '流程图尚未渲染完成，请稍后再次点击「完整预览」。'
+    target.appendChild(p)
+  }
+  await nextTick()
+  await planDiagramPreviewFitView()
+  target.focus()
+}
+
+function closePlanDiagramPreview() {
+  clearPlanDiagramPreviewPointerListeners()
+  if (planDiagramPreviewEscUnlisten) {
+    planDiagramPreviewEscUnlisten()
+    planDiagramPreviewEscUnlisten = null
+  }
+  planDiagramPreviewIdx.value = null
+}
 
 let mermaidApi = null
 let mermaidInitDone = false
@@ -3371,6 +4247,7 @@ watch(
 )
 
 function dismissPlanSession() {
+  closePlanDiagramPreview()
   planSession.value = null
   planReplyDraft.value = ''
   planOptionSelections.value = {}
@@ -3617,6 +4494,18 @@ async function runOrchestration() {
       suggested_mod_id:
         intent === 'mod' ? (h.suggestedModId || '').trim() || undefined : undefined,
       replace: true,
+      planning_messages: Array.isArray(h.planningMessages) ? h.planningMessages : [],
+      execution_checklist: Array.isArray(h.executionChecklist) ? h.executionChecklist : [],
+      source_documents: Array.isArray(h.sourceDocuments) ? h.sourceDocuments : [],
+      generate_frontend: intent === 'mod' ? h.generateFrontend !== false : false,
+    }
+    if (intent === 'employee') {
+      const et = String(h.employeeTarget || 'pack_plus_workflow').trim()
+      body.employee_target = et === 'pack_only' ? 'pack_only' : 'pack_plus_workflow'
+      const wfn = String(h.employeeWorkflowName || '').trim()
+      if (wfn) body.employee_workflow_name = wfn
+      const fhd = String(h.fhdBaseUrl || '').trim()
+      if (fhd) body.fhd_base_url = fhd
     }
     if (modelMode.value === 'manual' && selectedProvider.value && selectedModel.value) {
       body.provider = selectedProvider.value
@@ -3718,8 +4607,20 @@ async function runOrchestration() {
       await router.push({ name: 'workbench-employee', query: q })
       return
     }
-  } catch (e) {
-    finalizeError.value = e.message || String(e)
+  } catch (e: any) {
+    const m = e?.message || String(e)
+    const low = m.toLowerCase()
+    if (
+      low.includes('not found') ||
+      low.includes('404') ||
+      m.includes('会话不存在') ||
+      m.includes('已过期')
+    ) {
+      finalizeError.value =
+        '无法查询编排会话（可能命中了另一台后端进程）。请部署并重启带「工作台会话落盘」的版本后重试；若已更新仍失败，请再点一次「开始生成 Mod」。'
+    } else {
+      finalizeError.value = m
+    }
   } finally {
     finalizeLoading.value = false
   }
@@ -3749,9 +4650,15 @@ function applyStarter(kind) {
 function buildPlanSystemPrompt(intentKey, intentTitle) {
   const typeHint =
     intentKey === 'workflow'
-      ? '关注触发条件、数据来源、节点顺序、失败重试与人工介入点。流程图用 flowchart LR 或 TD，节点用简短中文，避免括号、引号、特殊符号破坏 Mermaid 语法。'
+      ? '区分两类产物：（1）画布工作流＝节点图调度（员工/API/条件等），（2）脚本工作流＝可运行程序、直接完成任务。规划时若用户要「程序本体」，引导其需求规划结束后去「脚本工作流」新建；此处仍可为画布描述触发、数据来源、节点顺序、失败重试与人工介入。流程图用 flowchart LR 或 TD，节点用简短中文，避免括号、引号、特殊符号破坏 Mermaid 语法。'
       : intentKey === 'mod'
-        ? '用户目标通常是：先在 Mod 库建仓库，再按行业在 manifest（JSON）里落好字段骨架，并在 workflow_employees 中为需要的员工命名与占位（不必一次写全表结构、规则与接口实现）。澄清时优先确认：行业/场景、仓库 id、要几名员工及各字职责一句话。Mermaid 须用 flowchart 画出「建仓库 → 行业JSON骨架 → 员工命名 →（可选）表规则接口迭代」的主线，节点名两到六字中文，不用括号。'
+        ? [
+            '用户目标可能有两档：（1）Mod 草稿骨架：仓库、manifest、行业 JSON、workflow_employees 名片；（2）可执行员工：在骨架基础上生成/登记 employee_pack，绑定 workflow_id，让工作流 employee 节点使用可执行包 id，并完成非 Mock 真实执行验证。',
+            '【宿主软件 FHD / XCAGI 已定型，禁止「技术栈问卷」】宿主主程序为 Vue 3 + Vite + Element Plus（FHD/frontend）；本 Mod 前端作为专业版切换（侧栏 proModeToggle 等入口）后的「第二套前端」，挂在现有 /mods/<id>/frontend 路由体系，UI 语汇与宿主一致，不要引导用户再选「Node/Python/Go 员工包语言」「REST/RPC」「Element Plus / Ant Design / Vant」等通用栈。',
+            '宿主与平台服务侧为 Python + FastAPI 等，不要提议用 Express/Gin 替换宿主 API。澄清时围绕：行业与场景、仓库与数据、员工职责与工具、工作流绑定、外部系统（微信/电话/合同等）、合规与脱敏、是否需要额外宿主路由/页面；不要把这些写成「选语言/选框架」的多选题。',
+            'Mermaid 须用 flowchart 画出「建仓库 → 员工名片 → 员工包登记 → 工作流绑定 → 真实验证」的主线，节点名两到六字中文，不用括号。',
+            '<<<PLAN_OPTIONS>>>：若需要点选澄清，只能出与业务/交付相关的题；若当前轮没有合适的二选一/多选一，必须输出 []。严禁出现「后端语言」「前端 UI 框架」「API 风格 REST/RPC」类标题或选项。',
+          ].join(' ')
         : '关注员工角色、可用工具/能力标识、输入输出与行业场景。Mermaid 用 flowchart 表示角色、工具、输出关系即可。'
   const diagramParity =
     intentKey === 'mod'
@@ -3760,7 +4667,7 @@ function buildPlanSystemPrompt(intentKey, intentTitle) {
         ? '【流程图】每条回复须含 fenced Mermaid flowchart，不得以纯文字代替；信息不足时用 3～5 个短中文节点概括角色与产出。'
         : ''
   return [
-    `你是 XCAGI 工作台的「需求规划」助手（风格接近 Cursor 的 Plan）。用户当前制作类型：「${intentTitle}」。`,
+    `你是 XCAGI 工作台的「需求规划」助手。用户当前制作类型：「${intentTitle}」。`,
     `${typeHint}`,
     ...(diagramParity ? [diagramParity] : []),
     '流程：先根据用户的初步想法提出 2～4 个高价值澄清问题（用数字编号列出）；用户补充后，可继续追问直到需求足够具体。',
@@ -3780,10 +4687,35 @@ function buildPlanSystemPrompt(intentKey, intentTitle) {
     '<<<END_PLAN_DETAILS>>>',
     '3) 再输出快捷选项：单行 JSON 数组，用以下标记包裹（供界面点选；不需要选项时输出 []）：',
     '<<<PLAN_OPTIONS>>>',
-    '[{"id":"q1","title":"短标题","choices":[{"id":"c1","label":"选项甲"},{"id":"c2","label":"选项乙"}]}]',
+    intentKey === 'mod'
+      ? '[{"id":"q_scope","title":"交付档位","choices":[{"id":"skeleton","label":"先骨架（manifest/行业 JSON/名片）"},{"id":"full","label":"骨架 + 可执行员工包 + 工作流绑定"}]}]'
+      : '[{"id":"q1","title":"短标题","choices":[{"id":"c1","label":"选项甲"},{"id":"c2","label":"选项乙"}]}]',
     '<<<END_PLAN_OPTIONS>>>',
     'JSON 须为单行；每项含 id、title、choices（2～5 项，每项 id 与 label）；label 内勿用英文双引号。',
     '除上述各段外不要输出其它前言或后记。',
+  ].join('\n')
+}
+
+/** 仅用于「生成执行清单」单次请求：不得沿用对话里的 Mermaid/PLAN_* 格式，否则模型会拒写 <<<CHECKLIST>>> */
+function buildChecklistGenerationSystemPrompt(intentKey, intentTitle) {
+  const scope =
+    intentKey === 'workflow'
+      ? '每条任务应可执行、可验证。若用户要「程序本体」，清单中应出现脚本工作流（编写/运行/沙箱）相关条目；画布调度（员工/API/条件）可作为并列或前置步骤。覆盖触发、数据、输出与人工环节。'
+      : intentKey === 'mod'
+        ? '每条任务应可落到 Mod 仓库与真实可用闭环：仓库、manifest、行业 JSON、员工名片、employee_pack 登记、workflow_id 绑定、employee 节点 id 匹配、Mock 结构沙盒与非 Mock 真实执行验证。若用户只要草稿骨架，也必须在清单中标明后续成为可执行员工还缺哪些步骤。'
+        : '每条任务应可落到员工能力、工具配置与交付物。'
+  return [
+    `你是 XCAGI 工作台的「执行清单」生成助手。当前制作类型：「${intentTitle}」。`,
+    `${scope}`,
+    '用户与助手的前文是对话历史；你的**整段回复只允许**输出下面这一块，不要写任何其它字符（不要写「好的」、不要写 mermaid、不要写 <<<PLAN_DETAILS>>>、不要写 <<<PLAN_OPTIONS>>>、不要用 ``` 代码围栏）。',
+    '',
+    '【必须严格按行输出】',
+    '<<<CHECKLIST>>>',
+    '1. …',
+    '2. …',
+    '<<<END>>>',
+    '',
+    '至少 4 条、建议 6～12 条；中文短句；行首编号必须为「数字 + 英文句点 + 空格」。',
   ].join('\n')
 }
 
@@ -3794,24 +4726,82 @@ function formatPlanMessagesForBrief(msgs) {
     .join('\n\n')
 }
 
+/** 规划面板：把 nginx 504 HTML 等转成可读中文，避免整页 HTML 贴在 planError 里 */
+function friendlyPlanPanelApiError(err) {
+  const raw = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err || '')
+  const s = raw.trim()
+  if (!s) return '请求失败，请稍后重试。'
+  if (/504|Gateway Time-out|网关超时/i.test(s) || /<title>\s*504/i.test(s)) {
+    return '网关超时（504）：最前面的 nginx 在超时时间内没等到后端返回就断开了连接。需求规划调用模型往往较慢，请在对外提供站点的那台 nginx 里为 /api/ 增大 proxy_read_timeout、proxy_send_timeout（建议 3600s），nginx -t 后 reload；若直连本机 API 正常而域名访问 504，说明问题在这一层反代。仓库示例见 market/nginx.conf、docs/nginx-https-example.conf。'
+  }
+  if (/<\s*html[\s>]/i.test(s)) {
+    return '服务器返回了 HTML 错误页（多为反代或网关层），请在浏览器网络面板查看该请求的 HTTP 状态码，并检查 nginx 与 modstore 服务日志。'
+  }
+  return s.length > 900 ? `${s.slice(0, 900)}…` : s
+}
+
+function _checklistBodyToResult(body) {
+  const lines = String(body || '')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\s*\d+[\.)]\s*/, '').trim())
+    .filter((l) => l && !/^<<<[\s\S]*>>>$/.test(l))
+  if (!lines.length) return null
+  const text = lines.map((l, i) => `${i + 1}. ${l}`).join('\n')
+  return { text, lines }
+}
+
+/** 模型漏写结束标签时：取文末连续「数字. 」行作为清单（仅当正文含 <<<CHECKLIST>>> 时由上层调用） */
+function parseChecklistNumberedTail(raw) {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  while (lines.length && /^```/.test(lines[lines.length - 1])) {
+    lines.pop()
+  }
+  const collected = []
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const l = lines[i]
+    if (/^\d+[\.)]\s+\S/.test(l)) {
+      collected.unshift(l.replace(/^\d+[\.)]\s+/, '').trim())
+    } else if (collected.length) {
+      break
+    }
+  }
+  if (collected.length < 2) return null
+  return _checklistBodyToResult(collected.join('\n'))
+}
+
 function parseChecklistBlock(raw) {
-  let s = String(raw || '')
+  let s = String(raw || '').trim()
+  const fullFence = s.match(/^```(?:\w*)?\s*\n([\s\S]*?)\n```\s*$/m)
+  if (fullFence) s = fullFence[1].trim()
   const mer = s.match(/```mermaid\s*[\s\S]*?```/i)
   if (mer) s = s.replace(mer[0], '')
   const pd = s.match(/<<<PLAN_DETAILS>>>([\s\S]*?)<<<END_PLAN_DETAILS>>>/i)
   if (pd) s = s.replace(pd[0], '')
   const po = s.match(/<<<PLAN_OPTIONS>>>([\s\S]*?)<<<END_PLAN_OPTIONS>>>/i)
   if (po) s = s.replace(po[0], '')
-  const m = s.match(/<<<CHECKLIST>>>([\s\S]*?)<<<END>>>/i)
-  if (!m) return null
-  const body = m[1].trim()
-  const lines = body
-    .split(/\r?\n/)
-    .map((l) => l.replace(/^\s*\d+[\.)]\s*/, '').trim())
-    .filter(Boolean)
-  if (!lines.length) return null
-  const text = lines.map((l, i) => `${i + 1}. ${l}`).join('\n')
-  return { text, lines }
+  s = s.replace(/<<<\s*CHECKLIST\s*>>>/gi, '<<<CHECKLIST>>>')
+  s = s.replace(/<<<\s*END\s*CHECKLIST\s*>>>/gi, '<<<END>>>')
+  s = s.replace(/<<<\s*END_CHECKLIST\s*>>>/gi, '<<<END>>>')
+  s = s.replace(/<<<\s*END\s*>>>/gi, '<<<END>>>')
+  const tryBodies = []
+  let m = s.match(/<<<CHECKLIST>>>([\s\S]*?)<<<END>>>/i)
+  if (m) tryBodies.push(m[1])
+  if (!tryBodies.length) {
+    m = s.match(/<<<CHECKLIST>>>([\s\S]*?)$/im)
+    if (m) tryBodies.push(m[1])
+  }
+  for (const body of tryBodies) {
+    const r = _checklistBodyToResult(body)
+    if (r) return r
+  }
+  if (/<<<CHECKLIST>>>/i.test(s)) {
+    const t = parseChecklistNumberedTail(s)
+    if (t) return t
+  }
+  return null
 }
 
 function _providerRowHasUsableKey(row, fernetOk) {
@@ -3961,6 +4951,7 @@ async function openPlanSession(input) {
     initialBrief: displayBrief,
     fullBrief,
     displayBrief,
+    generateFrontend: composerIntent.value === 'mod' ? input?.generateFrontend !== false : false,
     summaryTitle: '',
     summaryText: '',
     files: Array.isArray(input?.files) ? input.files : [],
@@ -3985,7 +4976,7 @@ async function openPlanSession(input) {
       planSession.value.summaryTitle = fallback.title
       planSession.value.summaryText = fallback.summary
       planSession.value.initialBrief = `${fallback.title}\n${fallback.summary}`
-      planSession.value.planError = `摘要生成失败，已使用输入内容兜底：${e.message || String(e)}`
+      planSession.value.planError = `摘要生成失败，已使用输入内容兜底：${friendlyPlanPanelApiError(e)}`
     }
   } finally {
     if (planSession.value) planSession.value.loading = false
@@ -4016,7 +5007,7 @@ async function confirmSummaryAndStartPlanning() {
   try {
     await appendUserAndAssistantPlanTurn(ps.fullBrief || ps.displayBrief || ps.summaryText, visible)
   } catch (e) {
-    ps.planError = e.message || String(e)
+    ps.planError = friendlyPlanPanelApiError(e)
     ps.messages = []
   } finally {
     ps.loading = false
@@ -4054,7 +5045,7 @@ async function submitPlanUserMessage(userText) {
   try {
     await appendUserAndAssistantPlanTurn(t)
   } catch (e) {
-    ps.planError = e.message || String(e)
+    ps.planError = friendlyPlanPanelApiError(e)
     if (ps.messages.length && ps.messages[ps.messages.length - 1].role === 'user') {
       ps.messages.pop()
     }
@@ -4099,11 +5090,23 @@ async function requestExecutionChecklist() {
   ps.planError = ''
   try {
     const { provider, model } = await resolveChatProviderModel()
-    const sys = buildPlanSystemPrompt(ps.intentKey, ps.intentTitle)
+    const sys = buildChecklistGenerationSystemPrompt(ps.intentKey, ps.intentTitle)
     const tail = {
       role: 'user',
-      content:
-        '请根据以上整段对话，输出一份可直接照着实现的「执行清单」。不要输出 ```mermaid 代码块，也不要输出 <<<PLAN_DETAILS>>> 或 <<<PLAN_OPTIONS>>> 段；只输出 <<<CHECKLIST>>> 与 <<<END>>> 包裹的清单。严格使用格式：第一行仅为 <<<CHECKLIST>>>，接着每行一条任务（以「1.」「2.」编号），最后一行仅为 <<<END>>>。不要写其它说明文字。',
+      content: [
+        '请根据以上整段对话，输出一份可直接照着实现的「执行清单」。',
+        '',
+        '只输出下面这一块，不要前言、不要后记；不要用 markdown 代码围栏（不要用 ```）包住整块；不要输出 mermaid；不要输出 <<<PLAN_DETAILS>>> / <<<PLAN_OPTIONS>>>。',
+        '',
+        '必须严格使用这三行作为头尾标记（尖括号与单词一致）：',
+        '<<<CHECKLIST>>>',
+        '1. 第一条任务（一行一条，行首为数字+英文句点+空格）',
+        '2. 第二条任务',
+        '（按需继续编号）',
+        '<<<END>>>',
+        '',
+        '注意：结束标记必须是单独的 <<<END>>>（与需求规划里其它 <<<END_…>>> 不同），否则系统无法解析。',
+      ].join('\n'),
     }
     const apiMsgs = [
       { role: 'system', content: sys },
@@ -4111,29 +5114,23 @@ async function requestExecutionChecklist() {
       ...ps.messages.map((m) => ({ role: m.role, content: m.content })),
       tail,
     ]
-    const res = await api.llmChat(provider, model, apiMsgs, 2048)
+    const res = await api.llmChat(provider, model, apiMsgs, 6144)
     const raw = typeof res?.content === 'string' ? res.content : ''
     const parsed = parseChecklistBlock(raw)
     if (!parsed) {
       ps.planError =
-        '未能解析清单（需要 <<<CHECKLIST>>> … <<<END>>> 包裹）。可补充说明后重试「生成执行清单」。'
+        '未能解析清单：请确认模型输出含 <<<CHECKLIST>>> 与 <<<END>>>（勿用 ``` 包裹），且至少两条编号任务；仍失败可把清单要点再发一轮对话后重试「生成执行清单」。'
       return
     }
     ps.checklistText = parsed.text
     ps.checklistLines = parsed.lines
     ps.phase = 'checklist'
   } catch (e) {
-    ps.planError = e.message || String(e)
+    ps.planError = friendlyPlanPanelApiError(e)
   } finally {
     ps.loading = false
     scrollPlanIntoView()
   }
-}
-
-function onPlanReplyKeydown(e) {
-  if (e.key !== 'Enter' || e.shiftKey) return
-  e.preventDefault()
-  void sendPlanReply()
 }
 
 function backPlanToChat() {
@@ -4153,14 +5150,24 @@ function confirmPlanAndOpenHandoff() {
   if (qaText) descChunks.push(`【澄清对话】\n${qaText}`)
   descChunks.push(`【执行清单】\n${ps.checklistText}`)
   const description = descChunks.join('\n\n---\n\n')
+  const ik = ps.intentKey
   pendingHandoff.value = {
     description,
     intentTitle: ps.intentTitle,
-    intentKey: ps.intentKey,
+    intentKey: ik,
     workflowName: '',
-    planNotes: ps.intentKey === 'workflow' ? ps.checklistText : '',
-    suggestedModId: '',
+    planNotes: ik === 'workflow' ? ps.checklistText : '',
+    suggestedModId: ik === 'mod' ? suggestModIdFromText(`${ps.initialBrief}\n${ps.checklistText}`) : '',
     files: Array.isArray(ps.files) ? ps.files : [],
+    generateFrontend: ik === 'mod' ? ps.generateFrontend !== false : false,
+    planningMessages: Array.isArray(ps.messages) ? ps.messages.map((m) => ({ role: m.role, content: m.content })) : [],
+    executionChecklist: Array.isArray(ps.checklistLines) ? [...ps.checklistLines] : [],
+    sourceDocuments: Array.isArray(ps.files)
+      ? ps.files.map((f) => ({ name: String(f?.name || ''), size: Number(f?.size || 0), type: String(f?.type || '') }))
+      : [],
+    employeeTarget: ik === 'employee' ? 'pack_plus_workflow' : 'pack_only',
+    employeeWorkflowName: '',
+    fhdBaseUrl: '',
   }
   dismissPlanSession()
   nextTick(() => {
@@ -4179,6 +5186,7 @@ async function submitDraft() {
     knowledgeError.value = '附件仍在读取中，请稍候'
     return
   }
+  if (planSession.value?.phase === 'chat') return
   if (planSession.value) {
     finalizeError.value = '请先完成或关闭上方的「需求规划」面板。'
     return
@@ -4204,6 +5212,14 @@ async function submitDraft() {
     }
   }
   const payloadParts = [text]
+  const wantsModFrontend = composerIntent.value === 'mod' && modFrontendEnabled.value
+  if (composerIntent.value === 'mod') {
+    payloadParts.push(
+      wantsModFrontend
+        ? '【制作选项】本次需要为 Mod 生成可路由的定制 Vue 前端页面，并在 manifest.frontend.menu 中暴露入口。'
+        : '【制作选项】本次暂不生成定制前端，只保留 Mod 骨架、员工和工作流能力。',
+    )
+  }
   if (note) payloadParts.push(note)
   if (inlineBlocks) {
     payloadParts.push(`【本次上传附件全文】\n用户按上传顺序提供了以下文件；@附件1、@附件2 等编号与上方附件顺序一致，请按编号理解文件之间的先后逻辑。\n\n${inlineBlocks}`)
@@ -4211,12 +5227,31 @@ async function submitDraft() {
   if (knowledgePack) payloadParts.push(`【我的文件资料库命中片段】\n${knowledgePack}`)
   const payload = payloadParts.filter(Boolean).join('\n\n---\n')
   const displayPayload = [text, note].filter(Boolean).join('\n\n')
-  await openPlanSession({ fullBrief: payload, displayBrief: displayPayload, files: filesSnapshot.map((f: any) => f.file).filter(Boolean) })
+  await openPlanSession({
+    fullBrief: payload,
+    displayBrief: displayPayload,
+    files: filesSnapshot.map((f: any) => f.file).filter(Boolean),
+    generateFrontend: wantsModFrontend,
+  })
+}
+
+async function onComposerSendClick() {
+  if (planSession.value?.phase === 'chat') {
+    await sendPlanReply()
+    return
+  }
+  await submitDraft()
 }
 
 function onComposerKeydown(e) {
-  if (planSession.value) return
   if (e.key !== 'Enter' || e.shiftKey) return
+  const ps = planSession.value
+  if (ps?.phase === 'chat') {
+    e.preventDefault()
+    void sendPlanReply()
+    return
+  }
+  if (ps) return
   e.preventDefault()
   void submitDraft()
 }
@@ -4317,6 +5352,18 @@ function onComposerKeydown(e) {
   display: flex;
   flex-direction: column;
   padding-right: clamp(3.25rem, 4.5vw, 4rem);
+}
+
+.wb-gear-layout--nav-locked .wb-gear-slider {
+  opacity: 0.42;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+.wb-gear-layout--nav-locked .wb-gear-stop {
+  pointer-events: none;
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .wb-gear-rail {
@@ -4455,6 +5502,57 @@ function onComposerKeydown(e) {
   overflow: hidden;
 }
 
+.wb-gear-nav-lock {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  right: clamp(3.6rem, 5vw, 4.6rem);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.38rem 0.55rem 0.38rem 0.65rem;
+  border-radius: 0.65rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.55);
+  color: rgba(226, 232, 240, 0.86);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.wb-gear-nav-lock__text {
+  flex: 1;
+  min-width: 0;
+  color: rgba(203, 213, 225, 0.82);
+}
+
+.wb-gear-nav-lock__btn {
+  flex: 0 0 auto;
+  padding: 0.22rem 0.62rem;
+  border-radius: 999px;
+  border: 1px solid rgba(165, 180, 252, 0.35);
+  background: rgba(99, 102, 241, 0.18);
+  color: #e0e7ff;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.wb-gear-nav-lock__btn:hover {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: rgba(165, 180, 252, 0.5);
+  color: #fff;
+}
+
 .wb-gear-track {
   height: 300%;
   transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
@@ -4530,6 +5628,7 @@ function onComposerKeydown(e) {
 .wb-direct-main--chatting {
   align-items: stretch;
   justify-content: flex-start;
+  padding-top: clamp(0.85rem, 1.7vw, 1.25rem);
   animation: wb-direct-chat-surface-in 0.42s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -4969,12 +6068,26 @@ function onComposerKeydown(e) {
 }
 
 .wb-direct-hero--compact {
-  width: 100%;
-  max-width: 100%;
-  align-self: stretch;
+  width: auto;
+  max-width: min(32rem, calc(100% - 0.5rem));
+  align-self: flex-start;
+  margin: 0.05rem 0 0.35rem clamp(0.2rem, 0.9vw, 0.7rem);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   text-align: left;
-  margin-top: 0.1rem;
-  margin-bottom: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  color: rgba(203, 213, 225, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transform: translate3d(0, 0, 0);
   animation: wb-direct-hero-collapse 0.46s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -4995,7 +6108,7 @@ function onComposerKeydown(e) {
 @keyframes wb-direct-hero-collapse {
   from {
     opacity: 0.94;
-    transform: translate3d(18%, 48%, 0) scale(2.2);
+    transform: translate3d(12%, 36%, 0) scale(1.35);
     filter: blur(2px);
   }
   to {
@@ -5028,12 +6141,6 @@ function onComposerKeydown(e) {
     opacity 0.3s ease;
 }
 
-.wb-direct-hero--compact .wb-direct-title {
-  font-size: clamp(1.06rem, 0.94rem + 0.45vw, 1.38rem);
-  letter-spacing: -0.025em;
-  color: rgba(248, 250, 252, 0.96);
-}
-
 .wb-direct-sub,
 .wb-voice-sub {
   margin: 0.65rem 0 0;
@@ -5044,13 +6151,6 @@ function onComposerKeydown(e) {
     transform 0.36s cubic-bezier(0.22, 1, 0.36, 1),
     font-size 0.36s cubic-bezier(0.22, 1, 0.36, 1),
     margin 0.36s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.wb-direct-hero--compact .wb-direct-sub {
-  margin-top: 0.18rem;
-  font-size: 0.78rem;
-  opacity: 0.46;
-  transform: translateY(-2px);
 }
 
 .wb-direct-box {
@@ -5585,14 +6685,14 @@ function onComposerKeydown(e) {
 
 .wb-direct-thread {
   flex: 1;
-  width: min(54rem, 100%);
+  width: min(58rem, 100%);
   align-self: center;
   min-height: 0;
   overflow-y: auto;
   display: grid;
-  gap: 0.6rem;
+  gap: 1.05rem;
   text-align: left;
-  padding: 0.15rem 0.4rem 0.55rem 0;
+  padding: 0.45rem clamp(0.2rem, 0.8vw, 0.7rem) 1rem;
   align-content: start;
   scroll-behavior: smooth;
   animation: wb-direct-thread-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1);
@@ -5619,27 +6719,126 @@ function onComposerKeydown(e) {
 }
 
 .wb-direct-msg {
-  padding: 0.7rem 0.85rem;
-  border-radius: 0.85rem;
-  background: rgba(255, 255, 255, 0.05);
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.78rem;
+  padding: 0;
   color: rgba(248, 250, 252, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.04);
   max-width: 100%;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.12);
   transform-origin: left top;
 }
 
 .wb-direct-msg--user,
 .wb-voice-msg--user {
   justify-self: end;
-  max-width: 82%;
-  background: rgba(129, 140, 248, 0.22);
-  border-color: rgba(165, 180, 252, 0.22);
+  grid-template-columns: minmax(0, 1fr) auto;
+  max-width: min(84%, 42rem);
+  transform-origin: right top;
 }
 
 .wb-direct-msg--assistant {
-  background: rgba(15, 23, 42, 0.42);
-  border-color: rgba(255, 255, 255, 0.06);
+  justify-self: start;
+  max-width: min(90%, 49rem);
+}
+
+.wb-direct-msg__persona {
+  display: grid;
+  justify-items: center;
+  gap: 0.34rem;
+  min-width: 3.25rem;
+  padding-top: 0.04rem;
+}
+
+.wb-direct-msg--user .wb-direct-msg__persona {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.wb-direct-msg__avatar {
+  display: grid;
+  place-items: center;
+  width: 2.45rem;
+  height: 2.45rem;
+  border-radius: 0.55rem;
+  background: rgba(51, 65, 85, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: rgba(248, 250, 252, 0.92);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  box-shadow: none;
+}
+
+.wb-direct-msg--user .wb-direct-msg__avatar {
+  background: rgba(79, 70, 229, 0.88);
+  border-color: rgba(199, 210, 254, 0.22);
+}
+
+.wb-direct-msg__name {
+  max-width: 4.2rem;
+  color: rgba(203, 213, 225, 0.58);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  letter-spacing: 0.045em;
+}
+
+.wb-direct-msg__stack {
+  display: grid;
+  justify-items: start;
+  gap: 0.38rem;
+  min-width: 0;
+}
+
+.wb-direct-msg--user .wb-direct-msg__stack {
+  grid-column: 1;
+  grid-row: 1;
+  justify-items: end;
+}
+
+.wb-direct-msg__bubble {
+  position: relative;
+  min-width: min(8rem, 100%);
+  padding: 0.86rem 1rem;
+  border-radius: 0.54rem 1.22rem 1.22rem;
+  background:
+    linear-gradient(150deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.68)),
+    rgba(2, 6, 23, 0.42);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    0 18px 44px rgba(2, 6, 23, 0.22);
+  overflow: hidden;
+  backdrop-filter: blur(16px) saturate(126%);
+}
+
+.wb-direct-msg__bubble::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 38%);
+  pointer-events: none;
+}
+
+.wb-direct-msg--user .wb-direct-msg__bubble {
+  border-radius: 1.22rem 0.54rem 1.22rem 1.22rem;
+  background:
+    linear-gradient(150deg, rgba(99, 102, 241, 0.5), rgba(37, 99, 235, 0.26)),
+    rgba(30, 41, 59, 0.72);
+  border-color: rgba(199, 210, 254, 0.28);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 18px 44px rgba(37, 99, 235, 0.18);
+}
+
+.wb-direct-msg--user .wb-direct-msg__bubble::before {
+  background:
+    radial-gradient(circle at 88% 0%, rgba(255, 255, 255, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 44%);
 }
 
 .wb-direct-msg-flow-enter-active,
@@ -5689,16 +6888,45 @@ function onComposerKeydown(e) {
 }
 
 .wb-direct-msg__role {
-  display: block;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 0.68rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  color: rgba(226, 232, 240, 0.74);
+  font-size: 0.66rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.wb-direct-msg__role::before {
+  content: "";
+  width: 0.34rem;
+  height: 0.34rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.8);
+  box-shadow: 0 0 12px rgba(148, 163, 184, 0.35);
+}
+
+.wb-direct-msg--user .wb-direct-msg__role {
+  color: rgba(224, 231, 255, 0.86);
+}
+
+.wb-direct-msg--user .wb-direct-msg__role::before {
+  background: #c7d2fe;
+  box-shadow: 0 0 14px rgba(199, 210, 254, 0.55);
+}
+
+.wb-direct-msg--assistant .wb-direct-msg__role::before {
+  background: #5eead4;
+  box-shadow: 0 0 14px rgba(94, 234, 212, 0.45);
 }
 
 .wb-direct-msg__body {
   margin: 0;
   white-space: pre-wrap;
+  color: rgba(248, 250, 252, 0.94);
+  line-height: 1.72;
 }
 
 .wb-direct-error,
@@ -5706,6 +6934,60 @@ function onComposerKeydown(e) {
   margin: 0;
   color: rgba(252, 165, 165, 0.95);
   font-size: 0.82rem;
+}
+
+.wb-direct-new-row {
+  margin: 0.35rem 0 0;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.wb-direct-new-btn {
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.4);
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+.wb-direct-new-btn:hover {
+  background: rgba(51, 65, 85, 0.45);
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.wb-direct-prefs-row {
+  margin: 0.4rem 0 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.wb-direct-prefs-btn {
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(15, 23, 42, 0.35);
+  color: rgba(165, 180, 252, 0.88);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+.wb-direct-prefs-btn:hover {
+  background: rgba(99, 102, 241, 0.2);
+  color: #e0e7ff;
+  border-color: rgba(165, 180, 252, 0.35);
 }
 
 .wb-voice-orb-wrap {
@@ -6011,6 +7293,7 @@ function onComposerKeydown(e) {
 }
 
 .wb-plan-diagram-col {
+  position: relative;
   min-width: 0;
   min-height: 5rem;
   border-radius: 0.9rem;
@@ -6018,9 +7301,8 @@ function onComposerKeydown(e) {
   background: rgba(30, 41, 59, 0.5);
   padding: 0.55rem 0.6rem;
   overflow: auto;
-  max-height: min(32vh, 16rem);
+  max-height: min(40vh, 22rem);
   box-shadow: 0 12px 28px -16px rgba(0, 0, 0, 0.35);
-  overflow: hidden;
 }
 
 .wb-plan-diagram-fallback {
@@ -6031,13 +7313,47 @@ function onComposerKeydown(e) {
   color: rgba(191, 219, 254, 0.65);
 }
 
+.wb-plan-diagram-preview-open {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.45rem;
+  z-index: 2;
+  margin: 0;
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.88);
+  color: rgba(226, 232, 240, 0.95);
+  font: inherit;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.wb-plan-diagram-preview-open:hover,
+.wb-plan-diagram-preview-open:focus-visible {
+  border-color: rgba(165, 180, 252, 0.55);
+  background: rgba(30, 27, 75, 0.92);
+  color: #fff;
+  outline: none;
+}
+
 .wb-plan-diagram-host {
   min-height: 3rem;
   display: block;
   max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   padding-bottom: 0.25rem;
+}
+
+.wb-plan-diagram-host--with-preview {
+  padding-top: 1.85rem;
 }
 
 .wb-plan-diagram-host :deep(svg) {
@@ -6051,6 +7367,176 @@ function onComposerKeydown(e) {
   font-size: 0.78rem;
   line-height: 1.35;
   color: #fecaca;
+}
+
+.wb-plan-diagram-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 11020;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.65rem, 2vw, 1.25rem);
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.wb-plan-diagram-preview-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(96vw, 112rem);
+  max-height: min(92vh, 120rem);
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0b1220;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.wb-plan-diagram-preview-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.65rem 0.5rem 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.wb-plan-diagram-preview-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: rgba(248, 250, 252, 0.95);
+}
+
+.wb-plan-diagram-preview-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(248, 250, 252, 0.92);
+  font: inherit;
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.wb-plan-diagram-preview-close:hover,
+.wb-plan-diagram-preview-close:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+  transform: scale(1.04);
+}
+
+.wb-plan-diagram-preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wb-plan-diagram-preview-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.65rem;
+  padding: 0.35rem 0.65rem 0.45rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.wb-plan-preview-tool {
+  margin: 0;
+  padding: 0.28rem 0.55rem;
+  border-radius: 0.45rem;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(30, 41, 59, 0.75);
+  color: rgba(226, 232, 240, 0.95);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.wb-plan-preview-tool:hover,
+.wb-plan-preview-tool:focus-visible {
+  border-color: rgba(165, 180, 252, 0.5);
+  background: rgba(51, 65, 85, 0.85);
+  outline: none;
+}
+
+.wb-plan-preview-tool--primary {
+  border-color: rgba(129, 140, 248, 0.45);
+  background: rgba(67, 56, 202, 0.35);
+}
+
+.wb-plan-preview-hint {
+  font-size: 0.72rem;
+  color: rgba(148, 163, 184, 0.88);
+  margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .wb-plan-preview-hint {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
+.wb-plan-diagram-preview-viewport {
+  flex: 1 1 auto;
+  min-height: min(72vh, 52rem);
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.wb-plan-diagram-preview-viewport--drag {
+  cursor: grabbing;
+}
+
+.wb-plan-diagram-preview-panlayer {
+  display: inline-block;
+  vertical-align: top;
+  will-change: transform;
+}
+
+.wb-plan-diagram-preview-canvas {
+  padding: clamp(0.5rem, 1vw, 1rem);
+  outline: none;
+}
+
+.wb-plan-diagram-preview-canvas svg {
+  display: block;
+  max-width: none;
+  width: auto;
+  height: auto;
+}
+
+.wb-plan-diagram-preview-empty {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.72);
 }
 
 .wb-plan-aside-col {
@@ -6365,6 +7851,13 @@ function onComposerKeydown(e) {
   font-size: 0.86rem;
 }
 
+.wb-plan-reply-hint {
+  margin: 0.35rem 0 0.65rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: rgba(148, 163, 184, 0.85);
+}
+
 .wb-plan-reply-fold {
   margin: 0 0 0.75rem;
   border-radius: 0.85rem;
@@ -6527,6 +8020,50 @@ function onComposerKeydown(e) {
   margin-bottom: 0.35rem;
 }
 
+.wb-plan-loading-lead {
+  margin: 0 0 0.45rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.wb-plan-loading-steps {
+  margin: 0;
+  padding: 0 0 0 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: rgba(148, 163, 184, 0.88);
+  list-style: decimal;
+}
+
+.wb-plan-loading-steps__li {
+  padding-left: 0.15rem;
+  transition: color 0.2s ease, opacity 0.2s ease;
+}
+
+.wb-plan-loading-steps__li--pending {
+  opacity: 0.55;
+}
+
+.wb-plan-loading-steps__li--active {
+  color: rgba(147, 197, 253, 0.98);
+  font-weight: 600;
+  opacity: 1;
+  list-style-type: decimal;
+}
+
+.wb-plan-loading-steps__li--active::marker {
+  color: rgba(129, 140, 248, 0.95);
+}
+
+.wb-plan-loading-steps__li--done {
+  color: rgba(148, 163, 184, 0.72);
+  opacity: 0.85;
+}
+
 .wb-plan-loading {
   margin: 0;
   font-size: 0.82rem;
@@ -6595,6 +8132,13 @@ function onComposerKeydown(e) {
     transform: none !important;
     width: 100%;
     opacity: 0.65;
+  }
+
+  .wb-plan-loading-steps__li--pending,
+  .wb-plan-loading-steps__li--active {
+    opacity: 1;
+    font-weight: 500;
+    color: rgba(148, 163, 184, 0.88);
   }
 
   .wb-plan-shell-enter-from,
@@ -6934,6 +8478,64 @@ function onComposerKeydown(e) {
   font-size: 0.82rem;
   line-height: 1.4;
   color: #fca5a5;
+}
+
+.wb-handoff-run {
+  margin: 0 0 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(129, 140, 248, 0.22);
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.wb-handoff-run__status {
+  margin: 0 0 0.5rem;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.wb-handoff-run__boot {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.wb-handoff-run__bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.wb-handoff-run__bar {
+  flex: 1 1 auto;
+  display: block;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.wb-handoff-run__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(129, 140, 248, 0.85), rgba(56, 189, 248, 0.75));
+  transition: width 0.35s ease;
+}
+
+.wb-handoff-run__counts {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: rgba(186, 230, 253, 0.85);
+}
+
+.wb-handoff-run__steps {
+  margin: 0.35rem 0 0;
+  padding-left: 0;
 }
 
 .wb-handoff-foot {
@@ -7534,32 +9136,58 @@ function onComposerKeydown(e) {
 
 .wb-input-footer {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-start;
-  gap: 0.5rem 0.75rem;
-  padding: 0.45rem 0.75rem 0.65rem 1rem;
+  gap: 0.5rem 0.65rem;
+  padding: 0.42rem 0.75rem 0.42rem 1rem;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+@media (max-width: 720px) {
+  .wb-input-footer {
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+  }
 }
 
 .wb-input-hint {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
+  align-items: center;
+}
+
+.wb-input-hint__primary {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.55rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.wb-input-hint__primary .wb-input-hint__intent {
+  flex: 1 1 6.5rem;
+  min-width: 0;
 }
 
 .wb-input-hint__intent {
   font-size: clamp(0.8rem, 0.75rem + 0.15vw, 0.875rem);
   font-weight: 600;
   color: rgba(255, 255, 255, 0.52);
+  line-height: 1.25;
 }
 
 .wb-input-hint__keys {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding-left: 0.35rem;
   font-size: clamp(0.72rem, 0.7rem + 0.08vw, 0.8rem);
   color: rgba(255, 255, 255, 0.28);
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
 .wb-footer-trailing {
@@ -7568,6 +9196,70 @@ function onComposerKeydown(e) {
   gap: 0.5rem;
   flex-shrink: 0;
   margin-left: auto;
+  align-self: center;
+}
+
+.wb-frontend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  flex-shrink: 0;
+  align-self: center;
+  line-height: 1;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 0.28rem 0.34rem 0.28rem 0.62rem;
+  background: rgba(0, 0, 0, 0.2);
+  color: rgba(255, 255, 255, 0.48);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.wb-frontend-toggle:hover,
+.wb-frontend-toggle:focus-visible {
+  color: rgba(255, 255, 255, 0.84);
+  border-color: rgba(125, 211, 252, 0.34);
+  outline: none;
+}
+
+.wb-frontend-toggle--on {
+  color: #ecfeff;
+  border-color: rgba(34, 211, 238, 0.38);
+  background: rgba(8, 145, 178, 0.2);
+}
+
+.wb-frontend-toggle__switch {
+  width: 1.9rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  padding: 0.14rem;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background-color 0.16s ease;
+}
+
+.wb-frontend-toggle--on .wb-frontend-toggle__switch {
+  background: rgba(34, 211, 238, 0.68);
+}
+
+.wb-frontend-toggle__knob {
+  display: block;
+  width: 0.77rem;
+  height: 0.77rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transition: transform 0.16s ease;
+}
+
+.wb-frontend-toggle--on .wb-frontend-toggle__knob {
+  transform: translateX(0.82rem);
+  background: #fff;
 }
 
 .wb-llm-inline {
@@ -7838,6 +9530,166 @@ function onComposerKeydown(e) {
   font-size: clamp(0.78rem, 0.74rem + 0.12vw, 0.86rem);
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.32);
+}
+
+/* 制作场景：已进入任务（规划/交接/编排等）时，主输入压缩为底栏式窄框 */
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim {
+  gap: 0.35rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-panel {
+  border-radius: 1.125rem;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.18),
+    0 6px 22px rgba(0, 0, 0, 0.28);
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-body {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+@media (max-width: 639px) {
+  .wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-body {
+    flex-direction: column;
+  }
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-intent {
+  width: clamp(5.25rem, 16vw, 7.25rem);
+  max-width: 8rem;
+  padding: 0.45rem 0.55rem 0.45rem 0.65rem;
+  border-bottom: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 639px) {
+  .wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-intent {
+    width: 100%;
+    max-width: none;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-intent__kicker {
+  display: none;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-intent__title {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-intent__sub {
+  display: none;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-intent-guide-toggle {
+  margin-top: 0.35rem;
+  padding: 0.22rem 0.35rem;
+  font-size: 0.62rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-intent-repo {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  max-height: 5.5rem;
+  overflow-y: auto;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-intent-repo__title {
+  margin-bottom: 0.3rem;
+  font-size: 0.62rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input {
+  min-height: 2.45rem;
+  max-height: 9rem;
+  padding: 0.5rem 0.75rem 0.4rem;
+  font-size: 0.92rem;
+  line-height: 1.42;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-panel:focus-within .wb-input {
+  min-height: 2.75rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-research-msg {
+  margin: 0 0.65rem 0.15rem;
+  font-size: 0.68rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-footer {
+  padding: 0.28rem 0.45rem 0.32rem 0.55rem;
+  gap: 0.35rem 0.5rem;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-hint {
+  min-width: 0;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-hint__primary {
+  flex-wrap: nowrap;
+  gap: 0.35rem 0.45rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-hint__intent {
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-hint__keys {
+  display: none;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-footer-trailing {
+  gap: 0.35rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-mode-segment__btn {
+  padding: 0.28rem 0.55rem;
+  min-width: 2.6rem;
+  font-size: 0.7rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-dd-trigger {
+  min-height: 1.75rem;
+  padding: 0.22rem 0.5rem 0.22rem 0.55rem;
+  font-size: 0.68rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-kb-add-btn,
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-send {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-send svg {
+  width: 17px;
+  height: 17px;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-note {
+  font-size: 0.68rem;
+  line-height: 1.35;
+  max-width: min(42rem, 100%);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* 下方建议块：类似 ChatGPT 起始建议 — 横条卡片 + 箭头 */

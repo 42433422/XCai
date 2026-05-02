@@ -1,16 +1,18 @@
-"""工作台 AI 编排：内存会话 + 异步执行 + GET 轮询状态。"""
+"""工作台 AI 编排：内存会话 + 磁盘持久化（多 worker 可读）+ 异步执行 + GET 轮询。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
+from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -26,20 +28,103 @@ from modstore_server.models import (
     WorkflowNode,
 )
 from modstore_server.mod_scaffold_runner import (
+    analyze_mod_employee_readiness,
+    attach_nl_workflow_to_employee_pack_dir,
+    create_mod_suite_workflows_async,
+    generate_mod_suite_blueprint_async,
+    import_mod_suite_repository,
     mod_compileall_warnings,
+    patch_workflow_graph_employee_nodes,
+    register_mod_employee_packs_async,
+    run_mod_suite_mod_sandbox,
+    run_mod_suite_workflow_sandboxes,
     run_employee_ai_scaffold_async,
     run_mod_ai_scaffold_async,
+    write_mod_suite_blueprint,
+    write_mod_suite_industry_card,
+    write_mod_suite_ui_shell,
+)
+from modstore_server.mod_employee_impl_scaffold import (
+    generate_mod_employee_impls_async,
 )
 from modstore_server.workflow_engine import run_workflow_sandbox
 from modstore_server.workflow_nl_graph import apply_nl_workflow_graph
 from modstore_server.workflow_sandbox_state import record_workflow_sandbox_run
 from modstore_server.workbench_script_runner import run_script_job
 from modstore_server.workbench_research import build_research_context
+from modman.manifest_util import read_manifest
+
+try:
+    import edge_tts as _edge_tts
+
+    _EDGE_TTS = _edge_tts
+except ImportError:  # pragma: no cover - 可选依赖
+    _EDGE_TTS = None
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench"])
 
+_LOG = logging.getLogger(__name__)
+
 WORKBENCH_SESSIONS: Dict[str, Dict[str, Any]] = {}
 _SESSION_LOCK = asyncio.Lock()
+
+
+def _workbench_session_store_dir() -> Path:
+    d = Path(__file__).resolve().parent / "data" / "workbench_sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _workbench_session_file(sid: str) -> Path:
+    # create_workbench_session 使用 hex[:24]，禁止路径穿越
+    s = str(sid or "").strip().lower()
+    if len(s) < 16 or len(s) > 32 or any(c not in "0123456789abcdef" for c in s):
+        raise ValueError("invalid session id")
+    return _workbench_session_store_dir() / f"{s}.json"
+
+
+def _persist_workbench_session_unlocked(sid: str) -> None:
+    """多 worker / 多进程时内存 dict 不共享，落盘以便 GET 轮询命中任意进程可读。"""
+    sess = WORKBENCH_SESSIONS.get(sid)
+    if not sess:
+        return
+    try:
+        path = _workbench_session_file(sid)
+    except ValueError:
+        return
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(sess, ensure_ascii=False, default=str), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def _load_workbench_session_unlocked(sid: str) -> Optional[Dict[str, Any]]:
+    try:
+        path = _workbench_session_file(sid)
+    except ValueError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _hydrate_workbench_session_unlocked(sid: str) -> None:
+    if sid in WORKBENCH_SESSIONS:
+        return
+    loaded = _load_workbench_session_unlocked(sid)
+    if loaded and str(loaded.get("id") or "") == str(sid):
+        WORKBENCH_SESSIONS[sid] = loaded
+
+
+async def _persist_workbench_session(sid: str) -> None:
+    async with _SESSION_LOCK:
+        _persist_workbench_session_unlocked(sid)
 
 
 class WorkbenchResearchBody(BaseModel):
@@ -52,7 +137,7 @@ class WorkbenchResearchBody(BaseModel):
 
 class WorkbenchSessionCreateBody(BaseModel):
     intent: Literal["mod", "employee", "workflow"]
-    brief: str = Field(..., min_length=3, max_length=8000)
+    brief: str = Field(..., min_length=3, max_length=30000)
     workflow_name: Optional[str] = Field(None, max_length=256)
     plan_notes: Optional[str] = Field("", max_length=4000)
     suggested_mod_id: Optional[str] = Field(None, max_length=64)
@@ -63,10 +148,40 @@ class WorkbenchSessionCreateBody(BaseModel):
         True,
         description="为 workflow intent 时是否用 LLM 生成节点与边（false 则仅创建空工作流）",
     )
+    generate_full_suite: bool = Field(
+        True,
+        description="为 mod intent 时是否生成 Mod + 员工 + 工作流绑定的一体化套件",
+    )
+    generate_frontend: bool = Field(
+        True,
+        description="为 mod intent 时是否生成定制 Vue 前端页面；false 时仅保留最小前端占位",
+    )
+    planning_messages: List[Dict[str, Any]] = Field(default_factory=list)
+    execution_checklist: List[str] = Field(default_factory=list)
+    source_documents: List[Dict[str, Any]] = Field(default_factory=list)
     execution_mode: Literal["workflow", "script"] = "workflow"
+    employee_target: Literal["pack_only", "pack_plus_workflow"] = Field(
+        "pack_only",
+        description="做员工：pack_only 仅生成包体；pack_plus_workflow 额外创建画布工作流并写回 manifest",
+    )
+    employee_workflow_name: Optional[str] = Field(
+        None,
+        max_length=256,
+        description="pack_plus_workflow 时画布工作流名称（可选）",
+    )
+    fhd_base_url: Optional[str] = Field(
+        None,
+        max_length=512,
+        description="可选 FHD 宿主根 URL，用于编排末尾 GET /api/mods/ 连通性探测",
+    )
 
 
-def _default_steps(intent: str, execution_mode: str = "workflow") -> List[Dict[str, Any]]:
+def _default_steps(
+    intent: str,
+    execution_mode: str = "workflow",
+    *,
+    employee_target: str = "pack_only",
+) -> List[Dict[str, Any]]:
     if execution_mode == "script":
         return [
             {"id": "spec", "label": "理解任务", "status": "pending", "message": None},
@@ -75,12 +190,46 @@ def _default_steps(intent: str, execution_mode: str = "workflow") -> List[Dict[s
             {"id": "run", "label": "运行并生成文件", "status": "pending", "message": None},
             {"id": "complete", "label": "完成", "status": "pending", "message": None},
         ]
+    if intent == "mod":
+        return [
+            {"id": "spec", "label": "理解需求", "status": "pending", "message": None},
+            {"id": "manifest", "label": "生成蓝图与 JSON", "status": "pending", "message": None},
+            {"id": "repo", "label": "新建 Mod 仓库", "status": "pending", "message": None},
+            {"id": "industry", "label": "生成行业卡片", "status": "pending", "message": None},
+            {"id": "employees", "label": "创建员工骨架", "status": "pending", "message": None},
+            {"id": "employee_impls", "label": "生成员工脚本", "status": "pending", "message": None},
+            {"id": "workflows", "label": "制作员工工作流", "status": "pending", "message": None},
+            {"id": "register_packs", "label": "登记员工包并修复图", "status": "pending", "message": None},
+            {"id": "api", "label": "生成/绑定 API 节点", "status": "pending", "message": None},
+            {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
+            {"id": "mod_sandbox", "label": "Mod 沙箱测试", "status": "pending", "message": None},
+            {"id": "complete", "label": "完成", "status": "pending", "message": None},
+        ]
     base = [
         {"id": "spec", "label": "理解需求", "status": "pending", "message": None},
         {"id": "generate", "label": "生成产物", "status": "pending", "message": None},
         {"id": "validate", "label": "服务端校验", "status": "pending", "message": None},
-        {"id": "complete", "label": "完成", "status": "pending", "message": None},
     ]
+    if intent == "employee":
+        if (employee_target or "").strip().lower() == "pack_plus_workflow":
+            base.extend(
+                [
+                    {"id": "workflow", "label": "生成画布工作流", "status": "pending", "message": None},
+                    {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
+                    {"id": "mod_sandbox", "label": "包体与 Python 校验", "status": "pending", "message": None},
+                    {"id": "host_check", "label": "宿主连通性检查", "status": "pending", "message": None},
+                ]
+            )
+        else:
+            base.extend(
+                [
+                    {"id": "workflow", "label": "画布工作流", "status": "pending", "message": None},
+                    {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
+                    {"id": "mod_sandbox", "label": "包体与 Python 校验", "status": "pending", "message": None},
+                    {"id": "host_check", "label": "宿主连通性检查", "status": "pending", "message": None},
+                ]
+            )
+    base.append({"id": "complete", "label": "完成", "status": "pending", "message": None})
     if intent == "workflow":
         base[1]["label"] = "创建工作流"
     return base
@@ -93,6 +242,7 @@ async def _set_step(
     message: Optional[str] = None,
 ) -> None:
     async with _SESSION_LOCK:
+        _hydrate_workbench_session_unlocked(sid)
         sess = WORKBENCH_SESSIONS.get(sid)
         if not sess:
             return
@@ -102,10 +252,12 @@ async def _set_step(
                 if message is not None:
                     s["message"] = message
                 break
+        _persist_workbench_session_unlocked(sid)
 
 
 async def _fail_session(sid: str, step_id: str, err: str) -> None:
     async with _SESSION_LOCK:
+        _hydrate_workbench_session_unlocked(sid)
         sess = WORKBENCH_SESSIONS.get(sid)
         if not sess:
             return
@@ -124,6 +276,7 @@ async def _fail_session(sid: str, step_id: str, err: str) -> None:
                     s["status"] = "error"
                     s["message"] = err
                     break
+        _persist_workbench_session_unlocked(sid)
 
 
 def _script_workflow_brief(payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -140,6 +293,21 @@ def _script_workflow_brief(payload: Dict[str, Any], files: List[Dict[str, Any]])
         "fallback": "",
         "trigger_type": "manual",
         "references": {"source": "workbench-script-session"},
+    }
+
+
+def _planning_record(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """把前端需求规划材料固定进服务端会话，方便审计与重新生成。"""
+    messages = payload.get("planning_messages")
+    checklist = payload.get("execution_checklist")
+    docs = payload.get("source_documents")
+    return {
+        "brief": (payload.get("brief") or "").strip(),
+        "plan_notes": (payload.get("plan_notes") or "").strip(),
+        "messages": messages if isinstance(messages, list) else [],
+        "execution_checklist": checklist if isinstance(checklist, list) else [],
+        "source_documents": docs if isinstance(docs, list) else [],
+        "created_at": datetime.utcnow().isoformat() + "Z",
     }
 
 
@@ -213,6 +381,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
     mdl = (payload.get("model") or "").strip() or None
     replace = bool(payload.get("replace", True))
     gen_wf_graph = bool(payload.get("generate_workflow_graph", True))
+    generate_frontend = bool(payload.get("generate_frontend", True))
 
     sf = get_session_factory()
     with sf() as db:
@@ -252,6 +421,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                     if sess:
                         sess["script_result"] = result
                         sess["artifact"] = {"execution_mode": "script", "outputs": []}
+                        _persist_workbench_session_unlocked(sid)
                 return
             await _set_step(sid, "validate", "done", "安全检查通过")
             await _set_step(sid, "run", "running", "正在执行脚本")
@@ -278,6 +448,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         if sess:
                             sess["script_result"] = result
                             sess["artifact"] = {"execution_mode": "script", "outputs": []}
+                            _persist_workbench_session_unlocked(sid)
                     return
                 await _set_step(sid, "run", "done", f"生成 {len(result.get('outputs') or [])} 个文件")
                 await _set_step(sid, "complete", "done")
@@ -301,43 +472,277 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                     }
                     if not result.get("ok"):
                         sess["error"] = (result.get("stderr") or "脚本执行失败")[:1000]
+                    _persist_workbench_session_unlocked(sid)
             return
 
         if intent == "mod":
-            await _set_step(sid, "generate", "running")
-            res = await run_mod_ai_scaffold_async(
+            if not bool(payload.get("generate_full_suite", True)):
+                await _set_step(sid, "manifest", "running", "正在生成最小 manifest")
+                res = await run_mod_ai_scaffold_async(
+                    db,
+                    user,
+                    brief=brief,
+                    suggested_id=payload.get("suggested_mod_id"),
+                    replace=replace,
+                    provider=prov,
+                    model=mdl,
+                )
+                if not res.get("ok"):
+                    await _fail_session(sid, "manifest", res.get("error") or "生成失败")
+                    return
+                await _set_step(sid, "manifest", "done", "manifest 已生成")
+                await _set_step(sid, "repo", "done", f"Mod 仓库：{res.get('id')}")
+                for skipped in ("industry", "employees", "workflows", "api", "workflow_sandbox"):
+                    await _set_step(sid, skipped, "done", "最小 Mod 模式跳过")
+                await _set_step(sid, "mod_sandbox", "running", "正在做轻量 Mod 校验")
+                mod_dir = Path(res["path"])
+                warns = mod_compileall_warnings(mod_dir)
+                await _set_step(sid, "mod_sandbox", "done", "；".join(warns) if warns else "轻量校验通过")
+                await _set_step(sid, "complete", "done")
+                async with _SESSION_LOCK:
+                    sess = WORKBENCH_SESSIONS.get(sid)
+                    if sess:
+                        sess["status"] = "done"
+                        sess["validate_warnings"] = warns
+                        sess["artifact"] = {
+                            "mod_id": res["id"],
+                            "workflow_results": [],
+                            "blueprint": None,
+                            "validation_summary": {"ok": not warns, "python_warnings": warns},
+                        }
+                        _persist_workbench_session_unlocked(sid)
+                return
+
+            await _set_step(sid, "manifest", "running", "正在生成结构化 Mod 蓝图 JSON")
+            gen = await generate_mod_suite_blueprint_async(
                 db,
                 user,
                 brief=brief,
                 suggested_id=payload.get("suggested_mod_id"),
-                replace=replace,
                 provider=prov,
                 model=mdl,
             )
-            if not res.get("ok"):
-                await _fail_session(sid, "generate", res.get("error") or "生成失败")
+            if not gen.get("ok"):
+                await _fail_session(sid, "manifest", gen.get("error") or "蓝图生成失败")
                 return
-            await _set_step(sid, "generate", "done")
+            parsed = gen["parsed"]
+            manifest = parsed["manifest"]
+            employees = parsed.get("employees") or []
+            blueprint = parsed.get("blueprint") or {}
+            repair_note = "；已自动修复 JSON" if gen.get("repair_used") else ""
+            await _set_step(
+                sid,
+                "manifest",
+                "done",
+                f"manifest.id={manifest.get('id')}，员工 {len(employees)} 名{repair_note}",
+            )
 
-            await _set_step(sid, "validate", "running")
-            mod_dir = Path(res["path"])
-            warns = mod_compileall_warnings(mod_dir)
-            msg = "；".join(warns) if warns else None
-            async with _SESSION_LOCK:
-                sess = WORKBENCH_SESSIONS.get(sid)
-                if sess:
-                    sess["validate_warnings"] = warns
-            await _set_step(sid, "validate", "done", msg)
+            await _set_step(sid, "repo", "running", "正在新建或覆盖 Mod 仓库")
+            imported = import_mod_suite_repository(
+                db,
+                user,
+                parsed=parsed,
+                replace=replace,
+                generate_frontend=generate_frontend,
+            )
+            if not imported.get("ok"):
+                await _fail_session(sid, "repo", imported.get("error") or "Mod 仓库创建失败")
+                return
+            mod_dir = Path(imported["path"])
+            await _set_step(sid, "repo", "done", f"已写入 {imported.get('id')}")
+
+            await _set_step(sid, "industry", "running", "正在写入行业卡片")
+            try:
+                industry_card = write_mod_suite_industry_card(mod_dir, blueprint)
+                ui_shell = write_mod_suite_ui_shell(mod_dir, blueprint)
+            except Exception as e:  # noqa: BLE001
+                await _fail_session(sid, "industry", f"行业/UI 配置生成失败: {e}")
+                return
+            await _set_step(
+                sid,
+                "industry",
+                "done",
+                f"{industry_card.get('name') or '通用'}；侧栏 {len(ui_shell.get('sidebar_menu') or [])} 项",
+            )
+
+            await _set_step(sid, "employees", "running", f"正在创建 {len(employees)} 名员工骨架")
+            await _set_step(sid, "employees", "done", f"已写入 workflow_employees：{len(employees)} 名")
+
+            # 新步骤：为每员工生成真实 Python 实现（backend/employees/<stem>.py）
+            await _set_step(sid, "employee_impls", "running", "开始为每员工生成可执行脚本…")
+
+            async def _emp_impl_step_msg(text: str) -> None:
+                await _set_step(sid, "employee_impls", "running", text)
+
+            try:
+                impl_result = await generate_mod_employee_impls_async(
+                    db,
+                    user,
+                    mod_dir=mod_dir,
+                    employees=employees,
+                    mod_id=str(manifest.get("id") or mod_dir.name),
+                    mod_name=str(manifest.get("name") or manifest.get("id") or mod_dir.name),
+                    mod_brief=brief,
+                    industry_card=industry_card,
+                    provider=gen.get("provider"),
+                    model=gen.get("model"),
+                    status_hook=_emp_impl_step_msg,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _LOG.exception("workbench mod employee_impls failed session=%s", sid)
+                await _fail_session(
+                    sid,
+                    "employee_impls",
+                    f"生成员工脚本异常（可查看服务端日志）: {exc!s}"[:1000],
+                )
+                return
+            impl_errs = impl_result.get("errors") or []
+            impl_done_msg = (
+                f"已生成 {len(impl_result.get('generated') or [])} 份员工脚本"
+                + (f"，{len(impl_errs)} 份走兜底实现" if impl_errs else "")
+            )
+            await _set_step(sid, "employee_impls", "done", impl_done_msg)
+
+            await _set_step(sid, "workflows", "running", "开始为员工生成工作流图…")
+
+            async def _workflows_step_msg(text: str) -> None:
+                await _set_step(sid, "workflows", "running", text)
+
+            wf = await create_mod_suite_workflows_async(
+                db,
+                user,
+                mod_dir=mod_dir,
+                employees=employees,
+                brief=brief,
+                provider=gen.get("provider"),
+                model=gen.get("model"),
+                step_message_hook=_workflows_step_msg,
+            )
+            workflow_results = wf.get("workflow_results") or []
+            failed_workflows = [x for x in workflow_results if isinstance(x, dict) and not x.get("ok", True)]
+            await _set_step(
+                sid,
+                "workflows",
+                "done",
+                f"已生成 {len(workflow_results)} 条工作流，失败 {len(failed_workflows)} 条",
+            )
+
+            # 新步骤：自动修复画布 employee 节点 id 对齐 + 五维审核登记 Catalog
+            await _set_step(sid, "register_packs", "running", "修复画布员工节点对齐…")
+            graph_patch_result = patch_workflow_graph_employee_nodes(
+                db, user, mod_dir=mod_dir, workflow_results=workflow_results
+            )
+
+            async def _register_step_msg(text: str) -> None:
+                await _set_step(sid, "register_packs", "running", text)
+
+            register_result = await register_mod_employee_packs_async(
+                db,
+                user,
+                mod_dir=mod_dir,
+                workflow_results=workflow_results,
+                status_hook=_register_step_msg,
+                industry=str((industry_card or {}).get("name") or "通用"),
+            )
+            reg_errs = register_result.get("errors") or []
+            patches = graph_patch_result.get("patches") or []
+            patch_updates = sum(1 for p in patches if p.get("action") in ("update", "insert"))
+            reg_done_msg = (
+                f"画布修复 {patch_updates} 处；已登记 {len(register_result.get('registered') or [])} 个员工包"
+                + (f"，{len(reg_errs)} 个失败" if reg_errs else "")
+            )
+            await _set_step(sid, "register_packs", "done", reg_done_msg)
+
+            await _set_step(sid, "api", "running", "正在汇总 OpenAPI 节点")
+            api_summary = {
+                "nodes": wf.get("api_nodes") or [],
+                "warnings": wf.get("api_warnings") or [],
+            }
+            api_msg = (
+                f"发现 {len(api_summary['nodes'])} 个 API 节点"
+                + (f"，{len(api_summary['warnings'])} 个待配置" if api_summary["warnings"] else "")
+            )
+            await _set_step(sid, "api", "done", api_msg)
+
+            await _set_step(sid, "workflow_sandbox", "running", "正在 mock 执行员工工作流")
+            workflow_sandbox = run_mod_suite_workflow_sandboxes(db, user, workflow_results)
+            await _set_step(
+                sid,
+                "workflow_sandbox",
+                "done",
+                "结构沙盒（Mock 员工）通过"
+                if workflow_sandbox.get("ok")
+                else "结构沙盒存在警告，请进入画布检查",
+            )
+
+            employee_readiness = analyze_mod_employee_readiness(db, user, mod_dir)
+            blueprint["employee_impl_result"] = impl_result
+            blueprint["graph_patch_result"] = graph_patch_result
+            blueprint["pack_register_result"] = register_result
+            write_mod_suite_blueprint(
+                mod_dir,
+                blueprint,
+                workflow_results,
+                industry_card=industry_card,
+                ui_shell=ui_shell,
+                api_summary=api_summary,
+                workflow_sandbox=workflow_sandbox,
+                employee_readiness=employee_readiness,
+            )
+
+            await _set_step(sid, "mod_sandbox", "running", "正在校验 Mod manifest、蓝图与路由骨架")
+            mod_sandbox = run_mod_suite_mod_sandbox(mod_dir, workflow_results)
+            validation_summary = {
+                "mod_sandbox": mod_sandbox,
+                "api_warnings": api_summary["warnings"],
+                "workflow_warnings": [
+                    str(item.get("error") or item.get("graph", {}).get("error") or "")
+                    for item in workflow_results
+                    if isinstance(item, dict) and not item.get("ok", True)
+                ],
+                "repair_suggestions": [],
+                "employee_readiness": employee_readiness,
+                "ok": bool(mod_sandbox.get("ok")) and not failed_workflows and bool(employee_readiness.get("ok")),
+            }
+            await _set_step(
+                sid,
+                "mod_sandbox",
+                "done",
+                "Mod 沙箱通过；员工真实执行仍需登记与非 Mock 验证"
+                if mod_sandbox.get("ok") and employee_readiness.get("ok")
+                else "Mod 沙箱或员工可用性存在缺口，已写入报告",
+            )
 
             await _set_step(sid, "complete", "done")
             async with _SESSION_LOCK:
                 sess = WORKBENCH_SESSIONS.get(sid)
                 if sess:
                     sess["status"] = "done"
-                    sess["artifact"] = {"mod_id": res["id"]}
+                    sess["validate_warnings"] = api_summary["warnings"] + validation_summary["workflow_warnings"]
+                    sess["sandbox_report"] = {"workflow": workflow_sandbox, "mod": mod_sandbox}
+                    sess["artifact"] = {
+                        "mod_id": imported["id"],
+                        "workflow_results": workflow_results,
+                        "blueprint": blueprint,
+                        "industry_card": industry_card,
+                        "ui_shell": ui_shell,
+                        "api_summary": api_summary,
+                        "workflow_sandbox": workflow_sandbox,
+                        "employee_readiness": employee_readiness,
+                        "mod_sandbox": mod_sandbox,
+                        "validation_summary": validation_summary,
+                        "employee_impls": impl_result,
+                        "graph_patch": graph_patch_result,
+                        "pack_register": register_result,
+                    }
+                    _persist_workbench_session_unlocked(sid)
             return
 
         if intent == "employee":
+            et = str(payload.get("employee_target") or "pack_only").strip().lower()
+            wf_name = (payload.get("employee_workflow_name") or "").strip() or None
+            fhd_base = (payload.get("fhd_base_url") or "").strip() or None
+
             await _set_step(sid, "generate", "running")
             res = await run_employee_ai_scaffold_async(
                 db,
@@ -357,7 +762,124 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 sess = WORKBENCH_SESSIONS.get(sid)
                 if sess:
                     sess["validate_warnings"] = []
+                    _persist_workbench_session_unlocked(sid)
             await _set_step(sid, "validate", "done", "manifest 已在导入时校验")
+
+            pack_dir = Path(str(res.get("path") or ""))
+            wf_attach: Dict[str, Any] = {}
+            await _set_step(sid, "workflow", "running")
+            if et == "pack_plus_workflow":
+                wf_attach = await attach_nl_workflow_to_employee_pack_dir(
+                    db,
+                    user,
+                    pack_dir=pack_dir,
+                    brief=brief,
+                    workflow_name=wf_name,
+                    provider=prov,
+                    model=mdl,
+                )
+                wmsg = (
+                    f"已创建工作流 id={wf_attach.get('workflow_id')}；NL 生图"
+                    f"{'成功' if (wf_attach.get('nl') or {}).get('ok') else '有提示'}"
+                )
+                await _set_step(sid, "workflow", "done", wmsg[:480])
+            else:
+                await _set_step(
+                    sid,
+                    "workflow",
+                    "done",
+                    "已跳过：当前为「仅员工包」模式；若需画布请选 pack_plus_workflow 并重新编排",
+                )
+
+            await _set_step(sid, "workflow_sandbox", "running", "工作流 Mock 沙箱")
+            workflow_sandbox: Dict[str, Any]
+            wid = wf_attach.get("workflow_id") if isinstance(wf_attach, dict) else None
+            if et == "pack_plus_workflow" and wid:
+                report = run_workflow_sandbox(
+                    int(wid),
+                    {},
+                    mock_employees=True,
+                    validate_only=True,
+                    user_id=user.id,
+                )
+                record_workflow_sandbox_run(
+                    db,
+                    workflow_id=int(wid),
+                    user_id=user.id,
+                    report=report,
+                    validate_only=True,
+                    mock_employees=True,
+                )
+                workflow_sandbox = {
+                    "ok": bool(report.get("ok")),
+                    "skipped": False,
+                    "workflow_id": int(wid),
+                    "reports": [report],
+                }
+                await _set_step(
+                    sid,
+                    "workflow_sandbox",
+                    "done",
+                    "结构沙盒（validate_only）完成" if report.get("ok") else "沙箱有提示，请进画布查看",
+                )
+            else:
+                wf_skip_msg = (
+                    "已跳过 Mock：未创建画布工作流或模式为仅员工包。"
+                    "完整双沙箱见「做 Mod」或 pack_plus_workflow 模式。"
+                )
+                workflow_sandbox = {"ok": True, "skipped": True, "reason": wf_skip_msg, "reports": []}
+                await _set_step(sid, "workflow_sandbox", "done", wf_skip_msg[:520])
+
+            await _set_step(sid, "mod_sandbox", "running", "正在校验包体（manifest / Python）")
+            mod_checks: List[Dict[str, Any]] = []
+            if pack_dir.is_dir():
+                _mf, mf_err = read_manifest(pack_dir)
+                mod_checks.append(
+                    {"id": "manifest", "ok": mf_err is None, "message": mf_err or "manifest 可读取"},
+                )
+                py_warns = mod_compileall_warnings(pack_dir)
+                mod_checks.append(
+                    {
+                        "id": "python_compile",
+                        "ok": not py_warns,
+                        "message": "；".join(py_warns) if py_warns else "未发现需编译的 Python 或检查通过",
+                    },
+                )
+            else:
+                mod_checks.append({"id": "manifest", "ok": False, "message": f"包目录无效: {pack_dir}"})
+            emp_mod_sandbox = {
+                "ok": all(c.get("ok") for c in mod_checks) if mod_checks else False,
+                "checks": mod_checks,
+                "note": "员工包轻量校验（含 backend/blueprints 运行时）",
+            }
+            mod_sb_msg = "包体轻量校验通过" if emp_mod_sandbox["ok"] else "包体校验有提示，见会话 artifact.mod_sandbox"
+            await _set_step(sid, "mod_sandbox", "done", mod_sb_msg[:480])
+
+            host_probe: Dict[str, Any] = {"skipped": True}
+            await _set_step(sid, "host_check", "running", "探测宿主 /api/mods/")
+            if fhd_base:
+                try:
+                    import httpx  # type: ignore
+
+                    async with httpx.AsyncClient(timeout=8.0) as client:
+                        r = await client.get(f"{fhd_base.rstrip('/')}/api/mods/")
+                    host_probe = {
+                        "skipped": False,
+                        "ok": r.status_code < 500,
+                        "status_code": r.status_code,
+                        "url": f"{fhd_base.rstrip('/')}/api/mods/",
+                    }
+                    await _set_step(
+                        sid,
+                        "host_check",
+                        "done",
+                        f"HTTP {r.status_code}" if host_probe.get("ok") else f"HTTP {r.status_code}（异常）",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    host_probe = {"skipped": False, "ok": False, "error": str(e)[:300]}
+                    await _set_step(sid, "host_check", "done", f"探测失败: {e!s}"[:300])
+            else:
+                await _set_step(sid, "host_check", "done", "未配置 fhd_base_url，已跳过")
 
             await _set_step(sid, "complete", "done")
             async with _SESSION_LOCK:
@@ -365,12 +887,26 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 if sess:
                     sess["status"] = "done"
                     emp = (res.get("manifest") or {}).get("employee") or {}
+                    sess["sandbox_report"] = {"workflow": workflow_sandbox, "mod": emp_mod_sandbox}
                     sess["artifact"] = {
                         "pack_id": res["id"],
-                        "employee_id": emp.get("id") or res["id"],
+                        "employee_id": res["id"],
+                        "manifest_employee_id": emp.get("id") or res["id"],
                         "name": (res.get("manifest") or {}).get("name"),
                         "description": (res.get("manifest") or {}).get("description"),
+                        "package": res.get("package") or {},
+                        "workflow_sandbox": workflow_sandbox,
+                        "mod_sandbox": emp_mod_sandbox,
+                        "employee_target": et,
+                        "workflow_attachment": wf_attach,
+                        "host_probe": host_probe,
+                        "validation_summary": {
+                            "ok": bool(emp_mod_sandbox.get("ok")),
+                            "mod_sandbox": emp_mod_sandbox,
+                            "workflow_skipped": not bool(wid),
+                        },
                     }
+                    _persist_workbench_session_unlocked(sid)
             return
 
         if intent == "workflow":
@@ -404,6 +940,10 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 "llm_warnings": [],
             }
             if gen_wf_graph:
+
+                async def _workflow_graph_msg(text: str) -> None:
+                    await _set_step(sid, "generate", "running", text)
+
                 nl = await apply_nl_workflow_graph(
                     db,
                     user,
@@ -411,6 +951,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                     brief=full_desc,
                     provider=prov,
                     model=mdl,
+                    status_hook=_workflow_graph_msg,
                 )
                 if not nl.get("ok"):
                     try:
@@ -433,6 +974,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         sess = WORKBENCH_SESSIONS.get(sid)
                         if sess:
                             sess["artifact"] = None
+                            _persist_workbench_session_unlocked(sid)
                     return
                 nl_meta.update(
                     {
@@ -457,6 +999,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                     if sess:
                         sess["sandbox_report"] = None
                         sess["validate_warnings"] = []
+                        _persist_workbench_session_unlocked(sid)
                 await _set_step(sid, "validate", "done", detail)
             else:
                 report = run_workflow_sandbox(
@@ -488,6 +1031,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                     if sess:
                         sess["sandbox_report"] = report
                         sess["validate_warnings"] = warns
+                        _persist_workbench_session_unlocked(sid)
                 if not errs:
                     run_report = run_workflow_sandbox(
                         wid,
@@ -518,6 +1062,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         "workflow_name": name,
                         **nl_meta,
                     }
+                    _persist_workbench_session_unlocked(sid)
             return
 
         await _fail_session(sid, "spec", f"未知 intent: {intent}")
@@ -559,13 +1104,19 @@ async def create_workbench_session(
             "user_id": user.id,
             "intent": body.intent,
             "status": "running",
-            "steps": _default_steps(body.intent, body.execution_mode),
+            "steps": _default_steps(
+                body.intent,
+                body.execution_mode,
+                employee_target=str(getattr(body, "employee_target", None) or "pack_only"),
+            ),
+            "planning_record": _planning_record(payload),
             "artifact": None,
             "error": None,
             "validate_warnings": None,
             "sandbox_report": None,
             "script_result": None,
         }
+        _persist_workbench_session_unlocked(sid)
     asyncio.create_task(_run_pipeline(sid, user.id, payload))
     return {"session_id": sid, "status": "running"}
 
@@ -609,12 +1160,14 @@ async def create_workbench_script_session(
             "intent": "workflow",
             "status": "running",
             "steps": _default_steps("workflow", "script"),
+            "planning_record": _planning_record(payload),
             "artifact": None,
             "error": None,
             "validate_warnings": None,
             "sandbox_report": None,
             "script_result": None,
         }
+        _persist_workbench_session_unlocked(sid)
     asyncio.create_task(_run_pipeline(sid, user.id, payload))
     return {"session_id": sid, "status": "running"}
 
@@ -625,6 +1178,7 @@ async def get_workbench_session(
     user: User = Depends(_get_current_user),
 ):
     async with _SESSION_LOCK:
+        _hydrate_workbench_session_unlocked(session_id)
         sess = WORKBENCH_SESSIONS.get(session_id)
     if not sess:
         raise HTTPException(404, "会话不存在或已过期")
@@ -636,6 +1190,7 @@ async def get_workbench_session(
         "status": sess["status"],
         "steps": sess["steps"],
         "artifact": sess.get("artifact"),
+        "planning_record": sess.get("planning_record"),
         "error": sess.get("error"),
         "validate_warnings": sess.get("validate_warnings"),
         "script_result": {
@@ -663,6 +1218,7 @@ async def download_workbench_session_file(
     user: User = Depends(_get_current_user),
 ):
     async with _SESSION_LOCK:
+        _hydrate_workbench_session_unlocked(session_id)
         sess = WORKBENCH_SESSIONS.get(session_id)
     if not sess:
         raise HTTPException(404, "会话不存在或已过期")
@@ -675,3 +1231,44 @@ async def download_workbench_session_file(
             if path.is_file():
                 return FileResponse(path, filename=filename)
     raise HTTPException(404, "文件不存在")
+
+
+class WorkbenchEdgeTtsBody(BaseModel):
+    """与 Edge 浏览器「大声朗读」相同的在线神经语音（经 edge-tts 访问微软语音服务）。"""
+
+    text: str = Field(..., min_length=1, max_length=5000)
+    voice: str = Field("zh-CN-XiaoxiaoNeural", max_length=120)
+    rate: float = Field(1.0, ge=0.6, le=1.6, description="相对语速，约映射到 Edge 的 rate 百分比")
+
+
+@router.post("/tts/edge", summary="微软在线神经 TTS（edge-tts，返回 MP3）")
+async def workbench_edge_tts(
+    body: WorkbenchEdgeTtsBody,
+    _user: User = Depends(_get_current_user),
+):
+    if _EDGE_TTS is None:
+        raise HTTPException(
+            503,
+            "服务端未安装 edge-tts。请在部署环境执行: pip install 'modstore[web]' 或 pip install edge-tts",
+        )
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "text 不能为空")
+    voice = (body.voice or "zh-CN-XiaoxiaoNeural").strip()
+    pct = int(round((float(body.rate) - 1.0) * 80))
+    pct = max(-50, min(80, pct))
+    rate_str = f"{pct:+d}%"
+    try:
+        communicate = _EDGE_TTS.Communicate(text, voice=voice, rate=rate_str)
+        buf = BytesIO()
+        async for chunk in communicate.stream():
+            if chunk.get("type") == "audio" and chunk.get("data"):
+                buf.write(chunk["data"])
+        audio = buf.getvalue()
+        if not audio:
+            raise HTTPException(502, "TTS 未返回音频数据")
+        return Response(content=audio, media_type="audio/mpeg")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"TTS 合成失败: {exc}") from exc

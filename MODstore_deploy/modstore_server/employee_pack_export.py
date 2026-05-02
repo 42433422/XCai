@@ -1,13 +1,38 @@
-"""从已入库 Mod + workflow_employees 条目生成 employee_pack manifest 与最小 zip。"""
+"""从已入库 Mod + workflow_employees 条目生成 employee_pack manifest 与最小 zip。
+
+manifest 会带上 ``employee_config_v2``，让运行时（``execute_employee_task``）
+能走声明式 perception/cognition/actions，即使没有独立 Python 脚本也能响应。
+若 Mod 目录里已有 ``backend/employees/<stem>.py``，会把该源码一起塞进 zip
+``<pack_id>/source/employee.py`` 方便下载查看（不作为运行时入口）。
+"""
 
 from __future__ import annotations
 
+import io
+import json
 import re
+import zipfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from modman.manifest_util import validate_manifest_dict
-from modstore_server.employee_ai_scaffold import build_employee_pack_zip
+from modstore_server.employee_ai_scaffold import (
+    _default_employee_config_v2,
+    build_employee_pack_zip,
+)
+from modstore_server.employee_pack_blueprints_template import (
+    render_employee_pack_blueprints_py,
+    render_employee_pack_employee_py,
+)
+from modstore_server.mod_employee_impl_scaffold import sanitize_employee_stem
 from modstore_server.mod_ai_scaffold import normalize_mod_id
+
+
+def _sanitize_employee_stem(emp_id: str) -> str:
+    s = re.sub(r"[^a-z0-9_]", "_", (emp_id or "").strip().lower())
+    if s and s[0].isdigit():
+        s = "e_" + s
+    return s or "emp"
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -87,10 +112,77 @@ def build_employee_pack_manifest_from_workflow(
             "capabilities": caps,
         },
     }
+    manifest["employee_config_v2"] = _default_employee_config_v2(
+        pid=pack_id,
+        name=name,
+        description=desc,
+        employee_id=emp_id,
+        label=label,
+        capabilities=caps,
+    )
+    from modstore_server.xcagi_host_profile import merge_workflow_employee_for_manifest
+
+    manifest["workflow_employees"] = [
+        merge_workflow_employee_for_manifest(
+            employee_id=emp_id,
+            label=label,
+            panel_summary=desc,
+            host_profile=None,
+        )
+    ]
+    manifest["backend"] = {"entry": "blueprints", "init": "mod_init"}
     ve = validate_manifest_dict(manifest)
     if ve:
         return None, "manifest 校验: " + "; ".join(ve)
     return manifest, ""
+
+
+def _read_employee_source(mod_dir: Optional[Path], emp_id: str) -> Optional[str]:
+    if not mod_dir:
+        return None
+    try:
+        stem = _sanitize_employee_stem(emp_id)
+        p = mod_dir / "backend" / "employees" / f"{stem}.py"
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return None
+
+
+def _build_employee_pack_zip_with_source(
+    pack_id: str,
+    manifest: Dict[str, Any],
+    source_py: Optional[str],
+) -> bytes:
+    """manifest.json + 与 ``build_employee_pack_zip`` 一致的后端运行时；可选附 ``source/employee.py`` 副本。"""
+    buf = io.BytesIO()
+    body = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    emp = manifest.get("employee") if isinstance(manifest.get("employee"), dict) else {}
+    eid = str(emp.get("id") or pack_id).strip() or pack_id
+    stem = sanitize_employee_stem(eid)
+    label = str(emp.get("label") or eid).strip()
+    bp = render_employee_pack_blueprints_py(pack_id=pack_id, employee_id=eid, stem=stem, label=label)
+    emp_py = (
+        source_py.strip() + "\n"
+        if source_py and source_py.strip()
+        else render_employee_pack_employee_py(employee_id=eid, stem=stem, label=label)
+    )
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{pack_id}/manifest.json", body)
+        zf.writestr(f"{pack_id}/backend/blueprints.py", bp)
+        zf.writestr(f"{pack_id}/backend/employees/{stem}.py", emp_py)
+        zf.writestr(
+            f"{pack_id}/backend/employees/__init__.py",
+            '"""Generated employee implementations (employee_pack)."""\n',
+        )
+        if source_py:
+            zf.writestr(f"{pack_id}/source/employee.py", source_py)
+            zf.writestr(
+                f"{pack_id}/source/README.md",
+                "# 员工源码\n\n本文件仅为查看参考。宿主通过 `backend/employees/<stem>.py` 执行。\n",
+            )
+    return buf.getvalue()
 
 
 def build_employee_pack_zip_from_workflow(
@@ -99,13 +191,23 @@ def build_employee_pack_zip_from_workflow(
     wf_entry: Dict[str, Any],
     *,
     workflow_index: int = 0,
+    mod_dir: Optional[Path] = None,
 ) -> Tuple[Optional[bytes], str, Optional[str]]:
-    """返回 zip 字节、错误信息、选用的 pack_id。"""
+    """返回 zip 字节、错误信息、选用的 pack_id。
+
+    若传入 ``mod_dir``，会尝试读取 Mod 目录下的员工 Python 源码写入 zip 方便查看；
+    运行时入口仍是 Mod 自己的 FastAPI 路由。
+    """
     manifest, err = build_employee_pack_manifest_from_workflow(
         mod_id, mod_manifest, wf_entry, workflow_index=workflow_index
     )
     if err or not manifest:
         return None, err or "无法生成 manifest", None
     pid = str(manifest.get("id") or "").strip()
-    raw = build_employee_pack_zip(pid, manifest)
+    emp_id = str((manifest.get("employee") or {}).get("id") or "").strip()
+    src = _read_employee_source(mod_dir, emp_id) if mod_dir else None
+    if src:
+        raw = _build_employee_pack_zip_with_source(pid, manifest, src)
+    else:
+        raw = build_employee_pack_zip(pid, manifest)
     return raw, "", pid
