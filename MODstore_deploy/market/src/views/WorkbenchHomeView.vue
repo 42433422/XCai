@@ -1396,6 +1396,7 @@
 
             <section class="wb-gear-scene wb-voice-scene" aria-label="三档语音规划">
               <div class="wb-voice-orb-wrap">
+                <OrbitRings :mode="voiceState" />
                 <button
                   type="button"
                   class="wb-voice-orb"
@@ -1542,6 +1543,7 @@ import MessageBody from '../components/workbench/MessageBody.vue'
 import MessageActions from '../components/workbench/MessageActions.vue'
 import VoicePhoneModal from '../components/workbench/VoicePhoneModal.vue'
 import JarvisCore from '../components/workbench/JarvisCore.vue'
+import OrbitRings from '../components/workbench/OrbitRings.vue'
 import PersonalSettings from '../components/workbench/PersonalSettings.vue'
 import AgentMarket from '../components/workbench/AgentMarket.vue'
 import MediaGenPanel from '../components/workbench/MediaGenPanel.vue'
@@ -7310,10 +7312,13 @@ function onComposerKeydown(e) {
   place-items: center;
   width: min(18rem, 48vw);
   aspect-ratio: 1;
+  overflow: visible;
+  isolation: isolate;
 }
 
 .wb-voice-orb {
   position: relative;
+  z-index: 1;
   width: 72%;
   aspect-ratio: 1;
   border: none;
