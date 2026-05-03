@@ -12,6 +12,7 @@ web = [
     "python-multipart>=0.0.6",
     "httpx>=0.27",
     "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
     "PyJWT>=2.8",
     "passlib[bcrypt]>=1.7",
     "python-dotenv>=1.0",
@@ -42,6 +43,7 @@ dev = [
   "black>=24.3",
   "isort>=5.13",
   "jsonschema>=4.21",
+  "mypy>=1.8",
 ]
 
 [project.scripts]
@@ -79,4 +81,36 @@ branch = true
 omit = ["*/tests/*"]
 
 [tool.coverage.report]
+# 适用于 ``coverage run`` + ``coverage report``；全量 tree 当前约 40%+，抬升需补测后再调。
 fail_under = 80
+
+[tool.mypy]
+python_version = "3.10"
+explicit_package_bases = true
+mypy_path = ["."]
+follow_imports = "skip"
+# 分阶段扩大 ``files`` / ``packages``；先保证安全栈与注册入口可类型检查。
+files = [
+    "modstore_server/middleware_registry.py",
+    "modstore_server/api/rate_limiter.py",
+    "modstore_server/api/csrf.py",
+    "modstore_server/api/xss_sanitizer.py",
+]
+warn_unused_configs = true
+warn_return_any = true
+no_implicit_optional = true
+show_error_codes = true
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = [
+    "chromadb.*",
+    "redis.*",
+    "edge_tts.*",
+    "dashscope.*",
+    "pptx.*",
+    "fitz.*",
+    "docx.*",
+    "openpyxl.*",
+]
+ignore_missing_imports = true

@@ -6,13 +6,14 @@
         <input
           v-model="hostUrl"
           class="toolbar-input"
-          placeholder="http://127.0.0.1:8000"
-          @keydown.enter="connect"
+          placeholder="留空亦可，将自动探测"
+          @keydown.enter="discoverAndConnect"
         />
-        <button class="btn btn-connect" :disabled="connecting" @click="connect">
-          {{ connecting ? '连接中...' : connected ? '已连接' : '连接' }}
+        <button class="btn btn-connect" :disabled="connecting" @click="discoverAndConnect">
+          {{ connecting ? '探测中…' : '重新探测' }}
         </button>
         <span v-if="statusText" class="status-chip" :class="statusClass">{{ statusText }}</span>
+        <span v-if="connectError" class="status-chip status-err" role="alert">{{ connectError }}</span>
       </div>
       <div class="toolbar-right">
         <button class="btn btn-action" :disabled="!connected || pushing" @click="pushAndTest">
@@ -38,8 +39,8 @@
           <line x1="12" y1="17" x2="12" y2="21" />
         </svg>
       </div>
-      <p class="placeholder-text">输入 FHD/XCAGI 宿主地址并点击「连接」</p>
-      <p class="placeholder-hint">宿主需要处于运行状态，如 http://127.0.0.1:8000</p>
+      <p class="placeholder-text">正在自动探测本机与局域网上的 XCAGI / FHD API</p>
+      <p class="placeholder-hint">默认尝试 5000 / 8000 端口；也可在上方填写 API 根地址后按回车或点「重新探测」</p>
     </div>
   </div>
 </template>
@@ -48,19 +49,27 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { sandboxApi } from '../application/sandboxApi'
+import { ApiError } from '../infrastructure/http/client'
 
 const route = useRoute()
 
-const hostUrl = ref('http://127.0.0.1:8000')
+/** 上次成功连上的宿主 API 根，供下次优先探测 */
+const SANDBOX_HOST_STORAGE = 'modstore_sandbox_last_host'
+
+const hostUrl = ref('')
 const connected = ref(false)
 const connecting = ref(false)
+const connectError = ref('')
+const probeProgress = ref('')
 const pushing = ref(false)
 const hostInfo = ref(null)
 const iframeRef = ref(null)
 
 const statusText = computed(() => {
   if (connected.value) return '已连接'
-  if (connecting.value) return '连接中'
+  if (connecting.value) {
+    return probeProgress.value ? `探测中 (${probeProgress.value})` : '探测中'
+  }
   return ''
 })
 
@@ -74,22 +83,123 @@ const iframeSrc = computed(() => {
   return `${base}/?sandbox=1`
 })
 
-async function connect() {
+function formatConnectFailure(e) {
+  if (e instanceof ApiError) return e.message || `请求失败（${e.status}）`
+  if (e && typeof e === 'object' && 'message' in e && typeof e.message === 'string') return e.message
+  return String(e)
+}
+
+/** 规范为「协议 + host」，供 /api/health 探测 */
+function normalizeHostOrigin(raw) {
+  const t = String(raw || '').trim()
+  if (!t) return ''
+  try {
+    const withProto = /^\w+:\/\//.test(t) ? t : `http://${t}`
+    const u = new URL(withProto)
+    return `${u.protocol}//${u.host}`
+  } catch {
+    return t.replace(/\/+$/, '')
+  }
+}
+
+/** 合并去重后的探测顺序：URL 参数 → 输入框 → 上次成功 → 当前页同主机多端口 → 本机常见端口 */
+function buildDiscoveryCandidates() {
+  const seen = new Set()
+  const out = []
+  const add = (raw) => {
+    const n = normalizeHostOrigin(raw)
+    if (!n || seen.has(n)) return
+    seen.add(n)
+    out.push(n)
+  }
+
+  const q = route.query.host
+  if (q) add(String(q))
+
+  add(hostUrl.value)
+
+  try {
+    const s = localStorage.getItem(SANDBOX_HOST_STORAGE)
+    if (s) add(s)
+  } catch (_) {
+    /* ignore */
+  }
+
+  try {
+    const { hostname } = window.location
+    if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      add(`http://${hostname}:5000`)
+      add(`http://${hostname}:8000`)
+      const proto = window.location.protocol || 'http:'
+      if (proto === 'https:') {
+        add(`https://${hostname}:5000`)
+        add(`https://${hostname}:8000`)
+      }
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
+  ;[
+    'http://127.0.0.1:5000',
+    'http://localhost:5000',
+    'http://127.0.0.1:8000',
+    'http://localhost:8000',
+  ].forEach(add)
+
+  return out
+}
+
+/** 依次尝试候选地址，成功则写入输入框并记住 */
+async function discoverAndConnect() {
   if (connecting.value) return
   connecting.value = true
   connected.value = false
   hostInfo.value = null
-  try {
-    const result = await sandboxApi.connectHost(hostUrl.value)
-    if (result.ok) {
-      connected.value = true
-      hostInfo.value = result
-    }
-  } catch (e) {
-    console.warn('[Sandbox] 连接失败:', e)
-  } finally {
+  connectError.value = ''
+  probeProgress.value = ''
+
+  const list = buildDiscoveryCandidates()
+  if (!list.length) {
+    connectError.value = '请填写宿主 API 根地址（例如 http://127.0.0.1:5000）'
     connecting.value = false
+    return
   }
+
+  let lastApiError = null
+
+  for (let i = 0; i < list.length; i++) {
+    const url = list[i]
+    hostUrl.value = url
+    probeProgress.value = `${i + 1}/${list.length}`
+    try {
+      const result = await sandboxApi.connectHost(url)
+      if (result && result.ok === true) {
+        connected.value = true
+        hostInfo.value = result
+        try {
+          localStorage.setItem(SANDBOX_HOST_STORAGE, url)
+        } catch (_) {
+          /* ignore */
+        }
+        probeProgress.value = ''
+        connecting.value = false
+        return
+      }
+    } catch (e) {
+      lastApiError = e
+    }
+  }
+
+  probeProgress.value = ''
+  if (lastApiError) {
+    connectError.value = formatConnectFailure(lastApiError)
+  } else {
+    connectError.value =
+      '未发现可连宿主（已试常用地址与当前页同机）。请确认 XCAGI 已启动后点「重新探测」，或手动填写 API 根地址。'
+  }
+  console.warn('[Sandbox] 探测结束，未找到可用宿主')
+  connecting.value = false
 }
 
 async function pushAndTest() {
@@ -125,10 +235,6 @@ function openFullscreen() {
 let messageHandler = null
 
 onMounted(() => {
-  const queryHost = route.query.host
-  if (queryHost) {
-    hostUrl.value = String(queryHost)
-  }
   messageHandler = (e) => {
     if (e.data?.type === 'sandbox:ready') {
       console.log('[Sandbox] FHD 宿主已就绪')
@@ -136,9 +242,7 @@ onMounted(() => {
   }
   window.addEventListener('message', messageHandler)
 
-  if (hostUrl.value) {
-    void connect()
-  }
+  void discoverAndConnect()
 })
 
 onBeforeUnmount(() => {
@@ -258,6 +362,14 @@ onBeforeUnmount(() => {
 .status-pending {
   color: #fbbf24;
   background: rgba(251, 191, 36, 0.1);
+}
+
+.status-err {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+  max-width: min(520px, 100%);
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .sandbox-iframe-wrap {

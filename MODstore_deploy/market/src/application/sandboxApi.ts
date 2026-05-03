@@ -1,33 +1,22 @@
-const MODSTORE_API_BASE = ''
+import { requestJson } from '../infrastructure/http/client'
 
-async function apiFetch(path, options = {}) {
-  const url = `${MODSTORE_API_BASE}${path}`
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
-  return res.json()
-}
-
+/** 与主站 API 一致：携带 Bearer、Cookie、CSRF，否则 POST /api/sandbox/* 会 401/403，自动连接无效。 */
 export const sandboxApi = {
-  async connectHost(hostUrl) {
-    return apiFetch('/api/sandbox/connect', {
+  async connectHost(hostUrl: string) {
+    return requestJson<Record<string, unknown>>('/api/sandbox/connect', {
       method: 'POST',
       body: JSON.stringify({ host_url: hostUrl }),
     })
   },
 
-  async pushAndTest(hostUrl, modId) {
-    return apiFetch('/api/sandbox/push-and-test', {
+  async pushAndTest(hostUrl: string, modId: string) {
+    return requestJson<Record<string, unknown>>('/api/sandbox/push-and-test', {
       method: 'POST',
       body: JSON.stringify({ host_url: hostUrl, mod_id: modId }),
     })
   },
 
   async getHostStatus() {
-    return apiFetch('/api/sandbox/host-status')
+    return requestJson<Record<string, unknown>>('/api/sandbox/host-status')
   },
 }

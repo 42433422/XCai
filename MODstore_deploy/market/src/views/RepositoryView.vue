@@ -89,11 +89,11 @@
           <button
             type="button"
             class="btn btn-sm btn-danger"
-            :disabled="deleteModBusy === m.id"
-            title="从当前账号的 Mod 库中整包删除（需已登录）；不可恢复"
-            @click="deleteModFromLibrary(m)"
-          >
-            {{ deleteModBusy === m.id ? '删除中…' : '删除 Mod' }}
+          :disabled="deleteModBusy === libraryFolderForDeleteApi(m)"
+          title="从当前账号的 Mod 库中整包删除（需已登录）；不可恢复"
+          @click="deleteModFromLibrary(m)"
+        >
+          {{ deleteModBusy === libraryFolderForDeleteApi(m) ? '删除中…' : '删除 Mod' }}
           </button>
         </div>
       </div>
@@ -207,6 +207,21 @@ function flash(msg, ok = true) {
   setTimeout(() => { message.value = '' }, 5000)
 }
 
+/**
+ * 删除 API 必须用磁盘上的库目录名（与 modman remove_mod 一致）。
+ * list_mods 的 id 来自 manifest，可能与文件夹名不一致，故优先用 path 的末段目录名。
+ */
+function libraryFolderForDeleteApi(m) {
+  if (!m || typeof m !== 'object') return ''
+  const rawPath = typeof m.path === 'string' ? m.path.trim() : ''
+  if (rawPath) {
+    const norm = rawPath.replace(/\\/g, '/').replace(/\/+$/, '')
+    const seg = norm.split('/').filter(Boolean).pop()
+    if (seg) return seg
+  }
+  return String(m.id || '').trim()
+}
+
 function clearRepoPageLocalOnly() {
   message.value = ''
   try {
@@ -229,14 +244,14 @@ async function purgeRepoLibraryAndLocalState() {
   }
 
   const list = Array.isArray(mods.value) ? mods.value : []
-  const ids = list.map((m) => String(m?.id || '').trim()).filter(Boolean)
+  const folderKeys = list.map((m) => libraryFolderForDeleteApi(m)).filter(Boolean)
   const primaryCount = list.filter((m) => m && m.primary).length
   const primaryHint =
     primaryCount > 0
       ? `\n\n其中有 ${primaryCount} 个包在 manifest 中标记为主扩展（primary），删除后请确认 XCAGI / 宿主侧不再依赖对应 id。`
       : ''
 
-  if (ids.length === 0) {
+  if (folderKeys.length === 0) {
     if (
       !window.confirm(
         '库中当前没有 Mod。将仅清除：本页提示、新建/脚手架弹窗未提交内容、以及「带入员工制作」预填缓存。是否继续？',
@@ -252,7 +267,7 @@ async function purgeRepoLibraryAndLocalState() {
 
   if (
     !window.confirm(
-      `确定删除当前账号 Mod 源码库中的全部 ${ids.length} 个包？\n本地库目录将整包删除且从账号关联中移除，不可恢复。${primaryHint}\n\n同时将清除本页提示与员工制作预填缓存。`,
+      `确定删除当前账号 Mod 源码库中的全部 ${folderKeys.length} 个包？\n本地库目录将整包删除且从账号关联中移除，不可恢复。${primaryHint}\n\n同时将清除本页提示与员工制作预填缓存。`,
     )
   ) {
     return
@@ -262,50 +277,61 @@ async function purgeRepoLibraryAndLocalState() {
   clearRepoPageLocalOnly()
   const failed = []
   try {
-    for (const id of ids) {
+    for (const folder of folderKeys) {
       try {
-        await api.deleteMod(id)
+        await api.deleteMod(folder)
       } catch (e) {
-        failed.push({ id, err: e?.message || String(e) })
+        failed.push({ id: folder, err: e?.message || String(e) })
       }
     }
     if (failed.length) {
       flash(
-        `已删除 ${ids.length - failed.length} 个，失败 ${failed.length} 个：${failed.map((f) => f.id).join(', ')}`,
+        `已删除 ${folderKeys.length - failed.length} 个，失败 ${failed.length} 个：${failed.map((f) => f.id).join(', ')}`,
         false,
       )
     } else {
-      flash(`已清空源码库（共删除 ${ids.length} 个包）`, true)
+      flash(`已清空源码库（共删除 ${folderKeys.length} 个包）`, true)
     }
   } finally {
     purgeLibraryBusy.value = false
-    await load()
+    await load({ cacheBust: true })
+    if (failed.length === 0 && Array.isArray(mods.value) && mods.value.length > 0) {
+      flash(
+        `删除请求已返回成功，但列表仍显示 ${mods.value.length} 个包；请强制刷新页面或检查网关/浏览器是否缓存了「GET /api/mods」。`,
+        false,
+      )
+    }
   }
 }
 
 async function deleteModFromLibrary(m) {
-  const id = m && typeof m === 'object' ? String(m.id || '').trim() : ''
-  if (!id) return
+  const folder = m && typeof m === 'object' ? libraryFolderForDeleteApi(m) : ''
+  const displayId = m && typeof m === 'object' ? String(m.id || '').trim() : ''
+  if (!folder) return
   if (!localStorage.getItem('modstore_token')) {
     flash('请先登录后再删除 Mod', false)
     return
   }
-  const label = (m.name && String(m.name).trim()) || id
+  const label = (m.name && String(m.name).trim()) || displayId || folder
   const prim = m.primary
     ? '\n\n注意：该包在 manifest 中标记为主扩展（primary），删除后请确认 XCAGI / 宿主侧不再依赖该 id。'
     : ''
+  const idNote = displayId && displayId !== folder ? `（manifest id：${displayId}；目录名：${folder}）` : `（${folder}）`
   if (
     !window.confirm(
-      `确定从 Mod 源码库删除「${label}」（${id}）？\n本地库目录将整包删除，且会从你的账号关联中移除。此操作不可恢复。${prim}`,
+      `确定从 Mod 源码库删除「${label}」${idNote}？\n本地库目录将整包删除，且会从你的账号关联中移除。此操作不可恢复。${prim}`,
     )
   ) {
     return
   }
-  deleteModBusy.value = id
+  deleteModBusy.value = folder
   try {
-    await api.deleteMod(id)
-    flash(`已删除 Mod：${id}`, true)
-    await load()
+    await api.deleteMod(folder)
+    flash(`已删除 Mod 目录：${folder}`, true)
+    await load({ cacheBust: true })
+    if (Array.isArray(mods.value) && mods.value.some((row) => libraryFolderForDeleteApi(row) === folder)) {
+      flash(`删除已返回成功，但列表仍包含「${folder}」；请强制刷新或检查 GET /api/mods 是否被缓存。`, false)
+    }
   } catch (e) {
     flash(e?.message || String(e), false)
   } finally {
@@ -412,10 +438,10 @@ async function submitScaffold() {
   }
 }
 
-async function load() {
+async function load(opts?: { cacheBust?: boolean }) {
   loading.value = true
   try {
-    const res = await api.listMods()
+    const res = await api.listMods(!!opts?.cacheBust)
     mods.value = Array.isArray(res?.data) ? res.data : []
   } catch (e) {
     flash('加载 Mod 库失败: ' + (e.message || String(e)), false)

@@ -2,7 +2,8 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+# node:20-alpine 自带 npm 10.8.x 对部分 lockfile 会抛 edgesOut；先升级 npm 再 ci
+RUN npm install -g npm@11.13.0 && npm ci
 COPY . .
 RUN npm run build
 
