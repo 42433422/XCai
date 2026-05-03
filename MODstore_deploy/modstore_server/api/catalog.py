@@ -6,7 +6,7 @@ import io
 import zipfile
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from modman.manifest_util import (
     folder_name_must_match_id,
@@ -31,17 +31,34 @@ from modstore_server.infrastructure import library_paths
 router = APIRouter(tags=["mods"])
 
 
+def _list_row_disk_folder(row: dict) -> str:
+    """与 modman 库目录名一致；用于与 user_mods.mod_id（登记时多为目录名）对齐。"""
+    raw = str(row.get("path") or "").strip().replace("\\", "/").rstrip("/")
+    if raw:
+        seg = raw.split("/")[-1]
+        if seg:
+            return seg
+    return str(row.get("id") or "").strip()
+
+
 @router.get("/api/mods")
-def api_list_mods(user: Optional[User] = Depends(get_optional_user)):
+def api_list_mods(response: Response, user: Optional[User] = Depends(get_optional_user)):
     lib = library_paths.lib()
     if user is None:
         rows = []
     elif user.is_admin:
         rows = list_mods(lib)
     else:
-        user_mod_ids = get_user_mod_ids(user.id)
+        user_mod_ids = set(get_user_mod_ids(user.id))
         all_rows = list_mods(lib)
-        rows = [r for r in all_rows if r.get("id") in user_mod_ids]
+        rows = [
+            r
+            for r in all_rows
+            if str(r.get("id") or "").strip() in user_mod_ids or _list_row_disk_folder(r) in user_mod_ids
+        ]
+    # 避免 CDN/浏览器缓存「删库后仍显示旧列表」；与前端 listMods(cacheBust) 互补
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
     return {"data": rows}
 
 
