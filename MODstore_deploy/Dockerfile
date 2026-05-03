@@ -3,6 +3,8 @@
 FROM python:3.11-slim AS builder
 
 ARG APT_MIRROR=
+# 可选：国内构建加速，例如 https://pypi.tuna.tsinghua.edu.cn/simple（与 docker-compose build.args / .env 中 PIP_INDEX_URL 对应）
+ARG PIP_INDEX_URL=
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -35,7 +37,11 @@ COPY modstore_server ./modstore_server
 COPY scripts ./scripts
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -e ".[web,knowledge]"
+    && if [ -n "$PIP_INDEX_URL" ]; then \
+         pip install --no-cache-dir -i "$PIP_INDEX_URL" -e ".[web,knowledge]"; \
+       else \
+         pip install --no-cache-dir -e ".[web,knowledge]"; \
+       fi
 
 # --- runtime：复制 venv + 源码树；仅 libpq5；无 gcc ---
 FROM python:3.11-slim

@@ -84,6 +84,7 @@ services:
       context: .
       args:
         APT_MIRROR: ${APT_MIRROR:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     profiles: ["app"]
     depends_on:
       postgres:
