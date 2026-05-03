@@ -2,15 +2,15 @@
   <div class="sandbox-page">
     <div class="sandbox-toolbar">
       <div class="toolbar-left">
-        <span class="toolbar-label">宿主地址</span>
+        <span class="toolbar-label">自动匹配</span>
         <input
           v-model="hostUrl"
           class="toolbar-input"
-          placeholder="留空亦可，将自动探测"
+          placeholder="可留空；将扫本机常见 API 端口"
           @keydown.enter="discoverAndConnect"
         />
         <button class="btn btn-connect" :disabled="connecting" @click="discoverAndConnect">
-          {{ connecting ? '探测中…' : '重新探测' }}
+          {{ connecting ? '扫端口中…' : '重新扫描' }}
         </button>
         <span v-if="statusText" class="status-chip" :class="statusClass">{{ statusText }}</span>
         <span v-if="connectError" class="status-chip status-err" role="alert">{{ connectError }}</span>
@@ -39,8 +39,10 @@
           <line x1="12" y1="17" x2="12" y2="21" />
         </svg>
       </div>
-      <p class="placeholder-text">正在自动探测本机与局域网上的 XCAGI / FHD API</p>
-      <p class="placeholder-hint">默认尝试 5000 / 8000 端口；也可在上方填写 API 根地址后按回车或点「重新探测」</p>
+      <p class="placeholder-text">正在本机与局域网自动扫描常见 API 端口并匹配 XCAGI / FHD</p>
+      <p class="placeholder-hint">
+        依次探测多端口（如 5000–5002、5173–5176、8000 等）；命中后写入上方；也可手动填根地址后回车或点「重新扫描」
+      </p>
     </div>
   </div>
 </template>
@@ -66,9 +68,9 @@ const hostInfo = ref(null)
 const iframeRef = ref(null)
 
 const statusText = computed(() => {
-  if (connected.value) return '已连接'
+  if (connected.value) return '已匹配'
   if (connecting.value) {
-    return probeProgress.value ? `探测中 (${probeProgress.value})` : '探测中'
+    return probeProgress.value ? `扫端口 (${probeProgress.value})` : '扫端口中'
   }
   return ''
 })
@@ -102,7 +104,27 @@ function normalizeHostOrigin(raw) {
   }
 }
 
-/** 合并去重后的探测顺序：URL 参数 → 输入框 → 上次成功 → 当前页同主机多端口 → 本机常见端口 */
+/**
+ * 本机 / 局域网常见 XCAGI FastAPI 与联调端口（含 Vite 同机多实例）；顺序大致为默认 API 优先再 dev。
+ * 每项为端口号，将拼成 http://127.0.0.1:{port} 与 http://localhost:{port}，并对当前页 hostname 复用。
+ */
+const LOCAL_PROBE_PORTS = [
+  5000, 5001, 5002, 5003,
+  5173, 5174, 5175, 5176, 5177,
+  4173, 3000, 8080, 8888,
+  8000, 8001,
+]
+
+function addHostPortVariants(add, hostname, ports, includeHttps) {
+  const h = String(hostname || '').trim()
+  if (!h) return
+  for (const p of ports) {
+    add(`http://${h}:${p}`)
+    if (includeHttps) add(`https://${h}:${p}`)
+  }
+}
+
+/** 合并去重：URL 参数 → 输入框 → 上次成功 → 当前页同机多端口扫描 → 127.0.0.1/localhost 端口表 */
 function buildDiscoveryCandidates() {
   const seen = new Set()
   const out = []
@@ -125,27 +147,27 @@ function buildDiscoveryCandidates() {
     /* ignore */
   }
 
+  /** 若 API 与当前页同端口（少见），优先尝试 */
   try {
-    const { hostname } = window.location
-    if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
-      add(`http://${hostname}:5000`)
-      add(`http://${hostname}:8000`)
-      const proto = window.location.protocol || 'http:'
-      if (proto === 'https:') {
-        add(`https://${hostname}:5000`)
-        add(`https://${hostname}:8000`)
-      }
+    const p = String(window.location.port || '').trim()
+    if (p && /^\d+$/.test(p) && p !== '80' && p !== '443') {
+      add(`${window.location.protocol}//${window.location.hostname}:${p}`)
     }
   } catch (_) {
     /* ignore */
   }
 
-  ;[
-    'http://127.0.0.1:5000',
-    'http://localhost:5000',
-    'http://127.0.0.1:8000',
-    'http://localhost:8000',
-  ].forEach(add)
+  try {
+    const { hostname, protocol } = window.location
+    if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      addHostPortVariants(add, hostname, LOCAL_PROBE_PORTS, protocol === 'https:')
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
+  addHostPortVariants(add, '127.0.0.1', LOCAL_PROBE_PORTS, false)
+  addHostPortVariants(add, 'localhost', LOCAL_PROBE_PORTS, false)
 
   return out
 }
