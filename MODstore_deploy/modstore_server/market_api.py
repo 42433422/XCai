@@ -103,6 +103,13 @@ class RechargeDTO(BaseModel):
     recharge_token: str = ""
 
 
+class AdminSelfCreditDTO(BaseModel):
+    """管理员为本人钱包加款（无共享 Token）；金额上限见环境变量。"""
+
+    amount: float = Field(..., gt=0)
+    description: str = ""
+
+
 class BuyDTO(BaseModel):
     pass
 
@@ -530,6 +537,8 @@ def api_wallet_recharge(
     user: User = Depends(_get_current_user),
 ):
     """管理员线下直充（需密钥）。用户日常充值请使用「支付宝」在钱包页发起。"""
+    if not user.is_admin:
+        raise HTTPException(403, "仅管理员可使用 Token 直充接口，且只能为当前登录账号加款")
     admin_token = (os.environ.get("MODSTORE_ADMIN_RECHARGE_TOKEN") or "").strip()
     if not admin_token:
         raise HTTPException(503, "未配置 MODSTORE_ADMIN_RECHARGE_TOKEN，无法直充")
@@ -564,6 +573,51 @@ def api_wallet_recharge(
         session.add(txn)
         session.commit()
         return {"ok": True, "new_balance": wallet.balance}
+
+
+def _admin_self_credit_cap() -> float:
+    raw = (os.environ.get("MODSTORE_ADMIN_SELF_CREDIT_CAP") or "").strip()
+    if not raw:
+        return 100_000.0
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 100_000.0
+
+
+@router.post("/wallet/admin-self-credit")
+def api_wallet_admin_self_credit(body: AdminSelfCreditDTO, user: User = Depends(_get_current_user)):
+    """管理员为本人钱包加款（仅 JWT 鉴权，不依赖 MODSTORE_ADMIN_RECHARGE_TOKEN）。"""
+    if not user.is_admin:
+        raise HTTPException(403, "仅管理员可为本人钱包加款")
+    cap = _admin_self_credit_cap()
+    if body.amount > cap:
+        raise HTTPException(400, f"单次加款不能超过 {cap:g} 元")
+
+    sf = get_session_factory()
+    with sf() as session:
+        wallet = (
+            session.query(Wallet)
+            .filter(Wallet.user_id == user.id)
+            .with_for_update()
+            .first()
+        )
+        if not wallet:
+            wallet = Wallet(user_id=user.id, balance=0.0)
+            session.add(wallet)
+            session.flush()
+        wallet.balance += body.amount
+        wallet.updated_at = datetime.now(timezone.utc)
+        txn = Transaction(
+            user_id=user.id,
+            amount=body.amount,
+            txn_type="admin_self_credit",
+            status="completed",
+            description=(body.description or "").strip() or "管理员本人加款",
+        )
+        session.add(txn)
+        session.commit()
+        return {"ok": True, "new_balance": wallet.balance, "balance": wallet.balance}
 
 
 @router.get("/wallet/transactions")

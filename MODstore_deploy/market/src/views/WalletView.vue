@@ -906,6 +906,7 @@ watch(selectedProvider, () => {
 function txnTypeLabel(type) {
   const m = {
     recharge: '管理员充值',
+    admin_self_credit: '管理员本人加款',
     alipay_wallet: '支付宝充值',
     alipay_recharge: '支付宝入账',
     alipay_payment: '支付入账',

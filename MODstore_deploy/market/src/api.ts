@@ -87,6 +87,9 @@ export const api: any = {
 
   balance: () => req('/api/wallet/balance'),
   walletOverview: (limit = 20, offset = 0) => req(`/api/wallet/overview?limit=${limit}&offset=${offset}`),
+  /** 管理员为本人钱包加款（仅 JWT，不依赖 MODSTORE_ADMIN_RECHARGE_TOKEN） */
+  walletAdminSelfCredit: (amount: number, description = '') =>
+    req('/api/wallet/admin-self-credit', { method: 'POST', body: JSON.stringify({ amount, description }) }),
   recharge: (amount: number, description = '') => req('/api/wallet/recharge', { method: 'POST', body: JSON.stringify({ amount, description }) }),
   transactions: (limit = 50, offset = 0) => req(`/api/wallet/transactions?limit=${limit}&offset=${offset}`),
 
@@ -231,7 +234,8 @@ export const api: any = {
   adminListWallets: (limit = 200, offset = 0) => req(`/api/admin/wallets?limit=${limit}&offset=${offset}`),
   adminListTransactions: (limit = 200, offset = 0) => req(`/api/admin/transactions?limit=${limit}&offset=${offset}`),
 
-  listMods: () => req('/api/mods'),
+  /** 传 true 时追加查询参数，避免 CDN/浏览器对 GET /api/mods 的缓存导致「删了仍显示」 */
+  listMods: (cacheBust = false) => req(`/api/mods${cacheBust ? `?_=${Date.now()}` : ''}`),
   deleteMod: (modId: string) => req(`/api/mods/${encodeURIComponent(modId)}`, { method: 'DELETE' }),
   createMod: (mod_id: string, display_name: string) => req('/api/mods/create', { method: 'POST', body: JSON.stringify({ mod_id, display_name }) }),
   importZIP: (file: File, replace = true) => {

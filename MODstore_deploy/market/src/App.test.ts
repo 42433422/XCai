@@ -15,6 +15,7 @@ vi.mock('./api', () => ({
   api: {
     me: vi.fn(),
     balance: vi.fn(),
+    walletAdminSelfCredit: vi.fn(),
     notificationsList: vi.fn(),
     paymentMyPlan: vi.fn(),
   },
@@ -83,6 +84,7 @@ describe('App shell', () => {
     expect(wrapper.text()).toContain('会员')
     expect(wrapper.text()).toContain('AI 客服')
     expect(wrapper.text()).toContain('¥10.00')
+    expect(wrapper.find('.nav-self-credit-btn').exists()).toBe(true)
   })
 
   it('switches to admin mode and shows admin customer service link', async () => {

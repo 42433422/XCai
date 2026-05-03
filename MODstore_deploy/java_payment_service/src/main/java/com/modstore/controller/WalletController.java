@@ -42,6 +42,9 @@ public class WalletController {
 
     @Value("${modstore.admin-recharge-token:}")
     private String adminRechargeToken;
+
+    @Value("${MODSTORE_ADMIN_SELF_CREDIT_CAP:100000}")
+    private String adminSelfCreditCapRaw;
     
     @GetMapping
     public Map<String, Object> getWallet() {
@@ -78,6 +81,10 @@ public class WalletController {
             @RequestHeader(value = "X-Modstore-Recharge-Token", required = false) String headerToken
     ) {
         try {
+            User user = currentUserService.requireCurrentUser();
+            if (!user.isAdmin()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅管理员可使用 Token 直充接口，且只能为当前登录账号加款");
+            }
             String configuredToken = adminRechargeToken == null ? "" : adminRechargeToken.trim();
             if (configuredToken.isEmpty()) {
                 throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "未配置 MODSTORE_ADMIN_RECHARGE_TOKEN，无法直充");
@@ -92,13 +99,54 @@ public class WalletController {
                 return Map.of("ok", false, "message", "充值金额必须大于 0");
             }
             String description = String.valueOf(body.getOrDefault("description", "后台钱包充值"));
-            User user = currentUserService.requireCurrentUser();
             walletService.addBalance(user, amount, "manual_recharge", description);
             return Map.of("ok", true, "balance", walletService.getBalance(user));
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
             log.error("钱包充值失败", e);
+            return Map.of("ok", false, "message", "系统内部错误");
+        }
+    }
+
+    /**
+     * 管理员为本人钱包加款（仅 JWT + is_admin），不依赖共享直充 Token；不能指定他人账号。
+     */
+    @PostMapping("/admin-self-credit")
+    public Map<String, Object> adminSelfCredit(@RequestBody Map<String, Object> body) {
+        try {
+            User user = currentUserService.requireCurrentUser();
+            if (!user.isAdmin()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅管理员可为本人钱包加款");
+            }
+            BigDecimal cap;
+            try {
+                cap = new BigDecimal(adminSelfCreditCapRaw == null || adminSelfCreditCapRaw.isBlank()
+                        ? "100000"
+                        : adminSelfCreditCapRaw.trim());
+                if (cap.compareTo(BigDecimal.ONE) < 0) {
+                    cap = new BigDecimal("100000");
+                }
+            } catch (NumberFormatException e) {
+                cap = new BigDecimal("100000");
+            }
+            BigDecimal amount = MoneyUtils.parse(body.get("amount"));
+            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                return Map.of("ok", false, "message", "金额必须大于 0");
+            }
+            if (amount.compareTo(cap) > 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "单次加款不能超过 " + cap.stripTrailingZeros().toPlainString() + " 元");
+            }
+            String description = String.valueOf(body.getOrDefault("description", "管理员本人加款")).trim();
+            if (description.isEmpty()) {
+                description = "管理员本人加款";
+            }
+            walletService.addBalance(user, amount, "admin_self_credit", description);
+            return Map.of("ok", true, "balance", walletService.getBalance(user));
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("管理员本人加款失败", e);
             return Map.of("ok", false, "message", "系统内部错误");
         }
     }

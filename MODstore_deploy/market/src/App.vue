@@ -117,7 +117,18 @@
                 class="nav-link"
                 :aria-current="String(route.name || '').startsWith('wallet') ? 'page' : undefined"
               >{{ t('nav.wallet') }}</router-link>
-              <span class="nav-balance" v-if="balance !== null">¥{{ balance.toFixed(2) }}</span>
+              <span class="nav-balance-wrap">
+                <span class="nav-balance" v-if="balance !== null">¥{{ balance.toFixed(2) }}</span>
+                <button
+                  v-if="isAdmin && balance !== null"
+                  type="button"
+                  class="nav-self-credit-btn"
+                  :aria-label="t('nav.adminSelfCredit')"
+                  @click="openSelfCreditModal"
+                >
+                  +
+                </button>
+              </span>
               <button class="nav-link btn-logout" @click="doLogout">{{ t('nav.logout') }}</button>
             </template>
             <template v-else>
@@ -146,6 +157,45 @@
         </router-view>
       </div>
     </main>
+    <Teleport to="body">
+      <div
+        v-if="selfCreditOpen"
+        class="nav-self-credit-overlay"
+        role="presentation"
+        @click.self="closeSelfCreditModal"
+      >
+        <div
+          class="nav-self-credit-dialog"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('nav.adminSelfCreditTitle')"
+          @click.stop
+        >
+          <h3 class="nav-self-credit-dialog__title">{{ t('nav.adminSelfCreditTitle') }}</h3>
+          <p class="nav-self-credit-dialog__hint">{{ t('nav.adminSelfCreditHint') }}</p>
+          <label class="nav-self-credit-dialog__label">{{ t('nav.adminSelfCreditAmount') }}</label>
+          <input
+            v-model="selfCreditAmount"
+            type="number"
+            min="0.01"
+            step="0.01"
+            class="nav-self-credit-dialog__input"
+            autocomplete="off"
+          />
+          <label class="nav-self-credit-dialog__label">{{ t('nav.adminSelfCreditNote') }}</label>
+          <input v-model="selfCreditNote" type="text" class="nav-self-credit-dialog__input" autocomplete="off" />
+          <p v-if="selfCreditErr" class="nav-self-credit-dialog__err">{{ selfCreditErr }}</p>
+          <div class="nav-self-credit-dialog__actions">
+            <button type="button" class="nav-self-credit-dialog__primary" :disabled="selfCreditBusy" @click="submitSelfCredit">
+              {{ t('nav.adminSelfCreditSubmit') }}
+            </button>
+            <button type="button" class="nav-self-credit-dialog__secondary" :disabled="selfCreditBusy" @click="closeSelfCreditModal">
+              {{ t('nav.adminSelfCreditCancel') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -158,6 +208,7 @@ import { useAuthStore } from './stores/auth'
 import { useNotificationStore } from './stores/notifications'
 import { useWalletStore } from './stores/wallet'
 import { connectRealtime, disconnectRealtime } from './realtimeClient'
+import { api } from './api'
 
 const router = useRouter()
 const route = useRoute()
@@ -194,6 +245,43 @@ const { unreadCount: unreadNotifications, badgeText: unreadBadgeText } = storeTo
 const initialPath = String(router.currentRoute.value.path || '/')
 const isHome = ref(initialPath === '/about')
 const isEmployeeWorkbench = ref(initialPath.startsWith('/workbench/employee'))
+
+const selfCreditOpen = ref(false)
+const selfCreditAmount = ref('')
+const selfCreditNote = ref('')
+const selfCreditErr = ref('')
+const selfCreditBusy = ref(false)
+
+function openSelfCreditModal() {
+  selfCreditErr.value = ''
+  selfCreditAmount.value = ''
+  selfCreditNote.value = ''
+  selfCreditOpen.value = true
+}
+
+function closeSelfCreditModal() {
+  if (selfCreditBusy.value) return
+  selfCreditOpen.value = false
+}
+
+async function submitSelfCredit() {
+  const n = Number(selfCreditAmount.value)
+  if (!Number.isFinite(n) || n <= 0) {
+    selfCreditErr.value = t('nav.adminSelfCreditAmountInvalid')
+    return
+  }
+  selfCreditBusy.value = true
+  selfCreditErr.value = ''
+  try {
+    await api.walletAdminSelfCredit(n, selfCreditNote.value.trim())
+    await walletStore.refreshBalance()
+    selfCreditOpen.value = false
+  } catch (e) {
+    selfCreditErr.value = e?.message || String(e)
+  } finally {
+    selfCreditBusy.value = false
+  }
+}
 
 onMounted(() => {
   checkHome()
@@ -477,6 +565,115 @@ a { text-decoration: none; color: inherit; }
   border-radius: 999px;
   box-shadow: 0 0 0 2px #111;
 }
+.nav-balance-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.nav-self-credit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 0.35rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--color-accent-green);
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.nav-self-credit-btn:hover:not(:disabled) {
+  background: rgba(74, 222, 128, 0.22);
+  border-color: rgba(74, 222, 128, 0.65);
+}
+.nav-self-credit-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.nav-self-credit-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.nav-self-credit-dialog {
+  width: min(420px, 100%);
+  background: #141414;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 20px 22px 18px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+}
+.nav-self-credit-dialog__title {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #fff;
+}
+.nav-self-credit-dialog__hint {
+  margin: 0 0 16px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.5);
+}
+.nav-self-credit-dialog__label {
+  display: block;
+  margin: 10px 0 6px;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+.nav-self-credit-dialog__input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0a0a0a;
+  color: #fff;
+  font-size: 0.95rem;
+}
+.nav-self-credit-dialog__err {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+  color: #f87171;
+}
+.nav-self-credit-dialog__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.nav-self-credit-dialog__primary,
+.nav-self-credit-dialog__secondary {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+.nav-self-credit-dialog__primary {
+  background: linear-gradient(135deg, #4ade80, #22c55e);
+  color: #0a0a0a;
+}
+.nav-self-credit-dialog__primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.nav-self-credit-dialog__secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
 .nav-balance {
   font-size: 1rem;
   color: var(--color-accent-green);
@@ -733,9 +930,14 @@ body:has(.app-shell--wb-home) {
     padding-left: 0;
     width: 100%;
   }
-  .nav-username,
-  .nav-balance {
+  /* 仅隐藏用户名以省宽；余额保留，避免用户误以为「余额消失」 */
+  .nav-username {
     display: none;
+  }
+  .nav-balance {
+    font-size: 0.82rem;
+    padding: 0.25rem 0.45rem;
+    flex-shrink: 0;
   }
   .nav-link,
   .mode-tab {
