@@ -1,7 +1,7 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1
+# --- builder：gcc / libpq-dev 仅在此阶段；项目装入 /app 并 -e 安装到 /venv ---
+FROM python:3.11-slim AS builder
 
-# 可选：国内构建加速。docker compose 构建 api 时在 .env 中设 APT_MIRROR=https://mirrors.aliyun.com
-# 或 https://mirrors.tuna.tsinghua.edu.cn（不要尾斜杠；勿含 &、| 等特殊字符以免 sed 出错）
 ARG APT_MIRROR=
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -26,6 +26,9 @@ RUN set -ex \
   && apt-get install -y --no-install-recommends gcc libpq-dev \
   && rm -rf /var/lib/apt/lists/*
 
+RUN python -m venv /venv
+ENV PATH="/venv/bin:$PATH"
+
 COPY pyproject.toml ./
 COPY modman ./modman
 COPY modstore_server ./modstore_server
@@ -33,6 +36,22 @@ COPY scripts ./scripts
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -e ".[web,knowledge]"
+
+# --- runtime：复制 venv + 源码树；仅 libpq5；无 gcc ---
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/venv/bin:$PATH"
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libpq5 \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /venv /venv
+COPY --from=builder /app /app
 
 EXPOSE 8765
 

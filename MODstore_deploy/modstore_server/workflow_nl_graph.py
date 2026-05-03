@@ -8,14 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from modstore_server.employee_executor import list_employees
-from modstore_server.llm_chat_proxy import chat_dispatch
-from modstore_server.llm_key_resolver import (
-    OAI_COMPAT_OPENAI_STYLE_PROVIDERS,
-    resolve_api_key,
-    resolve_base_url,
-)
-from modstore_server.mod_scaffold_runner import resolve_llm_provider_model
+from modstore_server.services.employee import get_default_employee_client
+from modstore_server.services.llm import chat_dispatch_via_session
 from modstore_server.models import User, Workflow, WorkflowEdge, WorkflowNode
 from modstore_server.workflow_engine import run_workflow_sandbox
 
@@ -106,7 +100,7 @@ JSON 结构：
 
 def _catalog_lines(max_items: int = 40) -> str:
     try:
-        rows = list_employees() or []
+        rows = get_default_employee_client().list_employees() or []
     except Exception:
         rows = []
     lines: List[str] = []
@@ -255,18 +249,11 @@ async def apply_nl_workflow_graph(
     if not wf:
         return {"ok": False, "error": "工作流不存在或无权访问"}
 
+    from modstore_server.mod_scaffold_runner import resolve_llm_provider_model
+
     prov, mdl, err = resolve_llm_provider_model(db, user, provider, model)
     if err:
         return {"ok": False, "error": err}
-    api_key, _ = resolve_api_key(db, user.id, prov)  # type: ignore[arg-type]
-    if not api_key:
-        return {"ok": False, "error": "该供应商未配置可用 API Key（平台或 BYOK）"}
-    base = (
-        resolve_base_url(db, user.id, prov)
-        if prov in OAI_COMPAT_OPENAI_STYLE_PROVIDERS
-        else None
-    )
-
     user_msg = (
         f"工作流名称: {wf.name}\n\n"
         f"工作流说明与需求:\n{brief.strip()}\n\n"
@@ -277,16 +264,19 @@ async def apply_nl_workflow_graph(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_msg},
     ]
-    result = await chat_dispatch(
+    result = await chat_dispatch_via_session(
+        db,
+        user.id,
         prov,
-        api_key=api_key,
-        base_url=base,
-        model=mdl,
-        messages=msgs,
+        mdl,
+        msgs,
         max_tokens=4096,
     )
     if not result.get("ok"):
-        return {"ok": False, "error": result.get("error") or "LLM 调用失败"}
+        e = str(result.get("error") or "LLM 调用失败")
+        if "missing api key" in e.lower():
+            e = "该供应商未配置可用 API Key（平台或 BYOK）"
+        return {"ok": False, "error": e}
 
     data = _extract_json_object(str(result.get("content") or ""))
     if not data:

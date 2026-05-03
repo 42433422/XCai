@@ -7,9 +7,17 @@
         <div>
           <h1>{{ item.name }}</h1>
           <p class="meta">
-            {{ item.pkg_id }} · v{{ item.version }} · {{ item.industry || '通用' }} · {{ getArtifactLabel(item.artifact) }}
+            {{ item.pkg_id }} · v{{ item.version }} · {{ item.industry || '通用' }} · {{ getArtifactLabel(item.artifact) }} · {{ materialCategoryLabel(item.material_category) }}
           </p>
           <p v-if="item.description" class="desc">{{ item.description }}</p>
+          <div class="compliance-tags">
+            <span class="info-chip">{{ item.license_scope_label || licenseScopeLabel(item.license_scope) }}</span>
+            <span class="info-chip">来源：{{ originTypeLabel(item.origin_type) }}</span>
+            <span class="info-chip">风险：{{ ipRiskLabel(item.ip_risk_level) }}</span>
+            <span class="info-chip" :class="{ warn: item.compliance_status && item.compliance_status !== 'approved' }">
+              {{ complianceStatusLabel(item.compliance_status) }}
+            </span>
+          </div>
         </div>
         <div class="detail-actions">
           <span class="price-tag" :class="{ free: item.price <= 0 }">
@@ -42,6 +50,37 @@
           >
             {{ delisting ? '下架中...' : '下架' }}
           </button>
+          <router-link :to="customerServiceLink('complaint')" class="btn btn-secondary">投诉/申诉</router-link>
+        </div>
+      </div>
+
+      <div v-if="item" class="detail-section complaint-section">
+        <h2 class="section-title">投诉与申诉</h2>
+        <p class="section-desc">
+          涉及抄袭、联动/IP 风险、授权争议、无法下载或权益异常时，可先提交记录，再进入 AI 客服补充证据材料。
+        </p>
+        <div class="complaint-form">
+          <select v-model="complaintType" class="input">
+            <option value="plagiarism">疑似抄袭</option>
+            <option value="ip_risk">联动/IP 风险</option>
+            <option value="license">授权或商业使用争议</option>
+            <option value="delivery">购买/下载/权益异常</option>
+            <option value="appeal">作者申诉</option>
+            <option value="other">其他问题</option>
+          </select>
+          <textarea
+            v-model="complaintReason"
+            class="input textarea"
+            rows="3"
+            maxlength="4000"
+            placeholder="请说明问题、证据链接或希望处理的结果"
+          />
+          <div class="complaint-actions">
+            <button type="button" class="btn btn-primary-solid" :disabled="complaintSubmitting" @click="submitComplaint">
+              {{ complaintSubmitting ? '提交中...' : '提交投诉/申诉' }}
+            </button>
+            <router-link :to="customerServiceLink('complaint')" class="btn btn-secondary">进入 AI 客服补充材料</router-link>
+          </div>
         </div>
       </div>
 
@@ -184,6 +223,9 @@ const reviewsData = ref({ reviews: [], average_rating: 0, total: 0 })
 const reviewRating = ref(5)
 const reviewContent = ref('')
 const reviewSubmitting = ref(false)
+const complaintType = ref('plagiarism')
+const complaintReason = ref('')
+const complaintSubmitting = ref(false)
 
 // 员工状态
 const employeeStatus = ref({
@@ -197,11 +239,67 @@ const artifactLabels = {
   mod: 'MOD 插件',
   employee_pack: 'AI 员工包',
   bundle: '资源包',
-  surface: '界面扩展'
+  surface: '界面扩展',
+  workflow_template: '工作流模板',
+}
+
+const materialCategoryLabels = {
+  ai_employee: 'AI 员工',
+  agent_prompt: 'Agent 提示词',
+  skill: 'Skill',
+  tts_voice: 'TTS 声音模型',
+  mod_asset: 'MOD 包素材',
+  page_style: '页面风格',
+  personal_design: '个性化设计',
+  workflow_template: '工作流模板',
+  other: '其他素材',
+}
+
+const licenseScopeLabels = {
+  personal: '个人使用',
+  commercial: '商业授权',
+  free_personal: '免费个人用',
+}
+
+const originTypeLabels = {
+  original: '原创',
+  derivative: '二创/改编',
+  collaboration: '联动授权',
+  fan_linkage: '粉丝联动',
+  suspected_plagiarism: '疑似抄袭',
+}
+
+const complianceStatusLabels = {
+  approved: '已审核',
+  under_review: '投诉处理中',
+  restricted: '已降权',
+  delisted: '已下架',
 }
 
 function getArtifactLabel(artifact) {
   return artifactLabels[artifact] || artifact || '其他'
+}
+
+function materialCategoryLabel(cat) {
+  return materialCategoryLabels[cat] || cat || '其他素材'
+}
+
+function licenseScopeLabel(scope) {
+  return licenseScopeLabels[scope] || scope || '个人使用'
+}
+
+function originTypeLabel(origin) {
+  return originTypeLabels[origin] || origin || '原创'
+}
+
+function ipRiskLabel(risk) {
+  if (risk === 'high') return '高'
+  if (risk === 'medium') return '中'
+  return '低'
+}
+
+function complianceStatusLabel(status) {
+  return complianceStatusLabels[status] || status || '已审核'
 }
 
 onMounted(async () => {
@@ -262,6 +360,49 @@ async function submitReview() {
     alert(e.message)
   } finally {
     reviewSubmitting.value = false
+  }
+}
+
+function customerServiceLink(scene = 'complaint') {
+  const it = item.value || {}
+  return {
+    name: 'customer-service',
+    query: {
+      scene,
+      catalog_id: String(it.id || route.params.id || ''),
+      pkg_id: it.pkg_id || '',
+      item_name: it.name || '',
+      material_category: it.material_category || '',
+      complaint_type: complaintType.value || '',
+    },
+  }
+}
+
+async function submitComplaint() {
+  if (!item.value) return
+  if (!localStorage.getItem('modstore_token')) {
+    await router.push({ name: 'login', query: { redirect: `/catalog/${route.params.id}` } })
+    return
+  }
+  const reason = complaintReason.value.trim()
+  if (reason.length < 4) {
+    alert('请至少填写 4 个字的问题说明')
+    return
+  }
+  complaintSubmitting.value = true
+  try {
+    await api.catalogSubmitComplaint(route.params.id, complaintType.value, reason, {
+      pkg_id: item.value.pkg_id,
+      item_name: item.value.name,
+      material_category: item.value.material_category,
+    })
+    complaintReason.value = ''
+    item.value = await api.catalogDetail(route.params.id)
+    alert('已提交，建议继续进入 AI 客服补充证据材料。')
+  } catch (e) {
+    alert(e.message)
+  } finally {
+    complaintSubmitting.value = false
   }
 }
 
@@ -400,8 +541,31 @@ function navigateToWorkflow() {
   line-height: 1.5;
 }
 
+.compliance-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.info-chip {
+  font-size: 12px;
+  color: rgba(255,255,255,0.72);
+  background: rgba(255,255,255,0.07);
+  border: 0.5px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.info-chip.warn {
+  color: #fde68a;
+  border-color: rgba(251,191,36,0.35);
+  background: rgba(251,191,36,0.12);
+}
+
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   flex-shrink: 0;
@@ -423,6 +587,23 @@ function navigateToWorkflow() {
   background: rgba(74,222,128,0.1);
   padding: 6px 14px;
   border-radius: 12px;
+}
+
+.complaint-section {
+  border-color: rgba(251, 191, 36, 0.22);
+  background: rgba(251, 191, 36, 0.04);
+}
+
+.complaint-form {
+  display: grid;
+  gap: 10px;
+  max-width: 720px;
+}
+
+.complaint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .loading {

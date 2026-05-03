@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import bcrypt
 import jwt
@@ -28,12 +30,15 @@ def verify_password(raw: str, hashed: str) -> bool:
     return bcrypt.checkpw(raw.encode("utf-8"), hashed.encode("utf-8"))
 
 
-def create_access_token(user_id: int, username: str) -> str:
+def create_access_token(user_id: int, username: str, *, is_admin: bool = False) -> str:
+    """签发 access JWT。``roles`` 与 Java 支付网关 ``JwtAuthenticationFilter`` 对齐（``ADMIN`` → ``ROLE_ADMIN``）。"""
+    roles: List[str] = ["ADMIN"] if is_admin else []
     expire = datetime.now(timezone.utc) + timedelta(hours=_JWT_EXPIRE_HOURS)
     payload = {
         "sub": str(user_id),
         "username": username,
         "type": "access",
+        "roles": roles,
         "exp": expire,
     }
     return jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
@@ -134,6 +139,54 @@ def generate_pat() -> Tuple[str, str, str]:
     raw = f"{PAT_PREFIX}{body}"
     prefix = raw[: len(PAT_PREFIX) + 8]
     return raw, prefix, hash_pat(raw)
+
+
+@dataclass(frozen=True)
+class PatIdentity:
+    """Resolved PAT with scopes (used by machine / v1 sync routes)."""
+
+    user: User
+    scopes: tuple[str, ...]
+
+
+def resolve_pat_identity(raw_token: str) -> Optional[PatIdentity]:
+    """Resolve PAT to user + scopes; invalid / expired / revoked → ``None``."""
+
+    raw = (raw_token or "").strip()
+    if not raw.startswith(PAT_PREFIX):
+        return None
+    digest = hash_pat(raw)
+
+    sf = get_session_factory()
+    with sf() as session:
+        row = (
+            session.query(DeveloperToken)
+            .filter(
+                DeveloperToken.token_hash == digest,
+                DeveloperToken.revoked_at.is_(None),
+            )
+            .first()
+        )
+        if not row:
+            return None
+        if row.expires_at and row.expires_at < datetime.utcnow():
+            return None
+        user = session.query(User).filter(User.id == row.user_id).first()
+        if not user:
+            return None
+        try:
+            scopes_raw = json.loads(row.scopes_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            scopes_raw = []
+        if not isinstance(scopes_raw, list):
+            scopes_raw = []
+        scopes = tuple(str(s) for s in scopes_raw if s)
+        try:
+            row.last_used_at = datetime.utcnow()
+            session.commit()
+        except Exception:
+            session.rollback()
+        return PatIdentity(user=user, scopes=scopes)
 
 
 def resolve_user_from_pat(raw_token: str) -> Optional[User]:

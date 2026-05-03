@@ -171,23 +171,59 @@ function formatTime(iso) {
   })
 }
 
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
 async function loadDatabase() {
   loadingDb.value = true
   try {
-    const [refundsRes, usersRes, walletsRes, catalogRes, txnsRes] = await Promise.all([
+    const settled = await Promise.allSettled([
       api.refundsAdminPending(),
       api.adminListUsers(),
       api.adminListWallets(),
       api.adminListCatalog(),
       api.adminListTransactions(),
     ])
-    pendingRefunds.value = refundsRes.refunds || []
-    dbUsers.value = usersRes.users || []
-    dbWallets.value = walletsRes.items || []
-    dbCatalog.value = catalogRes.items || []
-    dbTransactions.value = txnsRes.items || []
-  } catch (e) {
-    flash('加载数据库失败: ' + e.message, false)
+    const labels = ['退款待审', '用户', '钱包', '商品目录', '交易流水']
+    const errs: string[] = []
+
+    const [refundsR, usersR, walletsR, catalogR, txnsR] = settled
+
+    if (refundsR.status === 'fulfilled') {
+      pendingRefunds.value = refundsR.value.refunds || []
+    } else {
+      pendingRefunds.value = []
+      errs.push(`${labels[0]}: ${errMsg(refundsR.reason)}`)
+    }
+    if (usersR.status === 'fulfilled') {
+      dbUsers.value = usersR.value.users || []
+    } else {
+      dbUsers.value = []
+      errs.push(`${labels[1]}: ${errMsg(usersR.reason)}`)
+    }
+    if (walletsR.status === 'fulfilled') {
+      dbWallets.value = walletsR.value.items || []
+    } else {
+      dbWallets.value = []
+      errs.push(`${labels[2]}: ${errMsg(walletsR.reason)}`)
+    }
+    if (catalogR.status === 'fulfilled') {
+      dbCatalog.value = catalogR.value.items || []
+    } else {
+      dbCatalog.value = []
+      errs.push(`${labels[3]}: ${errMsg(catalogR.reason)}`)
+    }
+    if (txnsR.status === 'fulfilled') {
+      dbTransactions.value = txnsR.value.items || []
+    } else {
+      dbTransactions.value = []
+      errs.push(`${labels[4]}: ${errMsg(txnsR.reason)}`)
+    }
+
+    if (errs.length) {
+      flash('部分数据加载失败（其余已显示）: ' + errs.join('；'), false)
+    }
   } finally {
     loadingDb.value = false
   }
@@ -202,7 +238,7 @@ async function reviewRefund(row, action) {
     flash(`退款申请 #${row.id} 已${verb}`)
     await loadDatabase()
   } catch (e) {
-    flash(`审核失败: ${e.message}`, false)
+    flash(`审核失败: ${errMsg(e)}`, false)
   }
 }
 

@@ -1,22 +1,26 @@
 <template>
-  <div class="account-page">
-    <header class="account-hero">
-      <div class="hero-avatar" aria-hidden="true">{{ avatarInitial }}</div>
-      <div class="hero-main">
-        <h1 class="page-title">账户中心</h1>
-        <p class="hero-sub">
-          <span class="hero-name">{{ displayUsername }}</span>
-          <span v-if="email" class="hero-email">{{ email }}</span>
-        </p>
-        <div class="hero-badges">
-          <span v-if="level" class="badge badge-lv" title="账号成长等级"
-            >Lv.{{ level.level }} · {{ level.title || '成长等级' }}</span
-          >
-          <span
-            :class="['badge', 'badge-tier', membershipTier ? `badge-tier--${membershipTier}` : 'badge-tier--free']"
-            :title="membershipLabel"
-            >{{ membershipLabel }}</span
-          >
+  <div class="account-page account-page--console">
+    <header class="account-console-head">
+      <div class="account-console-head__titles">
+        <p class="account-console-head__eyebrow">控制台</p>
+        <h1 class="account-console-head__h1">账户中心</h1>
+      </div>
+      <div class="account-console-head__user">
+        <div class="account-console-head__avatar" aria-hidden="true">{{ avatarInitial }}</div>
+        <div class="account-console-head__meta">
+          <div class="account-console-head__name">{{ displayUsername }}</div>
+          <div v-if="email" class="account-console-head__email">{{ email }}</div>
+          <div v-if="level" class="account-console-head__chips">
+            <span class="acct-chip acct-chip--lv">Lv.{{ level.level }} {{ level.title || '成长等级' }}</span>
+            <span
+              :class="[
+                'acct-chip',
+                'acct-chip--tier',
+                membershipTier ? `acct-chip--tier-${membershipTier}` : 'acct-chip--tier-free',
+              ]"
+              >{{ membershipLabel }}</span
+            >
+          </div>
         </div>
       </div>
     </header>
@@ -24,80 +28,74 @@
     <div v-if="msg" class="flash flash-ok">{{ msg }}</div>
     <div v-if="err" class="flash flash-err">{{ err }}</div>
 
-    <div class="stats-row" v-if="level">
-      <div class="stat-card">
-        <div class="stat-label">账号等级</div>
-        <div class="stat-value">Lv.{{ level.level }}</div>
-        <div class="stat-foot">{{ level.title || '—' }}</div>
-      </div>
-      <div class="stat-card stat-card--vip">
-        <div class="stat-label">会员身份</div>
-        <div
-          :class="['stat-value', 'stat-value--tier', membershipTier ? `stat-value--${membershipTier}` : 'stat-value--free']"
-        >
-          {{ membershipLabel }}
-        </div>
-        <div class="stat-foot">{{ membershipHint }}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">累计经验</div>
-        <div class="stat-value stat-value--num">{{ level.experience.toLocaleString() }}</div>
-        <div class="stat-foot">实付 1 元 = 100 经验（含商品 / 会员 / 钱包充值）</div>
-      </div>
-    </div>
-
-    <div class="account-grid">
-      <section v-if="level" class="card card-level">
-        <h3 class="card-title">等级进度</h3>
-        <div class="level-head level-head--inline">
-          <div class="level-badge">Lv.{{ level.level }}</div>
-          <div class="level-meta">
-            <div class="level-title">{{ level.title || '账号等级' }}</div>
-            <div class="level-sub">累计经验 {{ level.experience.toLocaleString() }}</div>
+    <div v-if="level" class="account-console-grid">
+      <section class="acct-panel acct-panel--grow">
+        <div class="acct-panel__rowhead">
+          <h2 class="acct-panel__h2">成长与等级</h2>
+          <div class="acct-panel__kpi">
+            <span class="acct-panel__kpi-label">累计经验</span>
+            <span class="acct-panel__kpi-val">{{ level.experience.toLocaleString() }}</span>
           </div>
         </div>
-        <div class="level-progress">
-          <div class="progress-track">
-            <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
+        <div class="acct-grow-bar">
+          <div class="acct-grow-track">
+            <div class="acct-grow-fill" :style="{ width: progressPercent + '%' }" />
           </div>
-          <div class="progress-meta">
-            <span v-if="level.nextLevelMinExp !== null">
-              距 Lv.{{ level.level + 1 }} 还需
-              <strong>{{ Math.max(0, level.nextLevelMinExp - level.experience).toLocaleString() }}</strong>
-              经验
-            </span>
-            <span v-else>已达成最高等级</span>
-            <span class="progress-pct">{{ progressPercent }}%</span>
+          <div class="acct-grow-meta">
+            <template v-if="level.nextLevelMinExp !== null">
+              <span
+                >当前 Lv.{{ level.level }}，距 Lv.{{ level.level + 1 }} 还需
+                <strong>{{ expToNextLevel.toLocaleString() }}</strong> 经验</span
+              >
+            </template>
+            <span v-else>已达最高等级</span>
+            <span class="acct-grow-pct">{{ progressPercent }}%</span>
           </div>
         </div>
-        <p class="level-hint">
-          每实付 1 元 = 100 经验（商品 / 会员 / 钱包充值都计入），退款成功会扣回相应经验。
-        </p>
+        <details class="acct-details">
+          <summary>经验如何累计？</summary>
+          <p class="acct-details__body">
+            每 <strong>1 元 = 100 经验</strong>（实付 / 实扣）：商品、会员、钱包充值等订单实付；使用<strong>平台密钥</strong>调用大模型时，预授权从钱包按用量结算的实扣金额（与顶部导航栏余额变动一致）。<strong>BYOK</strong> 不经平台钱包扣费，不计此项经验。订单退款成功会扣回该笔订单已发放的经验。
+          </p>
+        </details>
       </section>
 
-      <section class="card card-spotlight">
-        <h3 class="card-title">会员与权益</h3>
-        <p class="spotlight-lead">
-          当前身份：
-          <strong :class="['spotlight-tier', membershipTier ? `spotlight-tier--${membershipTier}` : '']">{{
+      <section class="acct-panel acct-panel--plan">
+        <h2 class="acct-panel__h2">会员与权益</h2>
+        <p class="acct-plan-line">
+          当前套餐：
+          <strong :class="['acct-plan-tier', membershipTier ? `acct-plan-tier--${membershipTier}` : '']">{{
             membershipLabel
           }}</strong>
         </p>
-        <p class="spotlight-desc">{{ membershipHint }}</p>
-        <div class="spotlight-actions">
-          <RouterLink to="/plans" class="btn btn-primary">查看与购买套餐</RouterLink>
+        <p class="acct-plan-desc">{{ membershipHint }}</p>
+        <div class="acct-plan-actions">
+          <RouterLink to="/plans" class="btn btn-primary">套餐与计费</RouterLink>
           <RouterLink to="/wallet" class="btn btn-ghost">钱包与流水</RouterLink>
         </div>
       </section>
     </div>
 
-    <nav class="quick-nav" aria-label="快捷入口">
-      <RouterLink to="/wallet" class="quick-link">钱包</RouterLink>
-      <RouterLink :to="{ name: 'wallet-purchased' }" class="quick-link">已购</RouterLink>
-      <RouterLink :to="{ name: 'wallet-keys' }" class="quick-link">API 密钥</RouterLink>
-      <RouterLink to="/notifications" class="quick-link">通知中心</RouterLink>
-      <RouterLink to="/plans" class="quick-link">会员购买</RouterLink>
+    <nav class="acct-subnav" aria-label="快捷入口">
+      <RouterLink to="/wallet" class="acct-subnav__link">钱包</RouterLink>
+      <RouterLink :to="{ name: 'wallet-purchased' }" class="acct-subnav__link">已购</RouterLink>
+      <RouterLink to="/notifications" class="acct-subnav__link">通知</RouterLink>
+      <RouterLink to="/plans" class="acct-subnav__link">会员</RouterLink>
     </nav>
+
+    <section id="api-keys" class="card account-api-keys" tabindex="-1" aria-labelledby="api-keys-heading">
+      <h2 id="api-keys-heading" class="account-api-keys__h2">API 密钥</h2>
+      <p class="account-api-keys__lead">
+        在此创建、吊销 Personal Access Token，或将多条密钥<strong>加密下发到桌面</strong>（免逐条复制）。调用接口时使用
+        <code>Authorization: Bearer pat_…</code>。
+      </p>
+      <div class="account-api-keys__embed">
+        <DeveloperTokensPanel />
+      </div>
+      <p class="account-api-keys__more">
+        <RouterLink :to="{ name: 'developer-portal' }" class="account-api-keys__link">Webhook 订阅与完整开发者门户 →</RouterLink>
+      </p>
+    </section>
 
     <div class="forms-grid">
       <section class="card">
@@ -140,6 +138,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { api } from '../api'
+import DeveloperTokensPanel from './developer/DeveloperTokensPanel.vue'
 import { normalizeMeResponse } from '../domain/accountLevel'
 import { useAuthStore } from '../stores/auth'
 
@@ -163,6 +162,11 @@ const canChangePw = computed(
 
 const level = computed(() => levelProfile.value)
 const progressPercent = computed(() => Math.round(((level.value?.progress ?? 0) as number) * 100))
+const expToNextLevel = computed(() => {
+  const l = level.value
+  if (!l || l.nextLevelMinExp === null) return 0
+  return Math.max(0, (l.nextLevelMinExp as number) - l.experience)
+})
 
 const displayUsername = computed(() => (username.value || storeUsername.value || '用户').trim() || '用户')
 const avatarInitial = computed(() => {
@@ -237,284 +241,304 @@ async function changePw() {
 
 <style scoped>
 .account-page {
-  max-width: 960px;
+  max-width: 1080px;
   margin: 0 auto;
-  padding: clamp(3rem, 8vw, 5rem) 24px 3rem;
+  padding: 0 4px 2.5rem;
   color: #fff;
 }
+.account-page--console {
+  letter-spacing: -0.01em;
+}
 
-/* ---- Hero ---- */
-.account-hero {
+/* —— 顶栏：单块信息，避免与下方卡片重复 —— */
+.account-console-head {
   display: flex;
-  align-items: flex-start;
-  gap: 1.25rem;
-  margin-bottom: 1.75rem;
-  padding-bottom: 1.5rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-.hero-avatar {
+.account-console-head__eyebrow {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+.account-console-head__h1 {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.2vw, 1.65rem);
+  font-weight: 700;
+}
+.account-console-head__user {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  min-width: 0;
+}
+.account-console-head__avatar {
   flex-shrink: 0;
-  width: 4.5rem;
-  height: 4.5rem;
-  border-radius: 1rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.75rem;
+  font-size: 1.1rem;
   font-weight: 700;
-  background: linear-gradient(145deg, rgba(99, 102, 241, 0.45), rgba(14, 165, 233, 0.25));
-  border: 1px solid rgba(99, 102, 241, 0.45);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(145deg, rgba(99, 102, 241, 0.4), rgba(14, 165, 233, 0.22));
+  border: 1px solid rgba(99, 102, 241, 0.4);
 }
-.hero-main {
+.account-console-head__meta {
   min-width: 0;
-  flex: 1;
 }
-.page-title {
-  margin: 0 0 0.35rem;
-  font-size: clamp(1.5rem, 2.5vw, 1.85rem);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-.hero-sub {
-  margin: 0 0 0.75rem;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 1rem;
-  font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.65);
-}
-.hero-name {
-  color: #fff;
+.account-console-head__name {
   font-weight: 600;
-  font-size: 1rem;
+  font-size: 0.95rem;
+  color: #fff;
 }
-.hero-email {
-  font-size: 0.85rem;
-  color: rgba(255, 255, 255, 0.5);
+.account-console-head__email {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.45);
   word-break: break-all;
+  margin-top: 0.1rem;
 }
-.hero-badges {
+.account-console-head__chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
 }
-.badge {
+.acct-chip {
   display: inline-flex;
   align-items: center;
-  padding: 0.35rem 0.7rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
   font-weight: 600;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
 }
-.badge-lv {
-  background: rgba(99, 102, 241, 0.2);
-  border-color: rgba(99, 102, 241, 0.35);
+.acct-chip--lv {
   color: #c7d2fe;
+  border-color: rgba(99, 102, 241, 0.35);
+  background: rgba(99, 102, 241, 0.15);
 }
-.badge-tier {
-  border-width: 1px;
-}
-.badge-tier--free {
+.acct-chip--tier-free {
   color: rgba(255, 255, 255, 0.75);
 }
-.badge-tier--vip {
+.acct-chip--tier-vip {
   color: #67e8f9;
-  border-color: rgba(103, 232, 249, 0.45);
-  box-shadow: 0 0 12px rgba(103, 232, 249, 0.15);
+  border-color: rgba(103, 232, 249, 0.35);
 }
-.badge-tier--vip_plus {
+.acct-chip--tier-vip_plus {
   color: #fde047;
-  border-color: rgba(253, 224, 71, 0.45);
-  box-shadow: 0 0 12px rgba(253, 224, 71, 0.2);
+  border-color: rgba(253, 224, 71, 0.35);
 }
-.badge-tier--svip1 { color: #c084fc; border-color: rgba(192, 132, 252, 0.4); }
-.badge-tier--svip2 { color: #f472b6; border-color: rgba(244, 114, 182, 0.4); }
-.badge-tier--svip3 { color: #34d399; border-color: rgba(52, 211, 153, 0.4); }
-.badge-tier--svip4 { color: #fb923c; border-color: rgba(251, 146, 60, 0.45); }
-.badge-tier--svip5 { color: #fb7185; border-color: rgba(251, 113, 133, 0.45); }
-.badge-tier--svip6 { color: #818cf8; border-color: rgba(129, 140, 248, 0.45); }
-.badge-tier--svip7 { color: #fbbf24; border-color: rgba(251, 191, 36, 0.5); }
-.badge-tier--svip8 {
+.acct-chip--tier-svip1 { color: #c084fc; border-color: rgba(192, 132, 252, 0.35); }
+.acct-chip--tier-svip2 { color: #f472b6; border-color: rgba(244, 114, 182, 0.35); }
+.acct-chip--tier-svip3 { color: #34d399; border-color: rgba(52, 211, 153, 0.35); }
+.acct-chip--tier-svip4 { color: #fb923c; border-color: rgba(251, 146, 60, 0.35); }
+.acct-chip--tier-svip5 { color: #fb7185; border-color: rgba(251, 113, 133, 0.35); }
+.acct-chip--tier-svip6 { color: #818cf8; border-color: rgba(129, 140, 248, 0.35); }
+.acct-chip--tier-svip7 { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
+.acct-chip--tier-svip8 {
   color: #fff;
   border: none;
-  background: linear-gradient(120deg, #f472b6, #fbbf24, #34d399, #38bdf8, #a78bfa);
-  background-clip: padding-box;
-  box-shadow: 0 0 16px rgba(248, 113, 113, 0.25);
+  background: linear-gradient(120deg, rgba(244, 114, 182, 0.5), rgba(251, 191, 36, 0.45), rgba(52, 211, 153, 0.4));
 }
 
-/* ---- Stats ---- */
-.stats-row {
+/* —— 主区：两列面板（类控制台「套餐 / 用量」分区） —— */
+.account-console-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 0.85rem;
+  margin-bottom: 1.1rem;
 }
-@media (max-width: 720px) {
-  .stats-row {
+@media (max-width: 840px) {
+  .account-console-grid {
     grid-template-columns: 1fr;
   }
 }
-.stat-card {
-  background: rgba(255, 255, 255, 0.04);
+.acct-panel {
+  background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   padding: 1rem 1.1rem;
   min-width: 0;
 }
-.stat-card--vip {
-  background: linear-gradient(145deg, rgba(99, 102, 241, 0.12), rgba(8, 145, 178, 0.08));
-  border-color: rgba(99, 102, 241, 0.2);
+.acct-panel--grow {
+  background: linear-gradient(165deg, rgba(99, 102, 241, 0.1), rgba(8, 145, 178, 0.05));
+  border-color: rgba(99, 102, 241, 0.18);
 }
-.stat-label {
-  font-size: 0.72rem;
-  text-transform: uppercase;
+.acct-panel--plan {
+  display: flex;
+  flex-direction: column;
+}
+.acct-panel__rowhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.85rem;
+}
+.acct-panel__h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+.acct-panel__kpi {
+  text-align: right;
+}
+.acct-panel__kpi-label {
+  display: block;
+  font-size: 0.68rem;
   letter-spacing: 0.06em;
-  color: rgba(255, 255, 255, 0.5);
-  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
 }
-.stat-value {
-  font-size: 1.25rem;
+.acct-panel__kpi-val {
+  font-size: 1.35rem;
   font-weight: 700;
-  line-height: 1.2;
-  word-break: break-word;
-}
-.stat-value--num {
   font-variant-numeric: tabular-nums;
   background: linear-gradient(90deg, #e0e7ff, #a5b4fc);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
-.stat-value--tier {
-  font-size: 1.1rem;
+.acct-grow-bar {
+  margin-bottom: 0.35rem;
 }
-.stat-value--free { color: rgba(255, 255, 255, 0.8); }
-.stat-value--vip { color: #67e8f9; text-shadow: 0 0 8px rgba(103, 232, 249, 0.25); }
-.stat-value--vip_plus { color: #fde047; text-shadow: 0 0 8px rgba(253, 224, 71, 0.25); }
-.stat-value--svip1 { color: #c084fc; }
-.stat-value--svip2 { color: #f472b6; }
-.stat-value--svip3 { color: #34d399; }
-.stat-value--svip4 { color: #fb923c; }
-.stat-value--svip5 { color: #fb7185; }
-.stat-value--svip6 { color: #818cf8; }
-.stat-value--svip7 { color: #fbbf24; }
-.stat-value--svip8 {
-  background: linear-gradient(90deg, #f87171, #fbbf24, #34d399, #38bdf8, #a78bfa);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+.acct-grow-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
 }
-.stat-foot {
-  margin-top: 0.4rem;
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.45);
-  line-height: 1.4;
+.acct-grow-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6366f1, #38bdf8);
+  transition: width 0.35s ease;
 }
-
-/* ---- Grid: level + membership ---- */
-.account-grid {
-  display: grid;
-  grid-template-columns: 1.15fr 1fr;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-@media (max-width: 800px) {
-  .account-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.card {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 1.25rem;
-}
-.card-title {
-  margin: 0 0 1rem;
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.92);
-}
-.card-level {
-  background: linear-gradient(160deg, rgba(99, 102, 241, 0.12), rgba(8, 145, 178, 0.06));
-  border-color: rgba(99, 102, 241, 0.2);
-}
-.level-head--inline {
-  margin-bottom: 0.9rem;
-}
-.card-spotlight {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.12));
-  border-color: rgba(255, 255, 255, 0.1);
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-.spotlight-lead {
-  margin: 0 0 0.5rem;
-  font-size: 0.95rem;
-  color: rgba(255, 255, 255, 0.85);
-}
-.spotlight-tier {
-  font-weight: 700;
-  font-size: 1.1rem;
-}
-.spotlight-tier--free { color: rgba(255, 255, 255, 0.8); }
-.spotlight-tier--vip { color: #67e8f9; }
-.spotlight-tier--vip_plus { color: #fde047; }
-.spotlight-tier--svip1 { color: #c084fc; }
-.spotlight-tier--svip2 { color: #f472b6; }
-.spotlight-tier--svip3 { color: #34d399; }
-.spotlight-tier--svip4 { color: #fb923c; }
-.spotlight-tier--svip5 { color: #fb7185; }
-.spotlight-tier--svip6 { color: #818cf8; }
-.spotlight-tier--svip7 { color: #fbbf24; }
-.spotlight-tier--svip8 {
-  background: linear-gradient(90deg, #f472b6, #fbbf24, #60a5fa, #a78bfa, #c084fc);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-.spotlight-desc {
-  margin: 0 0 1.1rem;
-  font-size: 0.85rem;
-  line-height: 1.55;
-  color: rgba(255, 255, 255, 0.55);
-  flex: 1;
-}
-.spotlight-actions {
+.acct-grow-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.6rem;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.65);
 }
-
-/* ---- Quick nav ---- */
-.quick-nav {
+.acct-grow-meta strong {
+  color: #fff;
+  font-weight: 600;
+}
+.acct-grow-pct {
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.75rem;
+}
+.acct-details {
+  margin-top: 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.45rem;
+}
+.acct-details summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: rgba(165, 180, 252, 0.95);
+  user-select: none;
+}
+.acct-details summary:hover {
+  color: #c7d2fe;
+}
+.acct-details__body {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.48);
+}
+.acct-plan-line {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+.acct-plan-tier {
+  font-weight: 700;
+}
+.acct-plan-tier--free {
+  color: rgba(255, 255, 255, 0.85);
+}
+.acct-plan-tier--vip {
+  color: #67e8f9;
+}
+.acct-plan-tier--vip_plus {
+  color: #fde047;
+}
+.acct-plan-tier--svip1 { color: #c084fc; }
+.acct-plan-tier--svip2 { color: #f472b6; }
+.acct-plan-tier--svip3 { color: #34d399; }
+.acct-plan-tier--svip4 { color: #fb923c; }
+.acct-plan-tier--svip5 { color: #fb7185; }
+.acct-plan-tier--svip6 { color: #818cf8; }
+.acct-plan-tier--svip7 { color: #fbbf24; }
+.acct-plan-tier--svip8 {
+  background: linear-gradient(90deg, #f472b6, #fbbf24, #60a5fa, #a78bfa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.acct-plan-desc {
+  margin: 0 0 1rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.5);
+  flex: 1;
+}
+.acct-plan-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 1.5rem;
-  padding: 0.2rem 0;
+  margin-top: auto;
 }
-.quick-link {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.45rem 0.85rem;
-  border-radius: 8px;
-  font-size: 0.88rem;
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+
+/* —— 次级导航：横条分段 —— */
+.acct-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 1.35rem;
+  padding: 0.35rem;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.acct-subnav__link {
+  padding: 0.38rem 0.75rem;
+  border-radius: 7px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.78);
   text-decoration: none;
-  transition: background 0.2s, border-color 0.2s;
+  border: 1px solid transparent;
 }
-.quick-link:hover {
-  background: rgba(99, 102, 241, 0.2);
+.acct-subnav__link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+.acct-subnav__link.router-link-active {
+  background: rgba(99, 102, 241, 0.22);
   border-color: rgba(99, 102, 241, 0.35);
+  color: #e0e7ff;
 }
 
 /* ---- Forms ---- */
@@ -596,74 +620,60 @@ async function changePw() {
   color: #fca5a5;
 }
 
-/* Level card body (reused) */
-.level-head {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.level-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 48px;
-  height: 48px;
-  padding: 0 10px;
+/* 表单区卡片（与上方控制台面板区分命名） */
+.card {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
-  font-weight: 700;
-  font-size: 1rem;
-  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.35);
+  padding: 1.1rem 1.15rem;
 }
-.level-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.level-title {
+.card-title {
+  margin: 0 0 0.85rem;
   font-size: 0.95rem;
   font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
 }
-.level-sub {
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.65);
+
+.account-api-keys {
+  margin-bottom: 1.5rem;
+  scroll-margin-top: 88px;
 }
-.level-progress {
-  margin-bottom: 0.6rem;
-}
-.progress-track {
-  width: 100%;
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-}
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #6366f1, #38bdf8);
-  border-radius: inherit;
-  transition: width 0.4s ease;
-}
-.progress-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 0.45rem;
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.7);
-}
-.progress-meta strong {
-  color: #fff;
+.account-api-keys__h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.15rem;
   font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
 }
-.progress-pct {
-  font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.55);
+.account-api-keys__lead {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.65);
+  line-height: 1.55;
+  max-width: 52rem;
 }
-.level-hint {
-  margin: 0;
+.account-api-keys__lead code {
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.45);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+}
+.account-api-keys__embed {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  background: #111111;
+  padding: 20px;
+}
+.account-api-keys__more {
+  margin: 1rem 0 0;
+  font-size: 0.85rem;
+}
+.account-api-keys__link {
+  color: #a5b4fc;
+  text-decoration: none;
+}
+.account-api-keys__link:hover {
+  text-decoration: underline;
 }
 </style>

@@ -41,9 +41,55 @@ class KnowledgeClient(ABC):
     def search(self, request: KnowledgeSearchRequest) -> List[KnowledgeSearchHit]:
         ...
 
+    def index_text_chunks(
+        self,
+        *,
+        collection_id: int,
+        ids: List[str],
+        embeddings: List[List[float]],
+        documents: List[str],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
+        """Upsert vector chunks into the backing store (Chroma / Redis 等由实现决定)。"""
+        raise NotImplementedError
+
+    def delete_vectors(self, *, collection_id: int, ids: Optional[List[str]] = None) -> int:
+        """Delete vectors by id list; returns best-effort removed count."""
+
+        raise NotImplementedError
+
 
 class InProcessKnowledgeClient(KnowledgeClient):
     """Default port wired to the current ``rag_service`` implementation."""
+
+    def index_text_chunks(
+        self,
+        *,
+        collection_id: int,
+        ids: List[str],
+        embeddings: List[List[float]],
+        documents: List[str],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
+        from modstore_server.vector_engine import kb_collection_name, upsert
+
+        name = kb_collection_name(int(collection_id))
+        return int(
+            upsert(
+                name,
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
+            )
+        )
+
+    def delete_vectors(self, *, collection_id: int, ids: Optional[List[str]] = None) -> int:
+        from modstore_server.vector_engine import delete as vec_delete
+        from modstore_server.vector_engine import kb_collection_name
+
+        name = kb_collection_name(int(collection_id))
+        return int(vec_delete(name, ids=ids))
 
     def search(self, request: KnowledgeSearchRequest) -> List[KnowledgeSearchHit]:
         from modstore_server.rag_service import retrieve_for_subject

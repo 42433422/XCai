@@ -26,6 +26,7 @@ public class AuthController {
         userMap.put("id", user.getId());
         userMap.put("username", user.getUsername());
         userMap.put("email", user.getEmail() == null ? "" : user.getEmail());
+        userMap.put("phone", user.getPhone() == null ? "" : user.getPhone());
         userMap.put("is_admin", user.isAdmin());
         userMap.put("experience", user.getExperience());
         userMap.put("level_profile", LevelProfileBuilder.build(user.getExperience()));

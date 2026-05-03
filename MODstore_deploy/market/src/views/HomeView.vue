@@ -6,7 +6,7 @@
         <div class="landing-nav-inner">
           <router-link to="/" class="landing-logo">XC AGI</router-link>
           <nav class="landing-nav-links">
-            <router-link :to="{ name: 'ai-store' }" class="nav-ghost">AI 员工商店</router-link>
+            <router-link :to="{ name: 'ai-store' }" class="nav-ghost">AI 市场</router-link>
             <router-link :to="workbenchLink" class="nav-ghost">进入工作台</router-link>
             <router-link
               v-if="!isLoggedIn"
@@ -174,18 +174,62 @@
       </div>
     </section>
 
+    <!-- 联系表单（对接 POST /api/public/contact） -->
+    <section id="contact" class="section section--border-top">
+      <div class="container grid grid-2">
+        <div class="contact-intro">
+          <h2 class="section-title">商务合作与咨询</h2>
+          <p class="section-description contact-intro__text">
+            留下您的需求与联系方式，我们会通过邮箱尽快回复。信息将保存至平台数据库，仅用于商务联络。
+          </p>
+        </div>
+        <form id="contact-form" class="contact-form" @submit.prevent="submitContact">
+          <div class="form-group">
+            <label for="contact-name">称呼</label>
+            <input id="contact-name" v-model.trim="contactForm.name" type="text" required maxlength="128" autocomplete="name" />
+          </div>
+          <div class="form-group">
+            <label for="contact-email">邮箱</label>
+            <input id="contact-email" v-model.trim="contactForm.email" type="email" required maxlength="256" autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="contact-phone">电话（选填）</label>
+            <input id="contact-phone" v-model.trim="contactForm.phone" type="tel" maxlength="64" autocomplete="tel" />
+          </div>
+          <div class="form-group">
+            <label for="contact-company">公司 / 组织（选填）</label>
+            <input id="contact-company" v-model.trim="contactForm.company" type="text" maxlength="256" autocomplete="organization" />
+          </div>
+          <div class="form-group">
+            <label for="contact-message">需求说明（选填）</label>
+            <textarea id="contact-message" v-model.trim="contactForm.message" maxlength="8000" rows="4" />
+          </div>
+          <div v-if="contactError" class="error-message">{{ contactError }}</div>
+          <div v-if="contactSuccess" class="success-message">已提交，我们会尽快与您联系。</div>
+          <div class="form-actions contact-form__actions">
+            <button type="submit" class="btn btn-primary" :disabled="contactSubmitting">
+              {{ contactSubmitting ? '提交中…' : '提交' }}
+            </button>
+          </div>
+          <p id="form-tip" class="footer-meta">
+            提交后写入服务器数据库；若提示失败请检查网络或稍后重试。
+          </p>
+        </form>
+      </div>
+    </section>
+
     <!-- Market（顶栏「AI 员工」锚点） -->
     <section id="ai-market" class="section section--border-top">
       <div class="container">
         <div class="section-header">
           <h2 class="section-title">
-            <router-link class="section-title-link" :to="{ name: 'ai-store' }">AI 员工市场</router-link>
+            <router-link class="section-title-link" :to="{ name: 'ai-store' }">XC AGI · AI 市场</router-link>
           </h2>
           <p class="section-description">
-            浏览和购买现成的 MOD 扩展，快速为你的业务系统添加能力。
-            <router-link :to="{ name: 'ai-store' }" class="section-more-link">进入专属商店页（按行业 / 类型筛选）</router-link>
+            浏览和购买 AI 员工、提示词、Skill、TTS 声音模型与 MOD 素材，快速为你的业务系统添加能力。
+            <router-link :to="{ name: 'ai-store' }" class="section-more-link">进入 AI 市场（按行业 / 类目 / 授权筛选）</router-link>
           </p>
-          <button v-if="isLoggedIn" @click="showUploadModal = true" class="btn btn-primary">上架员工</button>
+          <button v-if="isLoggedIn" @click="showUploadModal = true" class="btn btn-primary">上架素材</button>
         </div>
 
         <div v-if="loading" class="market-loading">加载中...</div>
@@ -201,15 +245,15 @@
             </div>
           </div>
         </div>
-        <div v-else class="market-empty">市场暂无商品</div>
+        <div v-else class="market-empty">AI 市场暂无商品</div>
       </div>
     </section>
 
-    <!-- 上架员工模态框 -->
+    <!-- 上架素材模态框 -->
     <div v-if="showUploadModal" class="modal-overlay" @click="showUploadModal = false">
       <div class="modal-content" @click.stop>
         <div class="modal-header">
-          <h3>上架员工</h3>
+          <h3>上架 AI 员工素材</h3>
           <button @click="showUploadModal = false" class="modal-close">&times;</button>
         </div>
         <div class="modal-body">
@@ -229,6 +273,32 @@
             <div class="form-group">
               <label for="employee-price">价格 (¥)</label>
               <input type="number" id="employee-price" v-model.number="uploadForm.price" min="0" step="0.01">
+            </div>
+            <div class="form-group">
+              <label for="employee-license">授权范围</label>
+              <select id="employee-license" v-model="uploadForm.license_scope">
+                <option value="personal">个人使用</option>
+                <option value="commercial">商业授权（可收费）</option>
+                <option value="free_personal">免费个人用</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="employee-origin">来源类型</label>
+              <select id="employee-origin" v-model="uploadForm.origin_type">
+                <option value="original">原创</option>
+                <option value="derivative">二创/改编</option>
+                <option value="collaboration">联动授权</option>
+                <option value="fan_linkage">粉丝联动</option>
+                <option value="suspected_plagiarism">疑似抄袭</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="employee-risk">IP 风险级别</label>
+              <select id="employee-risk" v-model="uploadForm.ip_risk_level">
+                <option value="low">低</option>
+                <option value="medium">中（只能免费/个人用）</option>
+                <option value="high">高（只能免费/个人用）</option>
+              </select>
             </div>
             <div class="form-group">
               <label for="employee-file">员工包文件 (.xcemp 或 .zip)</label>
@@ -272,7 +342,7 @@
             <div class="footer-col">
               <h4 class="footer-heading">产品</h4>
               <router-link to="/" class="footer-link">首页</router-link>
-              <router-link :to="{ name: 'ai-store' }" class="footer-link">AI 员工商店</router-link>
+              <router-link :to="{ name: 'ai-store' }" class="footer-link">AI 市场</router-link>
               <router-link to="/plans" class="footer-link">套餐</router-link>
             </div>
             <div class="footer-col">
@@ -335,12 +405,26 @@ const uploadForm = ref({
   name: '',
   description: '',
   industry: '',
-  price: 0
+  price: 0,
+  license_scope: 'personal',
+  origin_type: 'original',
+  ip_risk_level: 'low',
 })
 const uploadFile = ref(null)
 const uploadError = ref('')
 const uploadSuccess = ref(false)
 const uploading = ref(false)
+
+const contactForm = ref({
+  name: '',
+  email: '',
+  phone: '',
+  company: '',
+  message: '',
+})
+const contactSubmitting = ref(false)
+const contactError = ref('')
+const contactSuccess = ref(false)
 
 /** 已登录直接去仓库工作台；未登录去登录页并带回跳，避免已登录点 /login 被守卫立即打回首页像「点不动」 */
 const workbenchLink = computed(() =>
@@ -380,6 +464,29 @@ function handleFileChange(event) {
   uploadFile.value = event.target.files[0]
 }
 
+async function submitContact() {
+  if (contactSubmitting.value) return
+  contactError.value = ''
+  contactSuccess.value = false
+  contactSubmitting.value = true
+  try {
+    await api.submitLandingContact({
+      name: contactForm.value.name,
+      email: contactForm.value.email,
+      phone: contactForm.value.phone,
+      company: contactForm.value.company,
+      message: contactForm.value.message,
+      source: 'home',
+    })
+    contactSuccess.value = true
+    contactForm.value = { name: '', email: '', phone: '', company: '', message: '' }
+  } catch (e) {
+    contactError.value = e?.message || '提交失败，请稍后重试'
+  } finally {
+    contactSubmitting.value = false
+  }
+}
+
 async function uploadEmployee() {
   if (!uploadFile.value) {
     uploadError.value = '请选择员工包文件'
@@ -391,6 +498,15 @@ async function uploadEmployee() {
   uploading.value = true
 
   try {
+    const paid = Number(uploadForm.value.price || 0) > 0
+    const risky = ['derivative', 'collaboration', 'fan_linkage', 'suspected_plagiarism'].includes(uploadForm.value.origin_type)
+      || ['medium', 'high'].includes(uploadForm.value.ip_risk_level)
+    if (paid && uploadForm.value.license_scope !== 'commercial') {
+      throw new Error('收费商品必须选择商业授权')
+    }
+    if (risky && (paid || uploadForm.value.license_scope === 'commercial')) {
+      throw new Error('疑似抄袭、二创、联动或中高风险素材只能免费或限制个人使用')
+    }
     // 生成唯一的包ID和版本号
     const pkgId = `employee_${Date.now()}_${Math.floor(Math.random() * 1000)}`
     const version = '1.0.0'
@@ -401,6 +517,10 @@ async function uploadEmployee() {
       name: uploadForm.value.name,
       description: uploadForm.value.description,
       artifact: 'employee_pack',
+      material_category: 'ai_employee',
+      license_scope: uploadForm.value.license_scope,
+      origin_type: uploadForm.value.origin_type,
+      ip_risk_level: uploadForm.value.ip_risk_level,
       industry: uploadForm.value.industry || '通用',
       commerce: {
         price: uploadForm.value.price
@@ -415,7 +535,10 @@ async function uploadEmployee() {
       name: '',
       description: '',
       industry: '',
-      price: 0
+      price: 0,
+      license_scope: 'personal',
+      origin_type: 'original',
+      ip_risk_level: 'low',
     }
     uploadFile.value = null
     
@@ -1017,6 +1140,84 @@ onUnmounted(() => {
   line-height: 1.8;
   color: rgba(255, 255, 255, 0.5);
   margin: 0;
+}
+
+#contact {
+  scroll-margin-top: calc(var(--nav-h) + 16px);
+}
+
+.container.grid {
+  display: grid;
+  gap: clamp(1.5rem, 4vw, 2.5rem);
+  align-items: start;
+}
+
+.container.grid-2 {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+@media (max-width: 768px) {
+  .container.grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.contact-intro__text {
+  max-width: none;
+}
+
+.contact-form {
+  padding: clamp(1rem, 3vw, 1.5rem);
+  border-radius: 12px;
+  border: 0.5px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.contact-form .form-group {
+  margin-bottom: 14px;
+}
+
+.contact-form .form-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.contact-form .form-group input,
+.contact-form .form-group textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #ffffff;
+  font-size: 14px;
+}
+
+.contact-form .form-group textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
+.contact-form .form-group input:focus,
+.contact-form .form-group textarea:focus {
+  outline: none;
+  border-color: #60a5fa;
+}
+
+.contact-form__actions {
+  margin-top: 8px;
+  justify-content: flex-start;
+}
+
+.footer-meta {
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.38);
 }
 
 /* Market */

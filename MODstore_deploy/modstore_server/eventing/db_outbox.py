@@ -43,7 +43,7 @@ from modstore_server.eventing.contracts import (
 )
 from modstore_server.eventing.events import DomainEvent, new_event
 from modstore_server.eventing.global_bus import neuro_bus
-from modstore_server.models import OutboxEvent, get_session_factory
+from modstore_server.models import OutboxDeadLetter, OutboxEvent, get_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,20 @@ def mark_failed(record_id: int, error: str, *, terminal: bool) -> None:
         row.last_error = (error or "")[:1000]
         if terminal:
             row.status = "failed"
+            session.add(
+                OutboxDeadLetter(
+                    source_outbox_id=int(row.id),
+                    event_id=str(row.event_id),
+                    event_name=str(row.event_name),
+                    event_version=int(row.event_version or 1),
+                    aggregate_id=str(row.aggregate_id or ""),
+                    idempotency_key=str(row.idempotency_key or ""),
+                    producer=str(row.producer or "modstore-python"),
+                    payload_json=str(row.payload_json or "{}"),
+                    attempts=int(row.attempts or 0),
+                    last_error=str(row.last_error or "")[:2000],
+                )
+            )
 
 
 def _max_attempts() -> int:

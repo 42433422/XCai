@@ -757,6 +757,26 @@ class OutboxEvent(Base):
     dispatched_at = Column(DateTime, nullable=True)
 
 
+class OutboxDeadLetter(Base):
+    """终端失败 outbox 行归档，供人工重放 / 丢弃。"""
+
+    __tablename__ = "event_outbox_dlq"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_outbox_id = Column(Integer, nullable=True, index=True)
+    event_id = Column(String(128), nullable=False, index=True)
+    event_name = Column(String(64), nullable=False, index=True)
+    event_version = Column(Integer, default=1, nullable=False)
+    aggregate_id = Column(String(128), default="", index=True)
+    idempotency_key = Column(String(192), default="", index=True)
+    producer = Column(String(64), default="modstore-python")
+    payload_json = Column(Text, default="{}")
+    attempts = Column(Integer, default=0, nullable=False)
+    last_error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    moved_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ScriptWorkflow(Base):
     """脚本即工作流：替代节点图模型的主体，存放完整 ``script.py`` + Brief。
 

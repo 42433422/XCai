@@ -144,6 +144,11 @@ def test_replay_window_matches_contract():
     assert payment_api.REPLAY_WINDOW == payment_contract.REPLAY_WINDOW_SECONDS
 
 
+def test_notify_idempotency_ttl_matches_java_security_service():
+    """Java ``SecurityService.NOTIFY_IDEMPOTENCY_SECONDS`` must stay aligned."""
+    assert payment_contract.NOTIFY_IDEMPOTENCY_SECONDS == 86_400
+
+
 # ---- Event contract pinning ----------------------------------------------
 
 

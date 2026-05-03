@@ -38,3 +38,10 @@ MODstore_deploy/keys_staging/
 *.log
 *.db
 *.sqlite3
+
+# 仓库根误生成的依赖与构建目录（勿提交）
+/node_modules/
+/dist/
+
+# 本地工作台会话数据
+MODstore_deploy/modstore_server/data/workbench_sessions/

@@ -92,6 +92,29 @@ def test_eventing_package_does_not_import_business_apis():
     assert offenders == []
 
 
+def test_new_domain_port_modules_stay_below_application_layer():
+    """DDD domain/*/ports.py must not reach up into FastAPI routers."""
+
+    for rel in (
+        "domain/analytics/ports.py",
+        "domain/auth/ports.py",
+        "domain/catalog/ports.py",
+        "domain/employee/ports.py",
+        "domain/knowledge/ports.py",
+        "domain/llm/ports.py",
+        "domain/market/ports.py",
+        "domain/payment_gateway/ports.py",
+        "domain/refund/ports.py",
+        "domain/wallet/ports.py",
+        "domain/workflow/ports.py",
+    ):
+        text = _read(rel)
+        if not text:
+            continue
+        assert "from modstore_server.market_api" not in text
+        assert "from fastapi" not in text
+
+
 def test_outbox_does_not_couple_to_specific_domain_models():
     """The outbox table is a generic envelope. Pulling in payment / employee
     SQLAlchemy models inside ``db_outbox.py`` would re-couple it to the

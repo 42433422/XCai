@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[web,knowledge,dev]" || pip install -e ".[web,knowledge]"
+      - name: Pytest
+        env:
+          MODSTORE_JWT_SECRET: "ci-test-secret-at-least-32-characters-long"
+          MODSTORE_DATABASE_URL: "sqlite+pysqlite:///:memory:"
+        run: pytest -q || pytest tests/ -q
+
+  java:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: java_payment_service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Maven verify
+        run: mvn -B verify
+
+  market:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: market
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: market/package-lock.json
+      - name: Install and typecheck
+        run: |
+          npm ci
+          npm run typecheck:ci

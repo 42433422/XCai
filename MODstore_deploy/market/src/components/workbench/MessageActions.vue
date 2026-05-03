@@ -1,16 +1,16 @@
 <template>
-  <div class="msg-act" role="group" aria-label="消息操作">
+  <div class="msg-act" :class="`msg-act--${role}`" role="group" aria-label="消息操作">
     <button v-if="role === 'assistant'" type="button" class="msg-act__btn" :title="speakLabel" @click="$emit('speak')">
-      <span aria-hidden="true">{{ speakIcon }}</span> {{ speakLabel }}
+      {{ speakLabel }}
     </button>
     <button type="button" class="msg-act__btn" title="复制原文" @click="onCopy">
-      <span aria-hidden="true">📋</span> {{ copied ? '已复制' : '复制' }}
+      {{ copied ? '已复制' : '复制' }}
     </button>
     <button v-if="role === 'user'" type="button" class="msg-act__btn" title="编辑后重发" @click="$emit('edit')">
-      <span aria-hidden="true">✎</span> 编辑
+      编辑
     </button>
     <button v-if="role === 'assistant' && canRegenerate" type="button" class="msg-act__btn" title="重新生成" @click="$emit('regenerate')">
-      <span aria-hidden="true">↻</span> 重答
+      重答
     </button>
     <button
       v-if="role === 'assistant'"
@@ -50,7 +50,6 @@ defineEmits<{
 }>()
 
 const copied = ref(false)
-const speakIcon = computed(() => (props.speaking ? '⏹' : '🔊'))
 const speakLabel = computed(() => (props.speaking ? '停止' : '朗读'))
 
 async function onCopy() {
@@ -70,39 +69,70 @@ async function onCopy() {
 .msg-act {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.3rem;
-  margin-top: 0.4rem;
+  gap: 0.28rem;
+  margin-top: 0.5rem;
+  opacity: 0.58;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.msg-act:hover,
+.msg-act:focus-within {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.msg-act--user {
+  justify-content: flex-end;
 }
 
 .msg-act__btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
-  padding: 0.2rem 0.55rem;
-  border-radius: 0.42rem;
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: rgba(203, 213, 225, 0.8);
-  font-size: 0.72rem;
+  justify-content: center;
+  min-height: 1.52rem;
+  padding: 0.12rem 0.56rem;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
+    rgba(15, 23, 42, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  color: rgba(203, 213, 225, 0.68);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  transition:
+    background 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
 }
 
 .msg-act__btn:hover {
-  background: rgba(99, 102, 241, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03)),
+    rgba(99, 102, 241, 0.16);
   color: #fff;
-  border-color: rgba(165, 180, 252, 0.32);
+  border-color: rgba(165, 180, 252, 0.3);
+  transform: translateY(-1px);
 }
 
 .msg-act__btn--up {
-  background: rgba(45, 212, 191, 0.22);
+  background:
+    linear-gradient(180deg, rgba(94, 234, 212, 0.16), rgba(45, 212, 191, 0.07)),
+    rgba(15, 23, 42, 0.22);
   color: #5eead4;
-  border-color: rgba(45, 212, 191, 0.35);
+  border-color: rgba(45, 212, 191, 0.32);
 }
 
 .msg-act__btn--down {
-  background: rgba(248, 113, 113, 0.22);
+  background:
+    linear-gradient(180deg, rgba(248, 113, 113, 0.14), rgba(248, 113, 113, 0.06)),
+    rgba(15, 23, 42, 0.22);
   color: #fca5a5;
-  border-color: rgba(248, 113, 113, 0.32);
+  border-color: rgba(248, 113, 113, 0.28);
 }
 </style>

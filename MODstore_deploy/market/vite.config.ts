@@ -70,10 +70,10 @@ export default defineConfig(({ command }) => {
         // Per-file thresholds on contract-critical client modules ensure the
         // payment surface is properly tested even before the rest of the app.
         thresholds: {
-          statements: 7,
-          branches: 6,
-          functions: 4,
-          lines: 7,
+          statements: 8,
+          branches: 7,
+          functions: 5,
+          lines: 8,
           'src/application/paymentApi.ts': {
             statements: 80,
             branches: 70,

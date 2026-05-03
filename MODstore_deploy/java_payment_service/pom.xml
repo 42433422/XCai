@@ -25,8 +25,9 @@
         -->
         <jacoco.line.coverage>0.80</jacoco.line.coverage>
         <jacoco.branch.coverage>0.70</jacoco.branch.coverage>
-        <jacoco.bundle.line.coverage>0.10</jacoco.bundle.line.coverage>
-        <jacoco.bundle.branch.coverage>0.04</jacoco.bundle.branch.coverage>
+        <!-- BUNDLE 全量门槛：向 0.80/0.70 递增；当前与新增测例对齐的中间档位 -->
+        <jacoco.bundle.line.coverage>0.65</jacoco.bundle.line.coverage>
+        <jacoco.bundle.branch.coverage>0.50</jacoco.bundle.branch.coverage>
     </properties>
 
     <dependencies>
@@ -214,6 +215,10 @@
                                     <includes>
                                         <include>com.modstore.service.SecurityService</include>
                                         <include>com.modstore.service.WebhookDispatcher</include>
+                                        <include>com.modstore.service.OrderService</include>
+                                        <include>com.modstore.service.WalletService</include>
+                                        <include>com.modstore.service.EntitlementService</include>
+                                        <include>com.modstore.service.RefundService</include>
                                         <include>com.modstore.event.EventContracts</include>
                                         <include>com.modstore.util.MoneyUtils</include>
                                     </includes>

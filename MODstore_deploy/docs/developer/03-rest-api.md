@@ -24,6 +24,7 @@
 | `/api/openapi-connectors` | OpenAPI 连接器 | 解析、调用第三方 API |
 | `/api/realtime/ws` | 实时 | WebSocket 事件流 |
 | `/api/developer/*` | **开发者门户（M2）** | PAT 管理、Webhook 订阅、投递日志、测试发送 |
+| `/v1/mod-sync/*` | **Mod 同步** | 使用账号 JWT 或带 `mod:sync` 的 PAT，将库与 XCAGI `mods/` 推送/拉回 |
 | `/api/webhooks` | Webhook 管理 | 历史投递重放（仅管理员） |
 | `/api/refunds` | 退款 | 申请、审批 |
 | `/api/analytics` | 数据 | 看板汇总 |
@@ -68,4 +69,40 @@ GET    /api/developer/webhooks/event-catalog        可订阅事件清单
 GET    /api/developer/webhooks/{id}/deliveries      投递日志
 POST   /api/developer/webhooks/{id}/test            发送测试事件
 POST   /api/developer/webhooks/deliveries/{id}/retry  手动重试一次失败投递
+```
+
+## Mod 同步（账号化）
+
+同步接口是写操作，不再使用全局 `MODSTORE_CATALOG_UPLOAD_TOKEN`。推荐在开发者门户创建带
+`mod:sync` scope 的 PAT，用于本地 XCAGI / FHD 或 CI 脚本。
+
+```
+POST /v1/mod-sync/push   库 -> XCAGI/mods（仅服务端磁盘）
+POST /v1/mod-sync/pull   XCAGI/mods -> 库（仅服务端磁盘）
+GET  /v1/mod-sync/mods   列出当前账号可同步的 Mod（与 /api/mods 范围一致）
+GET  /v1/mod-sync/export-zip/{mod_id}   下载与「工作台导出」相同布局的 zip（跨机：本机 modman remote-deploy）
+```
+
+跨机场景：线上在 `xiu-ci.com` 编辑库，本机 XCAGI 要更新时，在本机执行：
+
+```bash
+python -m modman remote-deploy --base-url https://xiu-ci.com --token pat_xxx --xcagi /path/to/local/XCAGI --mods my-mod
+# 或一次拉全部「校验通过」且你有权限的 Mod：
+python -m modman remote-deploy --base-url https://xiu-ci.com --token "$MODSTORE_PAT" --xcagi /path/to/XCAGI --all
+```
+
+请求体：
+
+```json
+{ "mod_ids": ["example-mod"] }
+```
+
+`mod_ids` 省略、`null` 或空数组表示“同步当前凭证允许的全部 Mod”：普通用户仅限自己拥有的
+Mod，管理员可同步库内全部合法 Mod。
+
+```bash
+curl -X POST https://xiu-ci.com/v1/mod-sync/push \
+  -H "Authorization: Bearer pat_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"mod_ids":["example-mod"]}'
 ```

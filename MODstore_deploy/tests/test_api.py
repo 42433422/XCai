@@ -162,7 +162,10 @@ def test_sync_push_pull(tmp_path, monkeypatch):
         },
     )
     assert r.status_code == 200, r.text
-    h = {"Authorization": f"Bearer {r.json()['token']}"}
+    reg = r.json()
+    tok = reg.get("access_token") or reg.get("token")
+    assert tok, reg
+    h = {"Authorization": f"Bearer {tok}"}
 
     r = c.post("/api/mods/create", json={"mod_id": "sync-m", "display_name": "S"}, headers=h)
     assert r.status_code == 200
@@ -177,7 +180,7 @@ def test_sync_push_pull(tmp_path, monkeypatch):
     assert (library / "sync-m" / "manifest.json").is_file()
 
 
-@patch("modstore_server.app.httpx.Client")
+@patch("modstore_server.api.debug.httpx.Client")
 def test_xcagi_loading_status_mocked(mock_client_cls, client):
     mock_resp = MagicMock()
     mock_resp.status_code = 200

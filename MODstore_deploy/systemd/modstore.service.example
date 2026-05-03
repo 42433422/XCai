@@ -1,0 +1,20 @@
+# 示例：MODstore FastAPI（与 sync-modstore-to-server 默认树 /root/modstore-git/MODstore_deploy 一致）
+# 安装：复制为 /etc/systemd/system/modstore.service 或仅用 scripts/align_modstore_systemd_to_deploy.sh 写 drop-in。
+#
+# systemctl enable --now modstore
+
+[Unit]
+Description=MODstore FastAPI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/modstore-git/MODstore_deploy
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/modstore-git/MODstore_deploy/.venv/bin/python -m uvicorn modstore_server.app:app --host 0.0.0.0 --port 9999
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

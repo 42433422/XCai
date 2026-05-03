@@ -18,7 +18,8 @@ from modstore_server.models import (
     WorkflowEdge,
     get_session_factory,
 )
-from modstore_server.eventing import new_event
+from modstore_server.eventing.contracts import WORKFLOW_SANDBOX_COMPLETED
+from modstore_server.eventing.events import new_event
 from modstore_server.eventing.global_bus import neuro_bus
 from modstore_server.workflow_variables import eval_condition, resolve_value
 
@@ -408,9 +409,9 @@ class WorkflowEngine:
             )
 
         try:
-            from modstore_server.employee_executor import _run_coro_sync
+            from modstore_server.runtime_async import run_coro_sync
 
-            chunks = _run_coro_sync(_run())
+            chunks = run_coro_sync(_run())
         except Exception as e:  # noqa: BLE001
             logger.warning("knowledge_search 节点执行失败: %s", e)
             return {
@@ -450,11 +451,18 @@ class WorkflowEngine:
         output_mapping = config.get("output_mapping") or {}
         last_err = None
         try:
-            from modstore_server.employee_executor import execute_employee_task
+            from modstore_server.services.employee import get_default_employee_client
+
             result = None
             for _ in range(max(1, retry_count + 1)):
                 with ThreadPoolExecutor(max_workers=1) as ex:
-                    future = ex.submit(execute_employee_task, employee_id, task, input_data, user_id)
+                    future = ex.submit(
+                        get_default_employee_client().execute_task,
+                        employee_id=employee_id,
+                        task=task,
+                        input_data=input_data,
+                        user_id=user_id,
+                    )
                     try:
                         result = future.result(timeout=timeout_seconds)
                         break
@@ -723,6 +731,7 @@ def run_workflow_sandbox(
     user_id: int = 0,
 ) -> Dict[str, Any]:
     SessionFactory = get_session_factory()
+    t0 = time.perf_counter()
     with SessionFactory() as session:
         workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
         if not workflow:
@@ -742,17 +751,22 @@ def run_workflow_sandbox(
             validate_only=validate_only,
             user_id=user_id,
         )
+        duration_ms = round((time.perf_counter() - t0) * 1000, 3)
+        status = "success" if result.get("ok") else "failed"
         neuro_bus.publish(
             new_event(
-                "workflow.sandbox_completed",
+                WORKFLOW_SANDBOX_COMPLETED,
                 producer="workflow",
                 subject_id=str(workflow_id),
                 payload={
                     "workflow_id": workflow_id,
                     "user_id": user_id,
+                    "status": status,
+                    "duration_ms": duration_ms,
                     "ok": bool(result.get("ok")),
                     "validate_only": validate_only,
                 },
+                idempotency_key=f"{WORKFLOW_SANDBOX_COMPLETED}:{workflow_id}:{duration_ms}",
             )
         )
         return result

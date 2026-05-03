@@ -8,7 +8,7 @@
 - [ ] 支付相关变更已通过 `docs/PAYMENT_GRAY_RELEASE.md` 预检。
 - [ ] 备份已完成：`python scripts/backup_modstore.py --components postgres,modstore_data`。
 - [ ] 预发冒烟通过：`python scripts/sre_smoke_check.py ...`。
-- [ ] 轻量压测通过：`K6_STAGE=smoke k6 run perf/full_link_smoke.js`。
+- [ ] 轻量压测通过：`K6_STAGE=smoke k6 run perf/full_link_smoke.js`；若本次为正式容量/回归基线重跑，同步更新 [`docs/perf-benchmark-public.md`](../perf-benchmark-public.md)。
 - [ ] Grafana 无未处理 P0/P1 告警。
 
 ## 发布中

@@ -12,6 +12,10 @@ describe('personalSettings', () => {
     expect(v.fontPx).toBe(15)
     expect(v.memory).toBe('')
     expect(v.suggestions.length).toBeGreaterThan(0)
+    expect(v.ttsEngine).toBe('edge-online')
+    expect(v.ttsEdgeVoice).toBe('zh-CN-XiaoxiaoNeural')
+    expect(v.ttsVoiceName).toBe('')
+    expect(v.ttsRate).toBe(1)
   })
 
   it('saves and reloads custom values', () => {
@@ -34,5 +38,12 @@ describe('personalSettings', () => {
     expect(loadPersonalSettings().fontPx).toBeLessThanOrEqual(20)
     savePersonalSettings({ ...defaultPersonalSettings(), fontPx: 1 })
     expect(loadPersonalSettings().fontPx).toBeGreaterThanOrEqual(13)
+  })
+
+  it('clamps ttsRate to safe range', () => {
+    savePersonalSettings({ ...defaultPersonalSettings(), ttsRate: 9 })
+    expect(loadPersonalSettings().ttsRate).toBeLessThanOrEqual(1.6)
+    savePersonalSettings({ ...defaultPersonalSettings(), ttsRate: 0.1 })
+    expect(loadPersonalSettings().ttsRate).toBeGreaterThanOrEqual(0.6)
   })
 })

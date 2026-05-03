@@ -85,7 +85,7 @@ const activeMeta = computed(() => tabs.value.find((t) => t.key === activeTab.val
   max-width: 980px;
   margin: 0 auto;
   padding: 32px 24px 48px;
-  color: #0f172a;
+  color: rgba(248, 250, 252, 0.92);
 }
 
 .dev-portal__head {
@@ -100,32 +100,33 @@ const activeMeta = computed(() => tabs.value.find((t) => t.key === activeTab.val
   margin: 0;
   font-size: 26px;
   font-weight: 700;
+  color: #ffffff;
 }
 
 .dev-portal__subtitle {
   margin: 4px 0 0;
   font-size: 13px;
-  color: #64748b;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .dev-portal__doc-link {
   font-size: 13px;
-  color: #4f46e5;
+  color: #c7d2fe;
   text-decoration: none;
-  border: 1px solid #c7d2fe;
+  border: 1px solid rgba(165, 180, 252, 0.35);
   padding: 6px 12px;
-  border-radius: 6px;
-  background: #f5f3ff;
+  border-radius: 8px;
+  background: rgba(129, 140, 248, 0.12);
 }
 
 .dev-portal__doc-link:hover {
-  background: #ede9fe;
+  background: rgba(129, 140, 248, 0.22);
 }
 
 .dev-portal__tabs {
   display: flex;
   gap: 4px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   margin-bottom: 24px;
 }
 
@@ -137,30 +138,30 @@ const activeMeta = computed(() => tabs.value.find((t) => t.key === activeTab.val
   border: 0;
   padding: 10px 16px;
   font-size: 14px;
-  color: #64748b;
+  color: rgba(255, 255, 255, 0.5);
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
 
 .dev-portal__tab:hover {
-  color: #0f172a;
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .dev-portal__tab--active {
-  color: #4f46e5;
-  border-bottom-color: #4f46e5;
+  color: #a5b4fc;
+  border-bottom-color: #6366f1;
   font-weight: 600;
 }
 
 .dev-portal__tab--coming {
-  color: #94a3b8;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 .dev-portal__chip {
   font-size: 10px;
-  background: #fef3c7;
-  color: #92400e;
+  background: rgba(234, 179, 8, 0.15);
+  color: #fbbf24;
   padding: 1px 6px;
   border-radius: 999px;
   letter-spacing: 0.04em;
@@ -171,18 +172,18 @@ const activeMeta = computed(() => tabs.value.find((t) => t.key === activeTab.val
 }
 
 .dev-portal__placeholder {
-  background: #f8fafc;
-  border: 1px dashed #cbd5e1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
   padding: 32px;
   border-radius: 10px;
-  color: #475569;
+  color: rgba(255, 255, 255, 0.55);
   text-align: center;
 }
 
 .dev-portal__placeholder h2 {
   margin: 0 0 6px;
   font-size: 18px;
-  color: #0f172a;
+  color: #ffffff;
 }
 
 .dev-portal__placeholder p {

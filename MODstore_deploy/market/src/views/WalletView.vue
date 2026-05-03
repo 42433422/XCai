@@ -31,7 +31,7 @@
         </span>
       </div>
       <p class="plan-extra-links">
-        <router-link :to="{ name: 'wallet-keys' }" class="inline-link">API 密钥</router-link>
+        <router-link :to="{ name: 'account', hash: '#api-keys' }" class="inline-link">API 密钥</router-link>
         <span class="plan-extra-sep">·</span>
         <router-link to="/analytics" class="inline-link">使用统计</router-link>
         <span class="plan-extra-sep">·</span>
@@ -149,32 +149,39 @@
     <div class="card">
       <h3 class="card-title">交易记录</h3>
       <div v-if="txLoading" class="loading">加载中...</div>
-      <table v-else-if="transactions.length" class="tx-table">
-        <thead>
-          <tr>
-            <th>时间</th>
-            <th>类型</th>
-            <th>金额</th>
-            <th>说明</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="t in transactions" :key="t.id">
-            <td>{{ formatDate(t.created_at) }}</td>
-            <td>{{ txnTypeLabel(t.type) }}</td>
-            <td :class="t.amount > 0 ? 'amount-pos' : 'amount-neg'">
-              {{ t.amount > 0 ? '+' : '' }}¥{{ t.amount.toFixed(2) }}
-            </td>
-            <td>
-              {{ t.description }}
-              <small v-if="t.order_no || t.refund_no" class="tx-ref">
-                {{ t.order_no ? `订单 ${t.order_no}` : '' }}
-                {{ t.refund_no ? `退款 ${t.refund_no}` : '' }}
-              </small>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <template v-else-if="transactions.length">
+        <table class="tx-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>类型</th>
+              <th>金额</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in visibleTransactions" :key="t.id">
+              <td>{{ formatDate(t.created_at) }}</td>
+              <td>{{ txnTypeLabel(t.type) }}</td>
+              <td :class="t.amount > 0 ? 'amount-pos' : 'amount-neg'">
+                {{ t.amount > 0 ? '+' : '' }}¥{{ t.amount.toFixed(2) }}
+              </td>
+              <td>
+                {{ t.description }}
+                <small v-if="t.order_no || t.refund_no" class="tx-ref">
+                  {{ t.order_no ? `订单 ${t.order_no}` : '' }}
+                  {{ t.refund_no ? `退款 ${t.refund_no}` : '' }}
+                </small>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="transactions.length > RECENT_TX_PANEL_LIMIT" class="tx-more-wrap">
+          <button type="button" class="btn btn-ghost" @click="txListExpanded = !txListExpanded">
+            {{ txListExpanded ? '收起' : `展开其余 ${hiddenTxCount} 条` }}
+          </button>
+        </div>
+      </template>
       <div v-else class="empty-state">暂无交易记录</div>
     </div>
 
@@ -303,11 +310,18 @@
             <select v-model="selectedModel" class="llm-select" @change="schedulePersistPreferences">
               <template v-for="cat in LLM_CATEGORY_ORDER" :key="cat">
                 <optgroup v-if="modelsForCategory(cat).length" :label="categoryLabel(cat)">
-                  <option v-for="row in modelsForCategory(cat)" :key="row.id" :value="row.id">{{ row.id }}</option>
+                  <option v-for="row in modelsForCategory(cat)" :key="row.id" :value="row.id">
+                    {{ modelOptionLabel(row) }}
+                  </option>
                 </optgroup>
               </template>
             </select>
           </div>
+          <p v-if="catalog?.gate_hints" class="llm-gate-hint">
+            闸门：平台目录校验 {{ catalog.gate_hints.platform_catalog_gate ? '开' : '关' }} · BYOK 目录校验
+            {{ catalog.gate_hints.byok_catalog_gate ? '开' : '关' }} · 平台须登记定价
+            {{ catalog.gate_hints.platform_require_priced ? '开' : '关' }}。未登记定价时预授权可能上浮。
+          </p>
         </div>
         <div v-else-if="catalog.providers.length" class="llm-empty-models">请选择供应商。</div>
         <div
@@ -460,6 +474,9 @@ const orderListTotal = ref(0)
 const dismissOrdersLoading = ref(false)
 /** 资金页「最近订单」只展示前 N 条，避免与「全部订单」重复堆叠 */
 const RECENT_ORDERS_PANEL_LIMIT = 5
+/** 交易记录表默认只展示最近 N 条，其余由按钮展开 */
+const RECENT_TX_PANEL_LIMIT = 5
+const txListExpanded = ref(false)
 const recentRefunds = ref([])
 const payAmount = ref(null)
 const payNote = ref('')
@@ -507,6 +524,17 @@ const recentOrdersPanel = computed(() =>
   (recentOrders.value || []).slice(0, RECENT_ORDERS_PANEL_LIMIT)
 )
 
+const visibleTransactions = computed(() => {
+  const list = transactions.value || []
+  if (txListExpanded.value || list.length <= RECENT_TX_PANEL_LIMIT) return list
+  return list.slice(0, RECENT_TX_PANEL_LIMIT)
+})
+
+const hiddenTxCount = computed(() => {
+  const n = (transactions.value || []).length
+  return Math.max(0, n - RECENT_TX_PANEL_LIMIT)
+})
+
 const currentProviderBlock = computed(() => {
   if (!catalog.value) return null
   return catalog.value.providers.find((p) => p.provider === selectedProvider.value) || null
@@ -514,6 +542,20 @@ const currentProviderBlock = computed(() => {
 
 function categoryLabel(cat) {
   return catalog.value?.category_labels?.[cat] || cat
+}
+
+/** @param {{ id: string, category?: string, capability?: Record<string, unknown> }} row */
+function modelOptionLabel(row) {
+  const id = row.id || ''
+  const c = row.capability
+  if (!c || typeof c !== 'object') return id
+  const tags = []
+  if (c.l3_status === 'approved') tags.push('L3已通过')
+  else if (c.l3_status === 'pending') tags.push('L3审核中')
+  if (c.l1_status === 'ok') tags.push('L1探针通过')
+  else if (c.l1_status === 'pending') tags.push('L1待探针')
+  if (c.platform_billing_ok === false) tags.push('平台计费受限')
+  return tags.length ? `${id}（${tags.join('·')}）` : id
 }
 
 function modelsForCategory(cat) {
@@ -1130,6 +1172,12 @@ function formatDate(iso) {
 .finance-row-side { text-align: right; flex-shrink: 0; }
 .finance-row-side b { display: block; color: #c7d2fe; }
 .tx-ref { display: block; margin-top: 4px; color: rgba(255,255,255,0.38); font-size: 12px; }
+.tx-more-wrap {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 0.5px solid rgba(255, 255, 255, 0.06);
+  text-align: center;
+}
 
 .balance-updating {
   animation: balanceUpdate 0.5s ease-out;
@@ -1661,6 +1709,12 @@ function formatDate(iso) {
 .llm-model-panel__hint {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.32);
+}
+.llm-gate-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.38);
 }
 .llm-select-wrap {
   position: relative;

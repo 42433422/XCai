@@ -11,6 +11,7 @@
  */
 
 import { api } from '../api'
+import { refreshLevelAndWalletAfterLlm } from './llmBillingRefresh'
 
 export interface StreamHandle {
   abort: () => void
@@ -118,8 +119,13 @@ export function streamLLMChat(opts: StreamOptions): StreamHandle {
     let fullText = ''
     let sawDelta = false
     let completed = false
+    let billedThisStream = false
 
     const onEvent = (event: string, data: any) => {
+      if (event === 'meta' && data && data.billed === true) {
+        billedThisStream = true
+        return
+      }
       if (event === 'delta') {
         const delta = String(data?.delta || '')
         if (!delta) return
@@ -129,6 +135,7 @@ export function streamLLMChat(opts: StreamOptions): StreamHandle {
         return
       }
       if (event === 'done') {
+        if (data && (data.billed === true || (Number(data.charge_amount) || 0) > 0)) billedThisStream = true
         const final = String(data?.content || fullText || '').trim()
         if (final && final !== fullText) {
           const delta = final.slice(fullText.length)
@@ -165,6 +172,7 @@ export function streamLLMChat(opts: StreamOptions): StreamHandle {
     if (!completed && !sawDelta && !aborted) {
       throw new Error('流式接口没有返回内容')
     }
+    if (!aborted && billedThisStream) refreshLevelAndWalletAfterLlm()
     opts.onDone?.(fullText || '（无回复）', aborted)
     return { content: fullText || '（无回复）', aborted }
   }

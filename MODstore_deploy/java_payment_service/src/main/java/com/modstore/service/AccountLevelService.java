@@ -22,6 +22,7 @@ import java.util.Set;
  * 账号等级与经验体系（Java 端）。
  * 与 Python {@code account_level_service} 保持一致：
  *   - 商品/会员/钱包充值订单按 1 元 = 100 经验入账（钱包充值同样计入）
+ *   - AI 钱包按量结算实扣人民币：1 元 = 100 经验（与 Python 侧口径一致，见 {@link WalletService#settleAiUsage}）
  *   - 退款成功后扣回相同经验
  *   - 通过 (source_type, source_order_id) 唯一键保证幂等
  */
@@ -43,7 +44,8 @@ public class AccountLevelService {
             return 0L;
         }
         BigDecimal xp = amountYuan.multiply(BigDecimal.valueOf(100)).setScale(0, RoundingMode.HALF_UP);
-        return xp.longValueExact();
+        // longValueExact 在极少数非规范标度下可能抛 ArithmeticException，导致 settle 外层吞掉后经验恒为 0
+        return xp.longValue();
     }
 
     /**
@@ -139,12 +141,55 @@ public class AccountLevelService {
         return xp;
     }
 
+    /**
+     * LLM 预授权结算成功后，按实扣金额入账经验（与 Python {@code apply_llm_consumption_xp} 一致）。
+     *
+     * @param billingId 单次结算幂等键（如 {@code llm_…:settle}），与 {@code account_experience_ledger.source_order_id} 对齐
+     */
+    @Transactional(propagation = Propagation.REQUIRED)
+    public long applyLlmConsumptionXp(Long userId, String billingId, BigDecimal amountYuan, String description) {
+        if (userId == null || billingId == null || billingId.isBlank()) {
+            return 0L;
+        }
+        String bid = billingId.length() > 64 ? billingId.substring(0, 64) : billingId;
+        long xp = xpFromAmount(amountYuan);
+        if (xp <= 0) {
+            return 0L;
+        }
+        Optional<AccountExperienceLedger> existing =
+                ledgerRepository.findBySourceTypeAndSourceOrderId("llm_billed", bid);
+        if (existing.isPresent()) {
+            return 0L;
+        }
+        AccountExperienceLedger entry = new AccountExperienceLedger();
+        entry.setUserId(userId);
+        entry.setSourceType("llm_billed");
+        entry.setSourceOrderId(bid);
+        entry.setAmount(amountYuan == null ? BigDecimal.ZERO : amountYuan);
+        entry.setXpDelta(xp);
+        entry.setDescription(description != null && !description.isBlank()
+                ? description
+                : "大模型按量扣费经验 (" + bid + ")");
+        try {
+            ledgerRepository.save(entry);
+        } catch (DataIntegrityViolationException ignore) {
+            return 0L;
+        }
+        adjustUserExperience(userId, xp);
+        log.info("LLM 账号经验 +{} userId={} billingId={} amount={}", xp, userId, bid, amountYuan);
+        return xp;
+    }
+
     private void adjustUserExperience(Long userId, long delta) {
-        userRepository.findById(userId).ifPresent(user -> {
-            long current = user.getExperience();
-            long next = Math.max(0L, current + delta);
-            user.setExperience(next);
-            userRepository.save(user);
-        });
+        var ref = userRepository.findById(userId);
+        if (ref.isEmpty()) {
+            log.warn("账号经验调整跳过：users 中不存在 userId={} delta={}", userId, delta);
+            return;
+        }
+        User user = ref.get();
+        long current = user.getExperience();
+        long next = Math.max(0L, current + delta);
+        user.setExperience(next);
+        userRepository.save(user);
     }
 }

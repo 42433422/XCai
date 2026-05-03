@@ -9,6 +9,16 @@ export interface CatalogItem {
   description?: string
   price?: number
   artifact?: string
+  material_category?: string
+  material_category_label?: string
+  license_scope?: string
+  license_scope_label?: string
+  origin_type?: string
+  ip_risk_level?: string
+  compliance_status?: string
+  rank_score?: number
+  delist_reason?: string
+  complaint_count?: number
   industry?: string
   security_level?: string
   author_id?: number | null

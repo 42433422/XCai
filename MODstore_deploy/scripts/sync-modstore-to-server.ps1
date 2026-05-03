@@ -1,10 +1,13 @@
-<#
+﻿<#
 .SYNOPSIS
   将本机 MODstore_deploy 目录（含未提交修改）整体同步到 Linux 服务器：打 tar 包 -> scp -> 解压
   并保留下线 .env，在服务器上 pip、npm build、mvn、systemctl 重启 modstore / modstore-payment。
 
 .PARAMETER SshTarget
   例如 root@119.27.178.147
+
+.PARAMETER AlignSystemd
+  若指定，在 bootstrap 成功后上传并执行 align_modstore_systemd_to_deploy.sh，将 modstore.service 的 drop-in 对齐到 RemoteBase/MODstore_deploy（默认关闭，避免未审阅的生产机被改 unit）。
 
 .PARAMETER RemoteBase
   服务器上**仓库根**（即 MODstore_deploy 的**父目录**），必须与 modstore / modstore-payment 的 systemd 中 JAR/WorkingDirectory 所在树为**同一套目录**（否则 mvn 改了一处、java 仍跑另一处旧 JAR，表现为「支付 Java 不可用」）。
@@ -17,7 +20,8 @@
 #>
 param(
   [string] $SshTarget = $env:DEPLOY_SSH,
-  [string] $RemoteBase = $env:DEPLOY_REMOTE_BASE
+  [string] $RemoteBase = $env:DEPLOY_REMOTE_BASE,
+  [switch] $AlignSystemd
 )
 
 $ErrorActionPreference = "Stop"
@@ -112,4 +116,23 @@ Write-Host "[sync] 4/4 local tgz still at: $LocalTar (delete if not needed)"
 # Remove-Item -Force $LocalTar -ErrorAction SilentlyContinue
 
 if ($exit -ne 0) { exit $exit }
+
+if ($AlignSystemd) {
+  Write-Host "[sync] align: uploading align_modstore_systemd_to_deploy.sh..."
+  $alignPath = Join-Path $ModstoreDeploy "scripts/align_modstore_systemd_to_deploy.sh"
+  $alignContent = (Get-Content -Raw -Path $alignPath -ErrorAction Stop)
+  $alignContent = $alignContent -replace "`r`n", "`n" -replace "`r", "`n"
+  $alignTmp = Join-Path $env:TEMP "align_modstore_systemd_to_deploy_$(Get-Date -Format 'yyyyMMddHHmmss').sh"
+  [System.IO.File]::WriteAllText($alignTmp, $alignContent, $enc)
+  $null = & scp -o BatchMode=yes -q $alignTmp ($SshTarget + ":/tmp/align_modstore_systemd_to_deploy.sh") 2>&1
+  Remove-Item -Force $alignTmp -ErrorAction SilentlyContinue
+  if ($LASTEXITCODE -ne 0) { throw "scp align script failed exit=$LASTEXITCODE" }
+  $rbBase = ($RemoteBase -replace '\\', '/').TrimEnd('/')
+  $rb = "$rbBase/MODstore_deploy"
+  $remoteAlign = "chmod +x /tmp/align_modstore_systemd_to_deploy.sh && MODSTORE_DEPLOY_DIR='$rb' bash /tmp/align_modstore_systemd_to_deploy.sh; ec=`$?; rm -f /tmp/align_modstore_systemd_to_deploy.sh; exit `$ec"
+  ssh -o BatchMode=yes $SshTarget $remoteAlign
+  $alignExit = $LASTEXITCODE
+  if ($alignExit -ne 0) { exit $alignExit }
+}
+
 Write-Host "[sync] done."

@@ -9,6 +9,12 @@ implementation module directly. See ``docs/SERVICE_BOUNDARIES.md`` and
 
 from __future__ import annotations
 
+from modstore_server.services.catalog import (
+    CatalogClient,
+    InProcessCatalogClient,
+    get_default_catalog_client,
+    set_default_catalog_client,
+)
 from modstore_server.services.employee import (
     EmployeeRuntimeClient,
     InProcessEmployeeRuntimeClient,
@@ -53,9 +59,11 @@ from modstore_server.services.workflow import (
 )
 
 __all__ = [
+    "CatalogClient",
     "ConnectorOperationCall",
     "ConnectorOperationResult",
     "EmployeeRuntimeClient",
+    "InProcessCatalogClient",
     "InProcessEmployeeRuntimeClient",
     "InProcessKnowledgeClient",
     "InProcessLlmChatClient",
@@ -71,12 +79,14 @@ __all__ = [
     "NotificationClient",
     "OpenApiConnectorClient",
     "WorkflowEngineClient",
+    "get_default_catalog_client",
     "get_default_connector_client",
     "get_default_employee_client",
     "get_default_knowledge_client",
     "get_default_llm_client",
     "get_default_notification_client",
     "get_default_workflow_client",
+    "set_default_catalog_client",
     "set_default_connector_client",
     "set_default_employee_client",
     "set_default_knowledge_client",

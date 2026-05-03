@@ -57,15 +57,7 @@ def _domain_for(module: str) -> str | None:
     return None
 
 
-LEGACY_CROSS_DOMAIN_IMPORTS: frozenset[tuple[str, str, str]] = frozenset({
-    # (importer_relative_path, importer_domain, imported_module)
-    ("employee_executor.py", "employee", "modstore_server.llm_chat_proxy"),
-    ("employee_executor.py", "employee", "modstore_server.llm_key_resolver"),
-    ("workflow_engine.py", "workflow", "modstore_server.employee_executor"),
-    ("workflow_nl_graph.py", "workflow", "modstore_server.employee_executor"),
-    ("workflow_nl_graph.py", "workflow", "modstore_server.llm_chat_proxy"),
-    ("workflow_nl_graph.py", "workflow", "modstore_server.llm_key_resolver"),
-})
+LEGACY_CROSS_DOMAIN_IMPORTS: frozenset[tuple[str, str, str]] = frozenset()
 """Frozen technical debt budget. Removing an entry from this set is the only
 permitted change; CI fails if the actual offender list grows or shrinks
 without an update here."""
@@ -128,32 +120,40 @@ def test_service_boundary_budget_matches_snapshot():
 
 def test_service_ports_module_exists_and_exposes_clients():
     from modstore_server.services import (
+        CatalogClient,
         EmployeeRuntimeClient,
+        InProcessCatalogClient,
         InProcessEmployeeRuntimeClient,
         InProcessLlmChatClient,
         InProcessWorkflowEngineClient,
         LlmChatClient,
         WorkflowEngineClient,
+        get_default_catalog_client,
         get_default_employee_client,
         get_default_llm_client,
         get_default_workflow_client,
+        set_default_catalog_client,
         set_default_employee_client,
         set_default_llm_client,
         set_default_workflow_client,
     )
 
+    assert isinstance(get_default_catalog_client(), CatalogClient)
     assert isinstance(get_default_employee_client(), EmployeeRuntimeClient)
     assert isinstance(get_default_llm_client(), LlmChatClient)
     assert isinstance(get_default_workflow_client(), WorkflowEngineClient)
 
+    assert isinstance(InProcessCatalogClient(), CatalogClient)
     assert isinstance(InProcessEmployeeRuntimeClient(), EmployeeRuntimeClient)
     assert isinstance(InProcessLlmChatClient(), LlmChatClient)
     assert isinstance(InProcessWorkflowEngineClient(), WorkflowEngineClient)
 
+    set_default_catalog_client(None)
     set_default_employee_client(None)
     set_default_llm_client(None)
     set_default_workflow_client(None)
     # Re-fetching reconstructs default in-process implementations.
+    assert isinstance(get_default_catalog_client(), InProcessCatalogClient)
     assert isinstance(get_default_employee_client(), InProcessEmployeeRuntimeClient)
     assert isinstance(get_default_llm_client(), InProcessLlmChatClient)
     assert isinstance(get_default_workflow_client(), InProcessWorkflowEngineClient)

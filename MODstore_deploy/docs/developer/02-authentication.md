@@ -57,17 +57,17 @@ curl -X DELETE https://<your-host>/api/developer/tokens/17 \
 JWT 用于浏览器会话，含 `sub`（user id）、`username`、`type=access`、`exp`。
 Refresh token 由 `/api/auth/login` 返回，刷新由前端 SDK 自动处理；第三方接入**不要**直接复用 JWT，请改用 PAT。
 
-## 三、scope 设计（当前阶段）
+## 三、scope 设计
 
-- 当前 PR 没有强制按路由校验 scope，scope 字段是给前端展示与未来路由保护准备的；
 - 推荐在创建 PAT 时按"最小必要"原则填写：
   - `workflow:read` —— 只读工作流
   - `workflow:execute` —— 触发执行
   - `employee:execute` —— 调用员工
   - `catalog:read` —— 浏览市场/模板
   - `webhook:manage` —— 管理订阅
-- `mod:sync` / `llm:use` —— 桌面 Mod 同步与经平台配置/调用模型（与 `catalog:read`、`employee:execute` 等组合；见 `developer_scopes.py` 与 [08 桌面密钥包](./08-key-export-desktop.md)）
-- 留空时表示"暂时全部"，后续启用强制后会被映射为"全开"。**新接入推荐显式填写**。
+  - `mod:sync` —— 调用 `/v1/mod-sync/push` 与 `/v1/mod-sync/pull`，在本地库与 XCAGI `mods/` 之间同步
+  - `llm:use` —— 经平台配置/调用模型
+- `/v1/mod-sync/*` 已强制校验 `mod:sync`；新接入请显式填写 scope，不要依赖空 scope。
 
 ## 四、安全建议
 

@@ -20,16 +20,28 @@ web = [
     "PyYAML>=6.0",
     "cryptography>=42.0",
     "prometheus-client>=0.20",
+    "edge-tts>=6.1",
 ]
 knowledge = [
     "chromadb>=0.5",
     "pypdf>=4.0",
+    "PyMuPDF>=1.24",
     "python-docx>=1.0",
     "openpyxl>=3.1",
+]
+employee-docs = [
+    "pypdf>=4.0",
+    "python-docx>=1.0",
+]
+aliyun-tts = [
+    "dashscope>=1.14",
 ]
 dev = [
   "pytest>=7.4",
   "pytest-cov>=4.1",
+  "black>=24.3",
+  "isort>=5.13",
+  "jsonschema>=4.21",
 ]
 
 [project.scripts]
@@ -46,6 +58,16 @@ include = ["modman*", "modstore_server*"]
 [tool.setuptools.package-data]
 modman = ["data/*.json"]
 
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+known_first_party = ["modman", "modstore_server"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
@@ -55,3 +77,6 @@ addopts = "-q"
 source = ["modman", "modstore_server"]
 branch = true
 omit = ["*/tests/*"]
+
+[tool.coverage.report]
+fail_under = 80

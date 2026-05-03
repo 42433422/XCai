@@ -1,4 +1,4 @@
-"""Analytics read-model repository."""
+"""SQL implementation of :class:`modstore_server.domain.analytics.AnalyticsRepository`."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from modstore_server.domain.analytics import AnalyticsDashboard, CatalogMetrics,
 from modstore_server.models import CatalogItem, EmployeeExecutionMetric, Purchase, RefundRequest, Transaction
 
 
-class AnalyticsRepository:
+class SqlAnalyticsRepository:
+    """Default ORM-backed analytics read model."""
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -83,3 +85,6 @@ class AnalyticsRepository:
                 for r in recent
             ],
         )
+
+
+__all__ = ["SqlAnalyticsRepository"]

@@ -7,14 +7,14 @@ export function setTokensFromAuthResponse(res: { access_token?: string; refresh_
   setAuthTokens(res)
 }
 
-function catalogWriteHeaders() {
+function catalogWriteHeaders(): Record<string, string> | undefined {
   const token = (import.meta.env?.VITE_MODSTORE_CATALOG_UPLOAD_TOKEN ?? '').toString().trim()
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  return token ? { Authorization: `Bearer ${token}` } : undefined
 }
 
-function authHeaders() {
+function authHeaders(): Record<string, string> | undefined {
   const token = getAccessToken()
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  return token ? { Authorization: `Bearer ${token}` } : undefined
 }
 
 async function authRequest(path: string, init: RequestInit = {}) {
@@ -61,6 +61,26 @@ export const api: any = {
   sendResetPasswordCode: (email: string) => req('/api/auth/send-reset-password-code', { method: 'POST', body: JSON.stringify({ email }) }),
   resetPassword: (email: string, code: string, newPassword: string) =>
     req('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ email, code, new_password: newPassword }) }),
+  /** 落地页联系表单（匿名），写入 ``landing_contact_submissions`` */
+  submitLandingContact: (data: {
+    name: string
+    email: string
+    phone?: string
+    company?: string
+    message?: string
+    source?: string
+  }) =>
+    req('/api/public/contact', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: data.name,
+        email: data.email,
+        phone: data.phone ?? '',
+        company: data.company ?? '',
+        message: data.message ?? '',
+        source: data.source ?? 'home',
+      }),
+    }),
   updateProfile: (username: string) => req('/api/auth/profile', { method: 'PUT', body: JSON.stringify({ username }) }),
   changePassword: (currentPassword: string, newPassword: string) =>
     req('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),

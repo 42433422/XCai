@@ -1,5 +1,6 @@
 # MODstore 文档
 
+- **性能与容量公开基线**（k6 摘要、复现命令、与 FHD 脚本对照）：[`perf-benchmark-public.md`](perf-benchmark-public.md)。
 - **定位（推荐主入口）**：扩展的制作、校验、与 `XCAGI/mods` 同步，以本目录 **独立 MODstore Web**（`MODstore/web` + `modstore_server`）为准；XCAGI 主前端 `/mod-store` 默认嵌入该站点，仅将「本机 .xcmod 简易目录」作为兼容入口。
 - **API（自动生成）**：服务启动后访问 Swagger UI `/docs`、ReDoc `/redoc`、OpenAPI JSON `/openapi.json`。
 - **制作向导（Web `/author`）**：展示内置 `extension_surface.json`（manifest/蓝图约定）；可合并宿主 `openapi.json` 中 `/api*` 路由摘要；各 Mod 详情「蓝图/API」页签静态扫描 `backend/blueprints.py`。

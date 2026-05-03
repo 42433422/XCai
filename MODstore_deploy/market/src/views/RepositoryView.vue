@@ -34,10 +34,6 @@
 
     <section class="path-sync-card remote-pull-card" aria-labelledby="remote-pull-title">
       <h2 id="remote-pull-title" class="path-sync-title">密钥同步到 XCAGI</h2>
-      <p class="path-sync-lead">
-        在「账户中心 → API 密钥」创建含 <code class="mono">mod:sync</code> 的 Developer Token，然后在 XCAGI 所在机器执行命令。
-        工具会优先使用 <code class="mono">XCAGI_ROOT</code> 或自动发现相邻 <code class="mono">../XCAGI</code>，无需在网页里填写路径。
-      </p>
       <pre class="remote-cmd-block" tabindex="0">{{ remoteDeployCmd }}</pre>
       <div class="path-sync-actions">
         <button type="button" class="btn btn-secondary" @click="copyRemoteDeployCmd">复制命令</button>
@@ -190,7 +186,7 @@ const remoteApiOrigin = ref('')
 
 const remoteDeployCmd = computed(() => {
   const base = (remoteApiOrigin.value || 'https://xiu-ci.com').replace(/\/$/, '')
-  return `set MODSTORE_PAT=pat_你的令牌\npython -m modman remote-deploy --base-url ${base} --token %MODSTORE_PAT% --mods 你的mod_id\n# 一次拉取当前账号可见且校验通过的全部 Mod：\npython -m modman remote-deploy --base-url ${base} --token %MODSTORE_PAT% --all\n# 如果自动发现不到本机 XCAGI，再临时追加：--xcagi \"本机XCAGI绝对路径\"`
+  return `set MODSTORE_PAT=pat_你的令牌\npython -m modman remote-deploy --base-url ${base} --token %MODSTORE_PAT% --mods 你的mod_id\n# 全部包：将上一行末尾改为 --all；需显式 XCAGI 目录时追加 --xcagi \"路径\"`
 })
 
 const PREFILL_KEY = 'modstore_employee_prefill'
@@ -488,7 +484,6 @@ onMounted(() => {
   color: #e5e7eb;
 }
 
-.path-sync-lead,
 .path-sync-warn,
 .path-sync-ok {
   margin: 0 0 0.75rem;

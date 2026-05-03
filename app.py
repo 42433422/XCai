@@ -248,7 +248,7 @@ def _cors_after_all_api_paths(response: Response):
     path = request.path or ""
   except RuntimeError:
     return response
-  if not path.startswith("/api"):
+  if not (path.startswith("/api") or path.startswith("/v1")):
     return response
   if response.headers.get("Access-Control-Allow-Origin"):
     return response

@@ -33,6 +33,7 @@ public class WalletService {
     private final TransactionRepository transactionRepository;
     private final WalletHoldRepository walletHoldRepository;
     private final UserPlanRepository userPlanRepository;
+    private final AccountLevelService accountLevelService;
     
     @Transactional
     public Wallet getOrCreateWallet(User user) {
@@ -202,7 +203,7 @@ public class WalletService {
             return existing.get();
         }
 
-        String holdNo = "AIH" + System.currentTimeMillis() + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        String holdNo = "AIH" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         Transaction transaction = debit(
                 user,
                 amount,
@@ -273,7 +274,18 @@ public class WalletService {
         hold.setStatus("settled");
         hold.setSettlementTransactionId(settlement == null ? null : settlement.getId());
         hold.setSettledAt(LocalDateTime.now());
-        return walletHoldRepository.save(hold);
+        WalletHold saved = walletHoldRepository.save(hold);
+        if (actualAmount.compareTo(BigDecimal.ZERO) > 0) {
+            try {
+                String desc = "大模型按量扣费经验 ("
+                        + trimForDescription(hold.getProvider()) + "/" + trimForDescription(hold.getModel()) + ")";
+                accountLevelService.applyLlmConsumptionXp(user.getId(), safeIdempotencyKey, actualAmount, desc);
+            } catch (Exception e) {
+                log.warn("LLM 经验入账失败 (不影响结算): userId={} holdNo={} err={}",
+                        user.getId(), holdNo, e.getMessage());
+            }
+        }
+        return saved;
     }
 
     @Transactional

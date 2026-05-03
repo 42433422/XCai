@@ -31,6 +31,7 @@ class SecurityServiceTest {
         String signature = service.signCheckout(data);
 
         assertTrue(service.verifySignature(data, signature));
+        assertTrue(service.verifySignature(data, signature.toUpperCase()));
         assertFalse(service.verifySignature(data, "bad-signature"));
     }
 
@@ -134,6 +135,20 @@ class SecurityServiceTest {
     }
 
     @Test
+    void constantTimeEqualsHex_rejectsLengthMismatch() {
+        assertFalse(SecurityService.constantTimeEqualsHex("abcd", "ab"));
+        assertFalse(SecurityService.constantTimeEqualsHex("ab", "abcd"));
+    }
+
+    @Test
+    void clearAlipayNotifySeen_noopsWhenIdentifierBlank() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        SecurityService service = newService(redis);
+        service.clearAlipayNotifySeen(" ", "  ");
+        verify(redis, never()).delete(anyString());
+    }
+
+    @Test
     void canonicalCheckoutHonoursBooleanTypeForWallet() {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         SecurityService service = newService(redis);
@@ -151,10 +166,21 @@ class SecurityServiceTest {
         assertTrue(service.verifySignature(m, sig));
     }
 
+    @Test
+    void markAlipayNotifySeen_allowsProcessingWhenRedisUnavailable() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, String> valueOps = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(valueOps);
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+                .thenThrow(new RuntimeException("redis down"));
+        SecurityService service = newService(redis);
+        assertTrue(service.markAlipayNotifySeen("t1", "out-1"));
+    }
+
     private SecurityService newService(StringRedisTemplate redisTemplate) {
         SecurityService service = new SecurityService(redisTemplate);
         ReflectionTestUtils.setField(service, "paymentSecretKey", "test-payment-secret");
-        ReflectionTestUtils.setField(service, "jwtSecret", "modstore-dev-secret-change-in-prod");
         return service;
     }
 }

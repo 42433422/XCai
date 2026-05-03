@@ -68,4 +68,6 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      * 已履约、仍为「已支付」的会员套餐单（已全额退款/部分退款的单状态非 paid，不纳入补发）。
      */
     List<Order> findByOrderKindAndFulfilledTrueAndStatus(String orderKind, String status);
+
+    List<Order> findByStatusAndCreatedAtBefore(String status, java.time.LocalDateTime before);
 }

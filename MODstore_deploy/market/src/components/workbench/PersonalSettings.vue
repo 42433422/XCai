@@ -38,6 +38,45 @@
       </section>
 
       <section class="ps-section">
+        <h3 class="ps-section-title">朗读</h3>
+        <p class="ps-section-tip">作用于一档聊天里 AI 消息的「朗读」。默认使用微软在线神经语音（与 Edge「大声朗读」同源，经本服务端转发）。</p>
+        <div class="ps-row ps-row--stack">
+          <label class="ps-radio" :class="{ 'ps-radio--on': model.ttsEngine === 'edge-online' }">
+            <input v-model="model.ttsEngine" class="ps-radio__input" type="radio" value="edge-online" @change="emitChange" />
+            <span>微软云端（推荐）</span>
+          </label>
+          <label class="ps-radio" :class="{ 'ps-radio--on': model.ttsEngine === 'browser' }">
+            <input v-model="model.ttsEngine" class="ps-radio__input" type="radio" value="browser" @change="emitChange" />
+            <span>本机浏览器</span>
+          </label>
+        </div>
+        <template v-if="model.ttsEngine === 'edge-online'">
+          <label class="ps-field-label" for="ps-tts-edge-voice">云端音色</label>
+          <select id="ps-tts-edge-voice" v-model="model.ttsEdgeVoice" class="ps-select" @change="emitChange">
+            <option v-for="ev in edgeVoices" :key="ev.id" :value="ev.id">{{ ev.label }}</option>
+          </select>
+        </template>
+        <template v-else>
+          <label class="ps-field-label" for="ps-tts-voice">本机音色</label>
+          <select id="ps-tts-voice" v-model="model.ttsVoiceName" class="ps-select" @change="emitChange">
+            <option value="">自动（优先中文）</option>
+            <option v-for="v in voiceList" :key="v.name" :value="v.name">{{ v.label }}</option>
+          </select>
+        </template>
+        <label class="ps-field-label ps-field-label--spaced" for="ps-tts-rate">语速 {{ model.ttsRate.toFixed(1) }}×</label>
+        <input
+          id="ps-tts-rate"
+          v-model.number="model.ttsRate"
+          type="range"
+          min="0.6"
+          max="1.6"
+          step="0.1"
+          class="ps-range"
+          @change="emitChange"
+        />
+      </section>
+
+      <section class="ps-section">
         <h3 class="ps-section-title">长期记忆（&ldquo;记住我的事实&rdquo;）</h3>
         <p class="ps-section-tip">这里写下的内容会以 system 提示形式注入每一次对话；不要写敏感信息。</p>
         <textarea
@@ -76,8 +115,8 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
-import type { PersonalSettings } from '../../utils/personalSettings'
+import { onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { defaultPersonalSettings, type PersonalSettings } from '../../utils/personalSettings'
 
 const props = defineProps<{
   open: boolean
@@ -95,21 +134,49 @@ const themes = [
   { id: 'auto', label: '跟随系统', icon: '🖥️' },
 ]
 
-const model = reactive<PersonalSettings>({
-  theme: 'dark',
-  fontPx: 15,
-  memory: '',
-  suggestions: [],
-})
+const model = reactive<PersonalSettings>({ ...defaultPersonalSettings() })
 
 const suggestionsRaw = ref('')
+const voiceList = ref<Array<{ name: string; label: string }>>([])
+
+const edgeVoices = [
+  { id: 'zh-CN-XiaoxiaoNeural', label: '晓晓（女声，通用）' },
+  { id: 'zh-CN-YunxiNeural', label: '云希（男声）' },
+  { id: 'zh-CN-XiaoyiNeural', label: '晓伊（女声）' },
+  { id: 'zh-CN-YunjianNeural', label: '云健（男声，资讯风）' },
+  { id: 'zh-CN-XiaochenNeural', label: '晓辰（女声）' },
+  { id: 'zh-CN-XiaomengNeural', label: '晓梦（女声）' },
+]
+
+function loadVoices() {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    voiceList.value = []
+    return
+  }
+  const synth = window.speechSynthesis
+  const all = synth.getVoices()
+  const zh = all
+    .filter((v) => /^zh|cmn|yue/i.test(v.lang))
+    .map((v) => ({ name: v.name, label: `${v.name} (${v.lang})` }))
+  const en = all.filter((v) => /^en/i.test(v.lang)).slice(0, 6).map((v) => ({ name: v.name, label: `${v.name} (${v.lang})` }))
+  voiceList.value = [...zh, ...en]
+}
 
 function syncFromProps() {
   const v = props.modelValue || ({} as PersonalSettings)
+  const def = defaultPersonalSettings()
   model.theme = (v.theme || 'dark') as 'dark' | 'light' | 'auto'
   model.fontPx = Number.isFinite(Number(v.fontPx)) ? Number(v.fontPx) : 15
   model.memory = String(v.memory || '').slice(0, 600)
   model.suggestions = Array.isArray(v.suggestions) ? v.suggestions.slice(0, 6) : []
+  model.ttsEngine = v.ttsEngine === 'browser' || v.ttsEngine === 'edge-online' ? v.ttsEngine : def.ttsEngine
+  model.ttsEdgeVoice =
+    typeof v.ttsEdgeVoice === 'string' && v.ttsEdgeVoice.trim()
+      ? v.ttsEdgeVoice.trim().slice(0, 120)
+      : def.ttsEdgeVoice
+  model.ttsVoiceName = typeof v.ttsVoiceName === 'string' ? v.ttsVoiceName.slice(0, 256) : def.ttsVoiceName
+  const rr = Number(v.ttsRate)
+  model.ttsRate = Number.isFinite(rr) ? Math.max(0.6, Math.min(1.6, rr)) : def.ttsRate
   suggestionsRaw.value = model.suggestions.join('\n')
 }
 
@@ -118,6 +185,23 @@ watch(
   () => syncFromProps(),
   { immediate: true, deep: true },
 )
+
+watch(
+  () => props.open,
+  (open) => {
+    if (!open) return
+    loadVoices()
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = loadVoices
+    }
+  },
+)
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis.onvoiceschanged === loadVoices) {
+    window.speechSynthesis.onvoiceschanged = null
+  }
+})
 
 function onSuggestionsBlur() {
   const lines = String(suggestionsRaw.value || '')
@@ -131,7 +215,19 @@ function onSuggestionsBlur() {
 }
 
 function emitChange() {
-  emit('update:modelValue', { ...model, memory: model.memory.slice(0, 600) })
+  const ttsRate = Math.max(0.6, Math.min(1.6, Number(model.ttsRate) || 1))
+  model.ttsRate = ttsRate
+  const ttsEngine = model.ttsEngine === 'browser' ? 'browser' : 'edge-online'
+  const allowedEdge = new Set(edgeVoices.map((e) => e.id))
+  const ttsEdgeVoice = allowedEdge.has(model.ttsEdgeVoice) ? model.ttsEdgeVoice : defaultPersonalSettings().ttsEdgeVoice
+  emit('update:modelValue', {
+    ...model,
+    ttsEngine,
+    ttsEdgeVoice,
+    memory: model.memory.slice(0, 600),
+    ttsVoiceName: String(model.ttsVoiceName || '').slice(0, 256),
+    ttsRate,
+  })
 }
 
 function resetMemory() {
@@ -224,6 +320,11 @@ function onSave() {
   flex-wrap: wrap;
 }
 
+.ps-row--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .ps-radio {
   display: inline-flex;
   align-items: center;
@@ -247,6 +348,33 @@ function onSave() {
 
 .ps-range {
   width: 100%;
+}
+
+.ps-field-label {
+  display: block;
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.78rem;
+  color: rgba(203, 213, 225, 0.75);
+}
+
+.ps-field-label--spaced {
+  margin-top: 0.75rem;
+}
+
+.ps-select {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.5rem;
+  background: rgba(2, 6, 23, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+
+.ps-select:focus {
+  outline: none;
+  border-color: rgba(129, 140, 248, 0.55);
 }
 
 .ps-textarea {

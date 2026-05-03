@@ -29,6 +29,10 @@ REFUND_FAILED = "refund.failed"
 EMPLOYEE_EXECUTION_COMPLETED = "employee.execution_completed"
 WORKFLOW_EXECUTION_COMPLETED = "workflow.execution_completed"
 WORKFLOW_EXECUTION_FAILED = "workflow.execution_failed"
+CATALOG_PACKAGE_PUBLISHED = "catalog.package_published"
+EMPLOYEE_PACK_REGISTERED = "employee.pack_registered"
+WORKFLOW_SANDBOX_COMPLETED = "workflow.sandbox_completed"
+LLM_QUOTA_CONSUMED = "llm.quota_consumed"
 
 EVENT_CONTRACTS: dict[str, EventContract] = {
     PAYMENT_PAID: EventContract(
@@ -86,6 +90,34 @@ EVENT_CONTRACTS: dict[str, EventContract] = {
         aggregate="workflow_execution",
         required_payload=("workflow_id", "execution_id", "user_id", "status"),
         description="A workflow execution ran but failed at runtime.",
+    ),
+    CATALOG_PACKAGE_PUBLISHED: EventContract(
+        name=CATALOG_PACKAGE_PUBLISHED,
+        version=1,
+        aggregate="catalog_item",
+        required_payload=("pkg_id", "author_id", "version", "artifact", "name"),
+        description="A catalog package (e.g. employee_pack) was published to the store.",
+    ),
+    EMPLOYEE_PACK_REGISTERED: EventContract(
+        name=EMPLOYEE_PACK_REGISTERED,
+        version=1,
+        aggregate="employee_pack",
+        required_payload=("pack_id", "author_id", "mod_id", "version"),
+        description="An employee pack was registered from a workflow manifest.",
+    ),
+    WORKFLOW_SANDBOX_COMPLETED: EventContract(
+        name=WORKFLOW_SANDBOX_COMPLETED,
+        version=1,
+        aggregate="workflow_execution",
+        required_payload=("workflow_id", "user_id", "status", "duration_ms"),
+        description="A workflow sandbox run finished (success or failure).",
+    ),
+    LLM_QUOTA_CONSUMED: EventContract(
+        name=LLM_QUOTA_CONSUMED,
+        version=1,
+        aggregate="user_llm_credential",
+        required_payload=("user_id", "provider", "model", "tokens", "cost"),
+        description="LLM quota was consumed for a user request.",
     ),
 }
 

@@ -87,5 +87,7 @@ def auth_headers(client, monkeypatch):
         },
     )
     assert r.status_code == 200, r.text
-    token = r.json()["token"]
+    body = r.json()
+    token = body.get("access_token") or body.get("token")
+    assert token, body
     return {"Authorization": f"Bearer {token}"}

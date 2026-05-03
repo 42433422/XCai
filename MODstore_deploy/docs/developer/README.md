@@ -15,6 +15,7 @@
 | [06 错误码与限流](./06-errors-and-limits.md) | 常见错误、重试策略、生产建议 |
 | [07 多账号数据隔离](./07-account-data-isolation.md) | `user_id` / owner 模型、接口绑定当前用户、与公开目录的区别 |
 | [08 桌面密钥包导出](./08-key-export-desktop.md) | Web→桌面 `.msk1` 加密包、ECDH+AES-GCM、审计与 scope 说明 |
+| [性能公开基线](../perf-benchmark-public.md) | k6 全链路摘要、复现命令；与 FHD `scripts/loadtest` 对照说明 |
 
 ## 在线交互
 

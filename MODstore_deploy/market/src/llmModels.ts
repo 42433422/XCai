@@ -31,6 +31,12 @@ export const LLM_UI_META = {
     iconSlug: 'huggingface',
     doc: 'https://docs.siliconflow.cn',
   },
+  xiaomi: {
+    id: 'xiaomi',
+    label: '小米 MiMo',
+    iconSlug: 'xiaomi',
+    doc: 'https://mimo.xiaomi.com/',
+  },
   groq: {
     id: 'groq',
     label: 'Groq',
@@ -139,6 +145,7 @@ export const LLM_OAI_COMPAT_BASE_URL_PROVIDERS = [
   'openai',
   'deepseek',
   'siliconflow',
+  'xiaomi',
   'groq',
   'together',
   'openrouter',

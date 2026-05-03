@@ -74,3 +74,7 @@ ENABLE_LLM=true ENABLE_RAG=true k6 run perf/full_link_smoke.js
 - k6 摘要：吞吐、p95/p99、错误率、业务错误。
 - Grafana 观察：FastAPI p95、支付代理 p95、Java heap、Hikari 连接池、告警。
 - 瓶颈和下一步动作。
+
+## 公开基线文档
+
+仓库内已发布的压测记录与复现命令见 **[`../docs/perf-benchmark-public.md`](../docs/perf-benchmark-public.md)**（当前最近更新日期以该文件「元数据」一节为准）。

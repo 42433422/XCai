@@ -21,7 +21,7 @@ const errMsg = ref('')
 
 const showDialog = ref(false)
 const submitBusy = ref(false)
-const draft = reactive({ name: '', scopesCsv: 'workflow:read,workflow:execute', expiresDays: '90' })
+const draft = reactive({ name: '', scopesCsv: 'mod:sync,catalog:read', expiresDays: '90' })
 
 const justCreated = ref<{ token: string; meta: DeveloperToken } | null>(null)
 const copied = ref(false)
@@ -140,9 +140,18 @@ onMounted(refresh)
 
 function openCreate() {
   draft.name = ''
-  draft.scopesCsv = 'workflow:read,workflow:execute'
+  draft.scopesCsv = 'mod:sync,catalog:read'
   draft.expiresDays = '90'
   showDialog.value = true
+}
+
+function addScope(scope: string) {
+  const scopes = draft.scopesCsv
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!scopes.includes(scope)) scopes.push(scope)
+  draft.scopesCsv = scopes.join(',')
 }
 
 function closeCreate() {
@@ -231,15 +240,20 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
     return { text: '已过期', cls: 'st-expired' }
   return { text: '可用', cls: 'st-active' }
 }
+
+function justCreatedHasScope(scope: string): boolean {
+  return !!justCreated.value?.meta?.scopes?.includes(scope)
+}
 </script>
 
 <template>
-  <div class="dt">
+  <div class="dt dt--dark">
     <header class="dt__head">
       <div>
         <h2 class="dt__title">Personal Access Token</h2>
         <p class="dt__hint">
-          用 <code>Authorization: Bearer pat_xxx</code> 调用 MODstore REST API。明文仅在创建时显示一次。可将多条 Token
+          用 <code>Authorization: Bearer pat_xxx</code> 调用 MODstore REST API。<code>mod:sync</code>
+          用于本地 XCAGI / FHD 与修茈网站同步 Mod；明文仅在创建时显示一次。可将多条 Token
           <strong>加密下发到桌面</strong>，避免逐条复制（见下方「传到桌面」）。
         </p>
       </div>
@@ -272,7 +286,7 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
           <td>{{ t.name || '—' }}</td>
           <td><code>{{ t.prefix }}…</code></td>
           <td>
-            <span v-if="!t.scopes.length" class="dt__scope-empty">全部</span>
+            <span v-if="!t.scopes.length" class="dt__scope-empty">未配置</span>
             <span v-for="s in t.scopes" :key="s" class="dt__scope">{{ s }}</span>
           </td>
           <td>{{ formatTime(t.created_at) }}</td>
@@ -373,16 +387,18 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
               <input v-model="draft.name" type="text" placeholder="例如：本地脚本 / CI Pipeline" />
             </label>
             <label class="dt-field">
-              <span>权限范围（逗号分隔；为空 = 全部）</span>
-              <input v-model="draft.scopesCsv" type="text" placeholder="workflow:read,workflow:execute" />
+              <span>权限范围（逗号分隔）</span>
+              <input v-model="draft.scopesCsv" type="text" placeholder="mod:sync,catalog:read" />
               <small class="dt-field__hint">
+                本地 Mod 同步请至少包含 <code>mod:sync</code>；读取 Catalog 建议同时包含 <code>catalog:read</code>。
+                <br />
                 可选：
                 <button
                   v-for="s in SCOPE_HINTS"
                   :key="s"
                   type="button"
                   class="dt-field__chip"
-                  @click="draft.scopesCsv = draft.scopesCsv.split(',').filter(Boolean).concat(s).join(',')"
+                  @click="addScope(s)"
                 >
                   {{ s }}
                 </button>
@@ -415,7 +431,16 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
             </p>
             <pre class="dt-just__token">{{ justCreated.token }}</pre>
             <p class="dt-just__sample">使用示例：</p>
-            <pre class="dt-just__sample-code"
+            <pre
+              v-if="justCreatedHasScope('mod:sync')"
+              class="dt-just__sample-code"
+><code>curl -X POST https://xiu-ci.com/v1/mod-sync/push \
+  -H "Authorization: Bearer {{ justCreated.token }}" \
+  -H "Content-Type: application/json" \
+  -d '{"mod_ids":["example-mod"]}'</code></pre>
+            <pre
+              v-else
+              class="dt-just__sample-code"
 ><code>curl https://&lt;your-domain&gt;/api/employees/ \
   -H "Authorization: Bearer {{ justCreated.token }}"</code></pre>
           </div>
@@ -793,5 +818,226 @@ function statusOf(row: DeveloperToken): { text: string; cls: string } {
 .dt-fade-enter-from,
 .dt-fade-leave-to {
   opacity: 0;
+}
+
+/* 深色主题（账户中心 / 开发者门户统一） */
+.dt.dt--dark {
+  color: rgba(248, 250, 252, 0.92);
+}
+
+.dt.dt--dark .dt__title {
+  color: #ffffff;
+}
+
+.dt.dt--dark .dt__hint {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.dt.dt--dark .dt__hint code {
+  background: rgba(15, 23, 42, 0.65);
+  color: #e2e8f0;
+}
+
+.dt.dt--dark .dt__err {
+  background: rgba(255, 80, 80, 0.12);
+  color: #ff6b6b;
+}
+
+.dt.dt--dark .dt__placeholder {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.dt.dt--dark .dt__table th,
+.dt.dt--dark .dt__table td {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.dt.dt--dark .dt__table th {
+  color: rgba(255, 255, 255, 0.45);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.dt.dt--dark .dt__table td {
+  color: rgba(248, 250, 252, 0.9);
+}
+
+.dt.dt--dark .dt__table code {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.dt.dt--dark .dt__row--inactive,
+.dt.dt--dark .dt__row--inactive code {
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.dt.dt--dark .dt__scope {
+  background: rgba(129, 140, 248, 0.18);
+  color: #c7d2fe;
+}
+
+.dt.dt--dark .dt__scope-empty {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.dt.dt--dark .st-active {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+
+.dt.dt--dark .st-revoked {
+  background: rgba(255, 80, 80, 0.15);
+  color: #ff6b6b;
+}
+
+.dt.dt--dark .st-expired {
+  background: rgba(234, 179, 8, 0.15);
+  color: #fbbf24;
+}
+
+.dt.dt--dark .dt__btn {
+  border: 0.5px solid rgba(255, 255, 255, 0.15);
+  background: #111111;
+  color: #ffffff;
+}
+
+.dt.dt--dark .dt__btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dt.dt--dark .dt__btn--primary {
+  background: #ffffff;
+  border-color: transparent;
+  color: #0a0a0a;
+}
+
+.dt.dt--dark .dt__btn--primary:hover:not(:disabled) {
+  background: #ffffff;
+  opacity: 0.9;
+}
+
+.dt.dt--dark .dt__btn--danger {
+  border-color: rgba(255, 80, 80, 0.35);
+  color: #ff6b6b;
+  background: rgba(255, 80, 80, 0.08);
+}
+
+.dt.dt--dark .dt__btn--danger:hover {
+  background: rgba(255, 80, 80, 0.15);
+}
+
+.dt.dt--dark .dt-modal__card {
+  background: #141416;
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.65);
+}
+
+.dt.dt--dark .dt-modal__head {
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+
+.dt.dt--dark .dt-modal__head h3 {
+  color: #ffffff;
+}
+
+.dt.dt--dark .dt-modal__foot {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+.dt.dt--dark .dt-field span {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.dt.dt--dark .dt-field input,
+.dt.dt--dark .dt-desk__ta {
+  background: rgba(255, 255, 255, 0.03);
+  border: 0.5px solid rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  border-radius: 8px;
+}
+
+.dt.dt--dark .dt-desk__ta {
+  padding: 8px 10px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.dt.dt--dark .dt-field input::placeholder,
+.dt.dt--dark .dt-desk__ta::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.dt.dt--dark .dt-field input:focus,
+.dt.dt--dark .dt-desk__ta:focus {
+  outline: none;
+  border-color: rgba(165, 180, 252, 0.55);
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
+}
+
+.dt.dt--dark .dt-field__hint {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.dt.dt--dark .dt-field__chip {
+  background: rgba(129, 140, 248, 0.2);
+  color: #c7d2fe;
+}
+
+.dt.dt--dark .dt-field__chip:hover {
+  background: rgba(129, 140, 248, 0.3);
+}
+
+.dt.dt--dark .dt-just__warn {
+  color: #fbbf24;
+  background: rgba(234, 179, 8, 0.12);
+}
+
+.dt.dt--dark .dt-just__sample {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.dt.dt--dark .dt-just__sample-code {
+  background: rgba(0, 0, 0, 0.45);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e2e8f0;
+}
+
+.dt.dt--dark .dt-desk {
+  background: rgba(0, 0, 0, 0.22);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.dt.dt--dark .dt-desk__title {
+  color: #ffffff;
+}
+
+.dt.dt--dark .dt-desk__hint {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.dt.dt--dark .dt-desk__hint a {
+  color: #a5b4fc;
+}
+
+.dt.dt--dark .dt-desk__hint a:hover {
+  text-decoration: underline;
+}
+
+.dt.dt--dark .dt-desk__pick-head {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.dt.dt--dark .dt-desk__cb {
+  color: rgba(248, 250, 252, 0.88);
+}
+
+.dt.dt--dark .dt-desk__cb code {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
 }
 </style>

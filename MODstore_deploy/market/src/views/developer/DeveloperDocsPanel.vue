@@ -154,13 +154,14 @@ const contracts: DocLink[] = [
   display: flex;
   flex-direction: column;
   gap: 28px;
+  color: rgba(248, 250, 252, 0.92);
 }
 
 .docs__h2 {
   margin: 0 0 12px;
   font-size: 16px;
   font-weight: 600;
-  color: #0f172a;
+  color: #ffffff;
 }
 
 .docs__grid {
@@ -171,8 +172,8 @@ const contracts: DocLink[] = [
 
 .docs-card {
   display: block;
-  background: #fff;
-  border: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
   padding: 14px 16px;
   text-decoration: none;
@@ -181,30 +182,30 @@ const contracts: DocLink[] = [
 }
 
 .docs-card:hover {
-  border-color: #4f46e5;
+  border-color: rgba(129, 140, 248, 0.55);
   transform: translateY(-2px);
-  box-shadow: 0 12px 24px -16px rgba(79, 70, 229, 0.32);
+  box-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.55);
 }
 
 .docs-card__title {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: #0f172a;
+  color: #f8fafc;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
 .docs-card__arrow {
-  color: #94a3b8;
+  color: rgba(148, 163, 184, 0.85);
   font-size: 12px;
 }
 
 .docs-card__badge {
   font-size: 10px;
-  background: #fef3c7;
-  color: #92400e;
+  background: rgba(234, 179, 8, 0.15);
+  color: #fbbf24;
   padding: 1px 7px;
   border-radius: 999px;
   letter-spacing: 0.04em;
@@ -214,26 +215,26 @@ const contracts: DocLink[] = [
 .docs-card__desc {
   margin: 6px 0 0;
   font-size: 12px;
-  color: #64748b;
+  color: rgba(255, 255, 255, 0.55);
   line-height: 1.5;
 }
 
 .docs__tip {
-  background: #f8fafc;
-  border: 1px dashed #cbd5e1;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
   padding: 12px 16px;
   border-radius: 10px;
   font-size: 13px;
-  color: #475569;
+  color: rgba(255, 255, 255, 0.6);
   line-height: 1.6;
 }
 
 .docs__tip code {
-  background: #fff;
+  background: rgba(15, 23, 42, 0.75);
   padding: 2px 6px;
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
-  color: #0f172a;
+  color: #e2e8f0;
 }
 </style>

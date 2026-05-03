@@ -6,13 +6,16 @@ from typing import Optional
 
 from fastapi import Depends, Header, HTTPException
 
-from modstore_server.application.auth import AuthApplicationService
+from modstore_server.application.auth import AuthApplicationService, AuthenticationError
 from modstore_server.infrastructure.db import get_db
 from modstore_server.models import User
 
 
 def get_current_user(authorization: Optional[str] = Header(None)) -> User:
-    return AuthApplicationService().current_user_from_authorization(authorization)
+    try:
+        return AuthApplicationService().current_user_from_authorization(authorization)
+    except AuthenticationError as e:
+        raise HTTPException(401, str(e)) from e
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:

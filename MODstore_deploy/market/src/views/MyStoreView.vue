@@ -1,7 +1,7 @@
 <template>
   <div class="store-page">
     <h1 class="page-title">已购资产</h1>
-    <p class="page-sub">您在市场中购买的 Mod、员工包（employee_pack）等，可在此下载；自制上架请前往工作台「员工制作」。</p>
+    <p class="page-sub">您在市场中购买的 MOD、AI 员工、提示词、Skill、TTS 模型与设计素材等，可在此下载；自制上架请前往工作台。</p>
     <div v-if="loading" class="loading">加载中...</div>
     <div v-else-if="err" class="flash flash-err">{{ err }}</div>
     <div v-else>
@@ -16,9 +16,9 @@
       </div>
       <div v-if="items.length === 0" class="empty-state">
         <p>您还没有购买任何商品</p>
-        <p class="empty-hint">AI 员工与扩展包在市场中选购；也可在工作台自制员工包并上架。</p>
+        <p class="empty-hint">AI 员工、提示词、Skill、TTS 模型与 MOD 素材都在市场中选购；也可在工作台自制并上架。</p>
         <div class="empty-actions">
-          <router-link :to="{ name: 'ai-store' }" class="btn btn-primary-solid">去市场逛逛</router-link>
+          <router-link :to="{ name: 'ai-store' }" class="btn btn-primary-solid">去 AI 市场逛逛</router-link>
           <router-link :to="{ name: 'workbench-employee' }" class="btn btn-secondary">工作台 · 员工制作</router-link>
         </div>
       </div>

@@ -18,4 +18,16 @@ const modMenu = [
   }
 ];
 
-export { modRoutes, modMenu };
+const modShell = {
+  uiShell: 'config/ui_shell.json',
+  settings: {
+    defaultIndustry: '通用',
+    industryOptions: ['通用']
+  },
+  makeScene: {
+    title: '将__MOD_NAME__做成可运行工作流',
+    description: '先澄清需求，再生成执行清单、制作草稿与校验报告。'
+  }
+};
+
+export { modRoutes, modMenu, modShell };

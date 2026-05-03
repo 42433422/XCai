@@ -1,31 +1,73 @@
 <template>
   <div class="app-shell" :class="{ 'app-shell--wb-home': isWorkbenchHome }">
-    <nav v-if="!isHome && !isEmployeeWorkbench" class="navbar">
+    <nav
+      v-if="!isHome && !isEmployeeWorkbench"
+      class="navbar"
+      role="navigation"
+      :aria-label="t('nav.mainNavigation')"
+    >
       <div class="nav-inner">
         <a href="https://xiu-ci.com/about.html" class="nav-brand" @click="switchMode('client')">{{ t('nav.brand') }}</a>
         <div class="nav-links">
           <div class="nav-section">
             <template v-if="isAdmin">
-              <button :class="['mode-tab', { active: currentMode === 'client' }]" @click="switchMode('client')">{{ t('nav.client') }}</button>
-              <button :class="['mode-tab', { active: currentMode === 'admin' }]" @click="switchMode('admin')">{{ t('nav.admin') }}</button>
+              <button
+                type="button"
+                :class="['mode-tab', { active: currentMode === 'client' }]"
+                :aria-pressed="currentMode === 'client'"
+                @click="switchMode('client')"
+              >{{ t('nav.client') }}</button>
+              <button
+                type="button"
+                :class="['mode-tab', { active: currentMode === 'admin' }]"
+                :aria-pressed="currentMode === 'admin'"
+                @click="switchMode('admin')"
+              >{{ t('nav.admin') }}</button>
             </template>
           </div>
 
           <div class="nav-section">
             <template v-if="currentMode === 'admin' && isAdmin">
-              <router-link :to="{ name: 'admin-database' }" class="nav-link nav-admin-link">{{ t('nav.database') }}</router-link>
+              <router-link
+                :to="{ name: 'admin-database' }"
+                class="nav-link nav-admin-link"
+                :aria-current="route.name === 'admin-database' ? 'page' : undefined"
+              >{{ t('nav.database') }}</router-link>
+              <router-link
+                :to="{ name: 'admin-customer-service' }"
+                class="nav-link nav-admin-link"
+                :aria-current="route.name === 'admin-customer-service' ? 'page' : undefined"
+              >{{ t('nav.adminCustomerService') }}</router-link>
               <span class="nav-balance nav-badge">{{ t('nav.adminMode') }}</span>
             </template>
 
             <template v-else>
-              <router-link :to="{ name: 'workbench-home' }" class="nav-link">{{ t('nav.workbench') }}</router-link>
-              <router-link :to="{ name: 'plans' }" class="nav-link">{{ t('nav.plans') }}</router-link>
-              <router-link :to="{ name: 'ai-store' }" class="nav-link nav-gradient">{{ t('nav.aiStore') }}</router-link>
               <router-link
-                :to="{ name: 'workbench-home', query: { assistant: 'customer-service' } }"
+                :to="{ name: 'workbench-home' }"
+                class="nav-link"
+                :aria-current="isWorkbenchNavActive ? 'page' : undefined"
+              >{{ t('nav.workbench') }}</router-link>
+              <router-link
+                :to="{ name: 'plans' }"
+                class="nav-link"
+                :aria-current="route.name === 'plans' ? 'page' : undefined"
+              >{{ t('nav.plans') }}</router-link>
+              <router-link
+                :to="{ name: 'ai-store' }"
+                class="nav-link nav-gradient"
+                :aria-current="route.name === 'ai-store' ? 'page' : undefined"
+              >{{ t('nav.aiStore') }}</router-link>
+              <router-link
+                :to="{ name: 'customer-service' }"
                 class="nav-link nav-customer-ai"
-                title="AI 客服占位，后续接入客服工作台"
-              >AI 客服</router-link>
+                :title="t('nav.customerServiceAiTitle')"
+                :aria-current="route.name === 'customer-service' ? 'page' : undefined"
+              >{{ t('nav.customerServiceAi') }}</router-link>
+              <router-link
+                :to="{ name: 'sandbox' }"
+                class="nav-link nav-sandbox"
+                :aria-current="route.name === 'sandbox' ? 'page' : undefined"
+              >沙箱测试</router-link>
             </template>
           </div>
 
@@ -36,23 +78,25 @@
                 :to="{ name: 'account' }"
                 :class="['nav-username', membershipTier ? `nav-username--${membershipTier}` : '']"
                 :title="membershipLabel ? `${membershipLabel} · ${username}` : username"
+                :aria-current="route.name === 'account' ? 'page' : undefined"
               >{{ username }}</router-link>
               <router-link
                 v-if="levelProfile"
                 :to="{ name: 'account' }"
                 class="nav-level-badge"
-                :title="`${levelProfile.title || '账号等级'} · 累计经验 ${levelProfile.experience}`"
+                :title="
+                  t('nav.levelBadgeTitle', {
+                    title: levelProfile.title || t('nav.defaultLevelTitle'),
+                    exp: levelProfile.experience,
+                  })
+                "
+                :aria-current="route.name === 'account' ? 'page' : undefined"
               >Lv.{{ levelProfile.level }}</router-link>
-              <router-link
-                :to="{ name: 'wallet-keys' }"
-                class="nav-link"
-                title="在钱包中管理 PAT 与桌面加密下发"
-                >{{ t('nav.apiKeys') }}</router-link
-              >
               <router-link
                 to="/notifications"
                 class="nav-link nav-notifications"
-                aria-label="通知中心"
+                :aria-label="t('nav.notificationsCenter')"
+                :aria-current="route.name === 'notifications' ? 'page' : undefined"
               >
                 <span class="nav-bell-wrap">
                   <svg class="nav-bell" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -68,7 +112,11 @@
                   <span v-if="unreadNotifications > 0" class="nav-notif-badge">{{ unreadBadgeText }}</span>
                 </span>
               </router-link>
-              <router-link :to="{ name: 'wallet' }" class="nav-link">{{ t('nav.wallet') }}</router-link>
+              <router-link
+                :to="{ name: 'wallet' }"
+                class="nav-link"
+                :aria-current="String(route.name || '').startsWith('wallet') ? 'page' : undefined"
+              >{{ t('nav.wallet') }}</router-link>
               <span class="nav-balance" v-if="balance !== null">¥{{ balance.toFixed(2) }}</span>
               <button class="nav-link btn-logout" @click="doLogout">{{ t('nav.logout') }}</button>
             </template>
@@ -86,13 +134,15 @@
         'main-content--home': isHome,
         'main-content--employee-full': isEmployeeWorkbench,
         'main-content--wb-home': isWorkbenchHome,
+        'main-content--account': isAccountPage,
       }"
     >
       <div class="main-content-router">
         <router-view v-slot="{ Component }">
-          <transition name="page-fade" mode="out-in">
-            <component :is="Component" />
-          </transition>
+          <!-- keep-alive：从 AI 客服、脚本工作流沙箱等返回时保留工作台内存态（「做」规划、一档聊天等），避免整页重新挂载丢进度 -->
+          <keep-alive :max="24">
+            <component v-if="Component" :is="Component" :key="topLevelRouterCacheKey" />
+          </keep-alive>
         </router-view>
       </div>
     </main>
@@ -111,6 +161,23 @@ import { connectRealtime, disconnectRealtime } from './realtimeClient'
 
 const router = useRouter()
 const route = useRoute()
+
+/** 同一工作台壳共用一条缓存，避免 /workbench/* 与外链来回时反复卸载丢状态 */
+const topLevelRouterCacheKey = computed(() => {
+  const p = route.path || ''
+  const n = String(route.name || '')
+  if (p.startsWith('/workbench')) return 'cache-workbench-shell'
+  if (n === 'home' || p === '/') return 'cache-workbench-home-root'
+  return route.fullPath
+})
+
+const isAccountPage = computed(() => route.name === 'account')
+/** 顶栏「工作台」链到 workbench-home；首页 / 与 workbench 根路径同属该入口 */
+const isWorkbenchNavActive = computed(() => {
+  const n = String(route.name || '')
+  const p = route.path || ''
+  return n === 'workbench-home' || n === 'home' || p === '/' || p === '/workbench/home'
+})
 const isWorkbenchHome = computed(() => {
   const n = String(route.name || '')
   const p = route.path
@@ -198,8 +265,8 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 1rem;
   line-height: 1.5;
-  background: #0a0a0a;
-  color: #ffffff;
+  background: var(--color-bg-body);
+  color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
 }
 /* 与顶栏同一套水平节奏：大屏可放宽到 1600px，小屏边距随 vw 变粗/变细 */
@@ -224,7 +291,7 @@ body {
 }
 a { text-decoration: none; color: inherit; }
 
-.navbar { background: #111111; border-bottom: 0.5px solid rgba(255,255,255,0.1); position: sticky; top: 0; z-index: 100; }
+.navbar { background: var(--color-bg-elevated); border-bottom: 0.5px solid var(--color-border-subtle); position: sticky; top: 0; z-index: 100; }
 .nav-inner {
   width: 100%;
   max-width: var(--layout-max);
@@ -240,7 +307,7 @@ a { text-decoration: none; color: inherit; }
 .nav-brand {
   font-size: clamp(1.125rem, 1rem + 0.35vw, 1.35rem);
   font-weight: 700;
-  color: #ffffff;
+  color: var(--color-text-primary);
 }
 .nav-links { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
 .nav-section { display: flex; align-items: center; gap: 16px; }
@@ -328,6 +395,12 @@ a { text-decoration: none; color: inherit; }
   0%   { background-position: 0% 50%; }
   100% { background-position: 200% 50%; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-username--svip8 {
+    animation: none;
+  }
+}
 .nav-level-badge {
   display: inline-flex;
   align-items: center;
@@ -356,14 +429,14 @@ a { text-decoration: none; color: inherit; }
 }
 .nav-link {
   font-size: 1rem;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-muted);
   cursor: pointer;
   padding: 0.35rem 0.55rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   transition: all 0.2s;
 }
-.nav-link:hover { background: rgba(255,255,255,0.06); color: #ffffff; }
-.nav-link.router-link-active { color: #ffffff; font-weight: 600; }
+.nav-link:hover { background: rgba(255,255,255,0.06); color: var(--color-text-primary); }
+.nav-link.router-link-active { color: var(--color-text-primary); font-weight: 600; }
 
 .nav-notifications {
   display: inline-flex;
@@ -406,15 +479,15 @@ a { text-decoration: none; color: inherit; }
 }
 .nav-balance {
   font-size: 1rem;
-  color: #4ade80;
+  color: var(--color-accent-green);
   font-weight: 600;
   background: rgba(74, 222, 128, 0.1);
   padding: 0.35rem 0.65rem;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 .nav-badge {
   background: rgba(96, 165, 250, 0.15);
-  color: #60a5fa;
+  color: var(--color-accent-blue);
   font-size: 0.85rem;
   font-weight: 700;
 }
@@ -431,9 +504,9 @@ a { text-decoration: none; color: inherit; }
   transition: all 0.2s;
 }
 .mode-tab:hover { color: rgba(255,255,255,0.7); }
-.mode-tab.active { color: #ffffff; background: rgba(255,255,255,0.06); }
+.mode-tab.active { color: var(--color-text-primary); background: rgba(255,255,255,0.06); }
 
-.nav-admin-link { color: #60a5fa !important; font-weight: 600; }
+.nav-admin-link { color: var(--color-accent-blue) !important; font-weight: 600; }
 
 .nav-gradient {
   font-size: 0.95rem;
@@ -457,6 +530,18 @@ a { text-decoration: none; color: inherit; }
 .nav-customer-ai:hover,
 .nav-customer-ai.router-link-active {
   color: #ddd6fe;
+  background: transparent;
+}
+.nav-sandbox {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #67e8f9;
+  background: transparent;
+  border: 0;
+}
+.nav-sandbox:hover,
+.nav-sandbox.router-link-active {
+  color: #a5f3fc;
   background: transparent;
 }
 .btn-primary { background: #ffffff; color: #0a0a0a !important; border: none; }
@@ -500,6 +585,12 @@ a { text-decoration: none; color: inherit; }
 .main-content--employee-full {
   max-width: none;
   padding: 0;
+}
+
+/* 账户中心：控制台式单列留白，避免 main-content-router 内块与顶栏之间「散、乱」 */
+.main-content--account {
+  --page-pad-y: clamp(0.75rem, 2vw, 1.25rem);
+  max-width: 1200px;
 }
 
 /* 工作台首页 / 与窗口等高，禁页面级纵向滚轮，避免与右侧长条档杆冲突；内容在 .wb-gear-scene 内自行滚动 */

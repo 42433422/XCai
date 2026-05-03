@@ -7,19 +7,14 @@ import csv
 import io
 import json
 import logging
-import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import httpx
 
-from modstore_server.llm_chat_proxy import chat_dispatch
-from modstore_server.llm_key_resolver import (
-    OAI_COMPAT_OPENAI_STYLE_PROVIDERS,
-    resolve_api_key,
-    resolve_base_url,
-)
+from modstore_server.runtime_async import run_coro_sync as _run_coro_sync
+from modstore_server.services.llm import chat_dispatch_via_session
 from modstore_server.employee_runtime import (
     build_employee_context,
     load_employee_pack,
@@ -87,8 +82,7 @@ def _perception_image(input_data: Any, session, user_id: int) -> Dict[str, Any]:
     if isinstance(raw, str) and raw.startswith("data:"):
         raw = raw.split(",", 1)[-1]
 
-    api_key, _src = resolve_api_key(session, user_id, "openai")
-    if not api_key or not raw:
+    if not raw:
         return {
             "normalized_input": input_data,
             "type": "image",
@@ -98,11 +92,11 @@ def _perception_image(input_data: Any, session, user_id: int) -> Dict[str, Any]:
     image_content = raw if isinstance(raw, str) and raw.startswith("data:") else f"data:image/png;base64,{raw}"
 
     async def _call():
-        return await chat_dispatch(
+        return await chat_dispatch_via_session(
+            session,
+            user_id,
             "openai",
-            api_key=api_key,
-            base_url=resolve_base_url(session, user_id, "openai"),
-            model="gpt-4o-mini",
+            "gpt-4o-mini",
             messages=[
                 {
                     "role": "user",
@@ -285,30 +279,21 @@ async def _cognition_real(
             logger.warning("cognition.knowledge retrieve 失败: %s", e)
             rag_meta = {"enabled": True, "items": [], "error": str(e)}
 
-    api_key, _source = resolve_api_key(session, user_id, provider)
-    if not api_key:
-        return {
-            "reasoning": "",
-            "error": f"missing api key for provider: {provider}",
-            "input": perceived.get("normalized_input", {}),
-            "memory": memory,
-            "knowledge": rag_meta,
-        }
-    base_url = None
-    if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
-        base_url = resolve_base_url(session, user_id, provider)
-    result = await chat_dispatch(
+    result = await chat_dispatch_via_session(
+        session,
+        user_id,
         provider,
-        api_key=api_key,
-        base_url=base_url,
-        model=model_name,
-        messages=messages,
+        model_name,
+        messages,
         max_tokens=max_tokens,
     )
     if not result.get("ok"):
+        err = str(result.get("error") or "llm call failed")
+        if "missing api key" in err.lower():
+            err = f"missing api key for provider: {provider}"
         return {
             "reasoning": "",
-            "error": result.get("error", "llm call failed"),
+            "error": err,
             "input": perceived.get("normalized_input", {}),
             "memory": memory,
             "knowledge": rag_meta,
@@ -324,28 +309,6 @@ async def _cognition_real(
         "model": model_name,
         "llm_raw": result.get("raw"),
     }
-
-
-def _run_coro_sync(coro):
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    result: Dict[str, Any] = {}
-    error: Dict[str, Exception] = {}
-
-    def _runner():
-        try:
-            result["value"] = asyncio.run(coro)
-        except Exception as e:  # noqa: PERF203
-            error["err"] = e
-
-    t = threading.Thread(target=_runner, daemon=True)
-    t.start()
-    t.join()
-    if "err" in error:
-        raise error["err"]
-    return result.get("value")
 
 
 def _cognition_sync(

@@ -303,10 +303,7 @@ public class OrderService {
     @Transactional
     public int closeExpiredPendingOrders(Duration maxAge) {
         LocalDateTime threshold = LocalDateTime.now().minus(maxAge);
-        List<Order> pending = orderRepository.findAll().stream()
-                .filter(order -> "pending".equals(order.getStatus()))
-                .filter(order -> order.getCreatedAt() != null && order.getCreatedAt().isBefore(threshold))
-                .toList();
+        List<Order> pending = orderRepository.findByStatusAndCreatedAtBefore("pending", threshold);
         pending.forEach(order -> order.setStatus("closed"));
         orderRepository.saveAll(pending);
         return pending.size();

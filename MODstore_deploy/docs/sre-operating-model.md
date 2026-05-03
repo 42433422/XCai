@@ -55,6 +55,7 @@
 
 ## 容量管理
 
+- 提交到仓库的公开基线表：[`docs/perf-benchmark-public.md`](perf-benchmark-public.md)。
 - 每个生产版本至少保留一次 `K6_STAGE=smoke` 结果。
 - 大版本或支付/数据库变更前执行 `K6_STAGE=step`。
 - 每月执行一次 `K6_STAGE=soak`，观察 JVM heap、Hikari、FastAPI p95 和支付代理 p95。
@@ -65,7 +66,7 @@
 
 - 监控：Grafana `MODstore Overview`。
 - 冒烟：`scripts/sre_smoke_check.py`。
-- 压测：`perf/full_link_smoke.js`。
+- 压测：`perf/full_link_smoke.js`；公开记录见 [`docs/perf-benchmark-public.md`](perf-benchmark-public.md)。
 - 混沌：`chaos/chaos_drill.py`。
 - 备份：`scripts/backup_modstore.py`。
 - 灾备：`docs/runbooks/disaster-recovery.md`。

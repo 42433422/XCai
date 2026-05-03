@@ -14,6 +14,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MARKET = REPO_ROOT / "market"
 APP_PY = REPO_ROOT / "modstore_server" / "app.py"
+MIDDLEWARE_PY = REPO_ROOT / "modstore_server" / "api" / "middleware.py"
+APP_FACTORY_PY = REPO_ROOT / "modstore_server" / "api" / "app_factory.py"
 
 
 def test_only_one_vite_config_exists():
@@ -34,12 +36,13 @@ def test_package_json_build_script_pins_vite():
     assert pkg["scripts"]["test:coverage"].startswith("vitest run --coverage")
 
 
-def test_app_py_keeps_market_dist_as_single_source():
-    if not APP_PY.is_file():
-        pytest.skip("app.py not present in this checkout")
-    text = APP_PY.read_text(encoding="utf-8")
+def test_middleware_keeps_market_dist_as_single_source():
+    """``market/dist`` 常量随 app 拆分后位于 ``api/middleware.py``。"""
+    if not MIDDLEWARE_PY.is_file():
+        pytest.skip("middleware.py not present in this checkout")
+    text = MIDDLEWARE_PY.read_text(encoding="utf-8")
     assert (
-        "_MARKET_DIST = Path(__file__).resolve().parent.parent / \"market\" / \"dist\""
+        '_MARKET_DIST = Path(__file__).resolve().parent.parent.parent / "market" / "dist"'
         in text
     ), (
         "FastAPI must keep MODstore_deploy/market/dist as the single static "
@@ -52,7 +55,11 @@ def test_payment_gateway_proxy_remains_in_python_until_gateway_decision():
     lands, the FastAPI middleware MUST keep handling proxying to Java itself.
     """
 
-    text = APP_PY.read_text(encoding="utf-8")
+    texts = []
+    for p in (APP_FACTORY_PY, MIDDLEWARE_PY, APP_PY):
+        if p.is_file():
+            texts.append(p.read_text(encoding="utf-8"))
+    text = "\n".join(texts)
     # 中间件名称在事件异步化重构中保持稳定；任何重命名都需要同步更新此处与
     # docs/FRONTEND_AND_GATEWAY_ROADMAP.md 中的引用。
     assert "_payment_backend_proxy_middleware" in text

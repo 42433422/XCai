@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import zipfile
@@ -174,6 +175,19 @@ def export_zip(mod_dir: Path, zip_path: Path) -> None:
             if f.is_file():
                 arc = f.relative_to(mod_dir)
                 zf.write(f, arc.as_posix())
+
+
+def build_mod_zip_bytes(mod_dir: Path) -> io.BytesIO:
+    """Zip a Mod directory into an in-memory buffer (for ``StreamingResponse``)."""
+
+    mod_dir = mod_dir.resolve()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in mod_dir.rglob("*"):
+            if f.is_file():
+                zf.write(f, f.relative_to(mod_dir).as_posix())
+    buf.seek(0)
+    return buf
 
 
 def import_zip(zip_path: Path, library: Path, *, replace: bool = True) -> Path:

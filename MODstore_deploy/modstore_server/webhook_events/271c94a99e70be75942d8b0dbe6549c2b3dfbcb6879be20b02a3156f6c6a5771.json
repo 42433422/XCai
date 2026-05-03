@@ -1,0 +1,26 @@
+{
+  "event": {
+    "id": "employee.execution_completed:ai-rankings-stats",
+    "type": "employee.execution_completed",
+    "version": 1,
+    "source": "modstore-employee-api",
+    "aggregate_id": "ai-rankings-stats",
+    "created_at": 1777636065,
+    "data": {
+      "employee_id": "ai-rankings-stats",
+      "user_id": 1019,
+      "task": "请上网获取AI模型排行榜，输出前10名模型、排名、来源和统计结论",
+      "status": "success",
+      "error": "",
+      "result_summary": {
+        "duration_ms": 30441.869
+      }
+    }
+  },
+  "result": {
+    "ok": false,
+    "skipped": true,
+    "message": "MODSTORE_WEBHOOK_URL is not configured"
+  },
+  "updated_at": 1777636065
+}

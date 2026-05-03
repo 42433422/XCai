@@ -10,6 +10,7 @@
 - `/api/payment/`、`/api/wallet/` 每 IP 10 r/s，突发 20。
 - 其他 `/api/`、`/v1/` 每 IP 20 r/s，突发 40。
 - `/api/realtime/` 保持 WebSocket 长连接，`proxy_read_timeout 1d`。
+- 其他 `/api/`、`/v1/`：`proxy_read_timeout` / `proxy_send_timeout` 设为 **3600s**（含 LLM 流式、工作台编排）；过短会在上游仍在处理时由 nginx 返回 **504**。
 - 所有反代请求透传 `X-Request-Id`，便于从 Nginx、FastAPI、Java 日志串联。
 - `/nginx-health` 作为容器健康检查，不依赖前端构建产物路由。
 

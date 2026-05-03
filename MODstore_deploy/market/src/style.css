@@ -1,1 +1,2 @@
-/* global styles */
+/* global styles — tokens + resets; shell/nav rules live in App.vue */
+@import './tokens.css';

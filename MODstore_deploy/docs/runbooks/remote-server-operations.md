@@ -74,6 +74,8 @@ $env:DEPLOY_GIT_BRANCH = "main"
 5. `docker compose --profile app up -d --build`
 6. `python scripts/sre_smoke_check.py ...`
 
+若使用 `scripts/sync-modstore-to-server.ps1` 将代码解压到 `$REMOTE_BASE/MODstore_deploy`（默认 `$REMOTE_BASE=/root/modstore-git`），请保证 **`modstore.service` 的 `WorkingDirectory` / `ExecStart` 指向同一棵树**，否则会出现「同步成功但进程仍跑旧目录/旧 venv」。在服务器上以 root 执行 `MODstore_deploy/scripts/align_modstore_systemd_to_deploy.sh`（或通过同步脚本加 `-AlignSystemd`）写入 systemd drop-in 对齐路径。
+
 ## 冒烟检查
 
 默认检查本机端口：
@@ -125,6 +127,8 @@ $env:DEPLOY_GIT_BRANCH = "main"
 
 压测前后打开 Grafana `MODstore Overview`，记录 FastAPI p95、支付代理 p95、Java heap、Hikari 连接池和告警。
 
+公开基线表与历史 k6 摘要（提交到仓库的单一事实来源）：[`../perf-benchmark-public.md`](../perf-benchmark-public.md)。
+
 ## 混沌演练 dry-run
 
 ```powershell
@@ -163,6 +167,20 @@ Compose 默认端口：
 - RabbitMQ 管理台: `15672`
 
 公网建议只暴露 Nginx/HTTPS 入口，数据库、Redis、RabbitMQ、Prometheus、Grafana 只允许内网或 SSH 隧道访问。
+
+### 504 Gateway Time-out（nginx）
+
+若 HTML 报错页含 `nginx/x.x.x` 且 **504**，多为 **入口 nginx 等待 upstream（常见为 FastAPI `:8765`）超时**，与浏览器里「请求很慢」同时出现。
+
+排查顺序：
+
+1. **确认实际处理请求的是哪一层 nginx**（宿主机 `nginx -v` 常为 1.14.x；Docker 内 `market` 镜像为另一版本）。宿主机反代必须在 **`location /api/`**（及流式、WebSocket 路径）显式设置：
+   - `proxy_read_timeout`、`proxy_send_timeout`（LLM / 工作台建议 **3600s**；WebSocket 见 `docs/nginx-https-example.conf` 中 `1d`）。
+   - 流式接口建议 `proxy_buffering off;`，避免缓冲导致误判超时。
+2. **直连 upstream**：在服务器上 `curl -m 5 -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/health`（或实际健康路径）。若此处已超时或连接拒绝，应先修 **uvicorn/systemd** 与端口，而不是只调 nginx。
+3. **查看 upstream 日志**：`journalctl -u modstore -n 200` 或 Docker `docker compose logs api --tail=200`，确认是否 OOM、死锁或 LLM 上游过慢。
+
+仓库内参考配置：`market/nginx.conf`（Compose 入口）、`docs/nginx-https-example.conf`（宿主机 HTTPS 反代示例）。修改后务必 **`nginx -t && systemctl reload nginx`**（或等价重载）。
 
 ## 最小上线验收
 

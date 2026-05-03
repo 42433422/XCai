@@ -1,0 +1,21 @@
+{
+  "event": {
+    "id": "customer_service.ticket_created:CS2026050204574110360003",
+    "type": "customer_service.ticket_created",
+    "version": 1,
+    "source": "modstore-customer-service",
+    "aggregate_id": "CS2026050204574110360003",
+    "created_at": 1777740237,
+    "data": {
+      "ticket_id": 3,
+      "ticket_no": "CS2026050204574110360003",
+      "intent": "refund"
+    }
+  },
+  "result": {
+    "ok": false,
+    "skipped": true,
+    "message": "MODSTORE_WEBHOOK_URL is not configured"
+  },
+  "updated_at": 1777740237
+}

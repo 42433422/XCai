@@ -2,98 +2,169 @@
   <div class="store-page">
     <header class="store-hero">
       <div class="store-hero-inner">
-        <p class="store-eyebrow">XC AGI · AI 员工商店</p>
-        <h1 class="store-title">按行业与类型挑选能力</h1>
+        <p class="store-eyebrow">XC AGI · AI 市场</p>
+        <h1 class="store-title">一站式选购 AI 员工与数字素材</h1>
         <p class="store-sub">
-          浏览可购买的 MOD 与 AI 员工扩展；管理员上架时可填写「行业」便于归类。
+          AI 员工是其中一类；另有 Agent 提示词、Skill、TTS 声音、页面风格、个性化设计与 MOD 包素材等，可按类目与授权筛选。
         </p>
       </div>
     </header>
 
     <div class="store-toolbar">
-      <div class="toolbar-row">
-        <label class="sr-only" for="store-search">搜索</label>
-        <input
-          id="store-search"
-          v-model="searchQ"
-          class="input search-input"
-          type="search"
-          placeholder="搜索名称、包名、描述…"
-          @keydown.enter.prevent="applyFilters"
-        />
-        <button type="button" class="btn btn-ghost" @click="applyFilters">搜索</button>
-        <button type="button" class="btn btn-text" @click="resetFilters">重置</button>
-      </div>
-
-      <div class="filter-block">
-        <span class="filter-label">行业</span>
-        <div class="chip-row">
-          <button
-            type="button"
-            class="chip"
-            :class="{ active: !filters.industry }"
-            @click="setIndustry('')"
-          >
-            全部
-          </button>
-          <button
-            v-for="ind in facetIndustries"
-            :key="'ind-' + ind"
-            type="button"
-            class="chip"
-            :class="{ active: filters.industry === ind }"
-            @click="setIndustry(ind)"
-          >
-            {{ ind }}
-          </button>
+      <section class="store-panel store-panel--search" aria-labelledby="store-search-heading">
+        <div class="store-panel__hd">
+          <h2 id="store-search-heading" class="store-panel__title">搜索</h2>
+          <p class="store-panel__hint">按名称、包名或描述查找商品</p>
         </div>
-      </div>
-
-      <div class="filter-block">
-        <span class="filter-label">类型</span>
-        <div class="chip-row">
-          <button
-            type="button"
-            class="chip"
-            :class="{ active: !filters.artifact }"
-            @click="setArtifact('')"
-          >
-            全部
-          </button>
-          <button
-            v-for="art in facetArtifacts"
-            :key="'art-' + art"
-            type="button"
-            class="chip"
-            :class="{ active: filters.artifact === art }"
-            @click="setArtifact(art)"
-          >
-            {{ artifactLabel(art) }}
-          </button>
+        <div class="toolbar-row">
+          <label class="sr-only" for="store-search">搜索</label>
+          <input
+            id="store-search"
+            v-model="searchQ"
+            class="input search-input"
+            type="search"
+            placeholder="搜索名称、包名、描述…"
+            @keydown.enter.prevent="applyFilters"
+          />
+          <button type="button" class="btn btn-ghost" @click="applyFilters">搜索</button>
+          <button type="button" class="btn btn-text" @click="resetFilters">重置全部筛选</button>
         </div>
-      </div>
+      </section>
 
-      <div class="filter-block">
-        <span class="filter-label">保密级</span>
-        <div class="chip-row">
-          <button type="button" class="chip" :class="{ active: !filters.securityLevel }" @click="setSecurityLevel('')">全部</button>
-          <button type="button" class="chip" :class="{ active: filters.securityLevel === 'personal' }" @click="setSecurityLevel('personal')">个人级</button>
-          <button type="button" class="chip" :class="{ active: filters.securityLevel === 'enterprise' }" @click="setSecurityLevel('enterprise')">企业级</button>
-          <button type="button" class="chip" :class="{ active: filters.securityLevel === 'confidential' }" @click="setSecurityLevel('confidential')">保密级</button>
-        </div>
+      <div class="store-facet-grid">
+        <section class="store-panel store-panel--facet" aria-labelledby="store-facet-type-heading">
+          <div class="store-panel__hd">
+            <h2 id="store-facet-type-heading" class="store-panel__title">素材分类</h2>
+            <p class="store-panel__hint">先选「类目」再选「工件类型」，缩小范围</p>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">类目</span>
+            <div class="chip-row">
+              <button
+                type="button"
+                class="chip"
+                :class="{ active: !filters.materialCategory }"
+                @click="setMaterialCategory('')"
+              >
+                全部
+              </button>
+              <button
+                v-for="cat in facetMaterialCategories"
+                :key="'cat-' + cat"
+                type="button"
+                class="chip"
+                :class="{ active: filters.materialCategory === cat }"
+                @click="setMaterialCategory(cat)"
+              >
+                {{ materialCategoryLabel(cat) }}
+              </button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">工件类型</span>
+            <div class="chip-row">
+              <button
+                type="button"
+                class="chip"
+                :class="{ active: !filters.artifact }"
+                @click="setArtifact('')"
+              >
+                全部
+              </button>
+              <button
+                v-for="art in facetArtifacts"
+                :key="'art-' + art"
+                type="button"
+                class="chip"
+                :class="{ active: filters.artifact === art }"
+                @click="setArtifact(art)"
+              >
+                {{ artifactLabel(art) }}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="store-panel store-panel--facet" aria-labelledby="store-facet-policy-heading">
+          <div class="store-panel__hd">
+            <h2 id="store-facet-policy-heading" class="store-panel__title">行业与合规</h2>
+            <p class="store-panel__hint">行业场景、授权范围与保密级</p>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">行业</span>
+            <div class="chip-row">
+              <button
+                type="button"
+                class="chip"
+                :class="{ active: !filters.industry }"
+                @click="setIndustry('')"
+              >
+                全部
+              </button>
+              <button
+                v-for="ind in facetIndustries"
+                :key="'ind-' + ind"
+                type="button"
+                class="chip"
+                :class="{ active: filters.industry === ind }"
+                @click="setIndustry(ind)"
+              >
+                {{ ind }}
+              </button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">授权范围</span>
+            <div class="chip-row">
+              <button type="button" class="chip" :class="{ active: !filters.licenseScope }" @click="setLicenseScope('')">全部</button>
+              <button
+                v-for="scope in facetLicenseScopes"
+                :key="'lic-' + scope"
+                type="button"
+                class="chip"
+                :class="{ active: filters.licenseScope === scope }"
+                @click="setLicenseScope(scope)"
+              >
+                {{ licenseScopeLabel(scope) }}
+              </button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">保密级</span>
+            <div class="chip-row">
+              <button type="button" class="chip" :class="{ active: !filters.securityLevel }" @click="setSecurityLevel('')">全部</button>
+              <button type="button" class="chip" :class="{ active: filters.securityLevel === 'personal' }" @click="setSecurityLevel('personal')">个人级</button>
+              <button type="button" class="chip" :class="{ active: filters.securityLevel === 'enterprise' }" @click="setSecurityLevel('enterprise')">企业级</button>
+              <button type="button" class="chip" :class="{ active: filters.securityLevel === 'confidential' }" @click="setSecurityLevel('confidential')">保密级</button>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
 
     <div v-if="err" class="flash flash-err">{{ err }}</div>
 
-    <div v-if="loading" class="state-msg">加载中…</div>
-    <div v-else-if="!items.length" class="state-msg muted">暂无符合的商品，试试调整筛选或搜索。</div>
-    <div v-else class="store-grid">
+    <section class="store-results" aria-labelledby="store-results-heading">
+      <div class="store-results__hd">
+        <h2 id="store-results-heading" class="store-results__title">商品列表</h2>
+        <p v-if="!loading" class="store-results__meta">共 {{ total }} 条 · 当前展示 {{ items.length }} 条</p>
+      </div>
+      <div v-if="loading" class="state-msg">加载中…</div>
+      <div v-else-if="!items.length" class="state-msg muted">暂无符合的商品，试试调整筛选或搜索。</div>
+      <div v-else class="store-grid">
       <article v-for="item in items" :key="item.id" class="store-card">
         <div class="card-tags">
           <span class="tag tag-industry">{{ item.industry || '通用' }}</span>
+          <span class="tag tag-category">{{ item.material_category_label || materialCategoryLabel(item.material_category) }}</span>
           <span class="tag tag-type">{{ artifactLabel(item.artifact) }}</span>
+          <span class="tag tag-license">{{ item.license_scope_label || licenseScopeLabel(item.license_scope) }}</span>
           <span class="tag" :class="securityLevelClass(item.security_level)">{{ securityLabel(item.security_level) }}</span>
+          <span v-if="item.compliance_status && item.compliance_status !== 'approved'" class="tag tag-review">{{ complianceStatusLabel(item.compliance_status) }}</span>
           <span v-if="item.purchased" class="tag tag-owned">已购</span>
         </div>
         <h2 class="card-title">{{ item.name }}</h2>
@@ -116,10 +187,14 @@
             <router-link :to="{ name: 'catalog-detail', params: { id: item.id } }" class="btn btn-detail">
               详情
             </router-link>
+            <router-link :to="customerServiceLink(item, 'complaint')" class="btn btn-text">
+              投诉/申诉
+            </router-link>
           </div>
         </div>
       </article>
-    </div>
+      </div>
+    </section>
 
     <p v-if="!loading && total > items.length" class="pager-hint">共 {{ total }} 条，当前展示前 {{ items.length }} 条。</p>
   </div>
@@ -135,6 +210,32 @@ const ARTIFACT_LABELS = {
   employee_pack: 'AI 员工包',
   bundle: '资源包',
   surface: '界面扩展',
+  workflow_template: '工作流模板',
+}
+
+const MATERIAL_CATEGORY_LABELS = {
+  ai_employee: 'AI 员工',
+  agent_prompt: 'Agent 提示词',
+  skill: 'Skill',
+  tts_voice: 'TTS 声音模型',
+  mod_asset: 'MOD 包素材',
+  page_style: '页面风格',
+  personal_design: '个性化设计',
+  workflow_template: '工作流模板',
+  other: '其他素材',
+}
+
+const LICENSE_SCOPE_LABELS = {
+  personal: '个人使用',
+  commercial: '商业授权',
+  free_personal: '免费个人用',
+}
+
+const COMPLIANCE_STATUS_LABELS = {
+  approved: '已审核',
+  under_review: '投诉处理中',
+  restricted: '已降权',
+  delisted: '已下架',
 }
 
 const SECURITY_LABELS = {
@@ -150,21 +251,37 @@ const total = ref(0)
 const delistingId = ref(null)
 const searchQ = ref('')
 const appliedQ = ref('')
-const facets = ref({ industries: [], artifacts: [], security_levels: [] })
+const facets = ref({ industries: [], artifacts: [], material_categories: [], license_scopes: [], security_levels: [] })
 const authStore = useAuthStore()
 
 const filters = reactive({
   industry: '',
   artifact: '',
+  materialCategory: '',
+  licenseScope: '',
   securityLevel: '',
 })
 
 const facetIndustries = computed(() => facets.value.industries || [])
 const facetArtifacts = computed(() => facets.value.artifacts || [])
+const facetMaterialCategories = computed(() => facets.value.material_categories || [])
+const facetLicenseScopes = computed(() => facets.value.license_scopes || [])
 const facetSecurityLevels = computed(() => facets.value.security_levels || [])
 
 function artifactLabel(art) {
   return ARTIFACT_LABELS[art] || art || '其他'
+}
+
+function materialCategoryLabel(cat) {
+  return MATERIAL_CATEGORY_LABELS[cat] || cat || '其他素材'
+}
+
+function licenseScopeLabel(scope) {
+  return LICENSE_SCOPE_LABELS[scope] || scope || '个人使用'
+}
+
+function complianceStatusLabel(status) {
+  return COMPLIANCE_STATUS_LABELS[status] || status || '待处理'
 }
 
 function securityLabel(level) {
@@ -188,10 +305,12 @@ async function loadFacets() {
     facets.value = {
       industries: res.industries || [],
       artifacts: res.artifacts || [],
+      material_categories: res.material_categories || [],
+      license_scopes: res.license_scopes || [],
       security_levels: res.security_levels || [],
     }
   } catch {
-    facets.value = { industries: [], artifacts: [], security_levels: [] }
+    facets.value = { industries: [], artifacts: [], material_categories: [], license_scopes: [], security_levels: [] }
   }
 }
 
@@ -199,7 +318,16 @@ async function loadItems() {
   loading.value = true
   err.value = ''
   try {
-    const res = await api.catalog(appliedQ.value, filters.artifact, 80, 0, filters.industry, filters.securityLevel)
+    const res = await api.catalog(
+      appliedQ.value,
+      filters.artifact,
+      80,
+      0,
+      filters.industry,
+      filters.securityLevel,
+      filters.materialCategory,
+      filters.licenseScope,
+    )
     items.value = res.items || []
     total.value = res.total ?? items.value.length
   } catch (e) {
@@ -219,6 +347,14 @@ function setArtifact(v) {
   filters.artifact = v
 }
 
+function setMaterialCategory(v) {
+  filters.materialCategory = v
+}
+
+function setLicenseScope(v) {
+  filters.licenseScope = v
+}
+
 function setSecurityLevel(v) {
   filters.securityLevel = v
 }
@@ -233,13 +369,28 @@ function resetFilters() {
   appliedQ.value = ''
   filters.industry = ''
   filters.artifact = ''
+  filters.materialCategory = ''
+  filters.licenseScope = ''
   filters.securityLevel = ''
   loadItems()
 }
 
+function customerServiceLink(item, scene = 'complaint') {
+  return {
+    name: 'customer-service',
+    query: {
+      scene,
+      catalog_id: String(item?.id || ''),
+      pkg_id: item?.pkg_id || '',
+      item_name: item?.name || '',
+      material_category: item?.material_category || '',
+    },
+  }
+}
+
 async function delistItem(item) {
   if (!item || delistingId.value) return
-  const ok = window.confirm(`确定下架「${item.name}」吗？下架后市场将不再展示该商品。`)
+  const ok = window.confirm(`确定下架「${item.name}」吗？下架后 AI 市场将不再展示该商品。`)
   if (!ok) return
   delistingId.value = item.id
   err.value = ''
@@ -255,7 +406,7 @@ async function delistItem(item) {
 }
 
 watch(
-  () => [filters.industry, filters.artifact, filters.securityLevel],
+  () => [filters.industry, filters.artifact, filters.materialCategory, filters.licenseScope, filters.securityLevel],
   () => {
     loadItems()
   },
@@ -316,8 +467,49 @@ onMounted(async () => {
   width: 100%;
   max-width: var(--layout-max);
   margin: 0 auto;
-  padding: 1.5rem var(--layout-pad-x) 0.5rem;
+  padding: 1.25rem var(--layout-pad-x) 0.5rem;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.store-panel {
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 1rem 1.1rem 1.05rem;
+  box-sizing: border-box;
+}
+
+.store-panel--search {
+  background: linear-gradient(145deg, rgba(96, 165, 250, 0.08), rgba(255, 255, 255, 0.02));
+}
+
+.store-panel__hd {
+  margin-bottom: 0.75rem;
+}
+
+.store-panel__title {
+  margin: 0 0 0.2rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.store-panel__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.store-facet-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
 }
 
 .toolbar-row {
@@ -325,7 +517,7 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 0;
 }
 
 .search-input {
@@ -335,7 +527,41 @@ onMounted(async () => {
 }
 
 .filter-block {
-  margin-bottom: 18px;
+  margin-bottom: 14px;
+}
+
+.filter-block:last-child {
+  margin-bottom: 0;
+}
+
+.store-results {
+  width: 100%;
+  max-width: var(--layout-max);
+  margin: 0 auto;
+  padding: 0.75rem var(--layout-pad-x) 0;
+  box-sizing: border-box;
+}
+
+.store-results__hd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.store-results__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.store-results__meta {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.35);
 }
 
 .filter-label {
@@ -491,6 +717,21 @@ onMounted(async () => {
   color: #c4b5fd;
 }
 
+.tag-category {
+  background: rgba(45, 212, 191, 0.12);
+  color: #5eead4;
+}
+
+.tag-license {
+  background: rgba(251, 146, 60, 0.12);
+  color: #fdba74;
+}
+
+.tag-review {
+  background: rgba(250, 204, 21, 0.13);
+  color: #fde047;
+}
+
 .tag-owned {
   background: rgba(74, 222, 128, 0.12);
   color: #86efac;
@@ -589,6 +830,12 @@ onMounted(async () => {
   border: 0;
 }
 
+@media (max-width: 900px) {
+  .store-facet-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 640px) {
   .store-hero {
     padding: 32px 16px 24px;
@@ -598,6 +845,10 @@ onMounted(async () => {
     padding-right: 16px;
   }
   .store-grid {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .store-results {
     padding-left: 16px;
     padding-right: 16px;
   }

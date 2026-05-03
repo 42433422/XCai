@@ -5,7 +5,10 @@ type OnNotification = () => void
 let socket: WebSocket | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let notifHandler: OnNotification | undefined
-const RETRY_MS = 8_000
+/** 指数退避；Nginx 未配置 WebSocket Upgrade 时会立刻断开，避免控制台每秒刷屏。 */
+const RETRY_BASE_MS = 4_000
+const RETRY_MAX_MS = 90_000
+let reconnectAttempt = 0
 
 /**
  * 建立到 ``/api/realtime/ws?token=`` 的长连接。需在已登录、且同源或反代将 ``/api`` 指到 FastAPI 时调用。
@@ -41,6 +44,9 @@ export function connectRealtime(onNotification?: OnNotification) {
     return
   }
   socket = ws
+  ws.onopen = () => {
+    reconnectAttempt = 0
+  }
   const pingId = window.setInterval(() => {
     if (socket === ws && ws.readyState === WebSocket.OPEN) {
       try {
@@ -79,6 +85,8 @@ export function connectRealtime(onNotification?: OnNotification) {
 
 function scheduleReconnect() {
   if (retryTimer) return
+  reconnectAttempt += 1
+  const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(reconnectAttempt, 6))
   retryTimer = setTimeout(() => {
     retryTimer = null
     if (!getAccessToken()) return
@@ -87,11 +95,12 @@ function scheduleReconnect() {
     } else {
       connectRealtime()
     }
-  }, RETRY_MS)
+  }, delay)
 }
 
 /** 登出时 clearHandler 应为 true。 */
 export function disconnectRealtime(clearHandler = true) {
+  reconnectAttempt = 0
   if (retryTimer) {
     clearTimeout(retryTimer)
     retryTimer = null

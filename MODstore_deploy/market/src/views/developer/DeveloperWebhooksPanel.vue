@@ -242,7 +242,7 @@ function statusChipClass(s: string): string {
 </script>
 
 <template>
-  <div class="dw">
+  <div class="dw dw--dark">
     <header class="dw__head">
       <div>
         <h2 class="dw__title">Webhook 订阅</h2>
@@ -873,6 +873,186 @@ function statusChipClass(s: string): string {
   word-break: break-all;
   max-height: 220px;
   overflow-y: auto;
+}
+
+/* 开发者门户全深色 */
+.dw.dw--dark {
+  color: rgba(248, 250, 252, 0.92);
+}
+.dw.dw--dark .dw__title {
+  color: #ffffff;
+}
+.dw.dw--dark .dw__hint {
+  color: rgba(255, 255, 255, 0.55);
+}
+.dw.dw--dark .dw__hint code {
+  background: rgba(15, 23, 42, 0.65);
+  color: #e2e8f0;
+}
+.dw.dw--dark .dw__err {
+  background: rgba(255, 80, 80, 0.12);
+  color: #ff6b6b;
+}
+.dw.dw--dark .dw__placeholder {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.45);
+}
+.dw.dw--dark .dw__item {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+.dw.dw--dark .dw__item-name {
+  color: #ffffff;
+}
+.dw.dw--dark .dw__item-url {
+  color: rgba(255, 255, 255, 0.55);
+}
+.dw.dw--dark .dw__item-url code {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+}
+.dw.dw--dark .dw__event-pill {
+  background: rgba(129, 140, 248, 0.18);
+  color: #c7d2fe;
+}
+.dw.dw--dark .dw__item-desc {
+  color: rgba(255, 255, 255, 0.5);
+}
+.dw.dw--dark .dw__item-foot {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+.dw.dw--dark .dw__metric {
+  color: rgba(255, 255, 255, 0.45);
+}
+.dw.dw--dark .dw__metric--err {
+  color: #fbbf24;
+}
+.dw.dw--dark .dw__chip {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.9);
+}
+.dw.dw--dark .dw__chip--success {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+.dw.dw--dark .dw__chip--failed {
+  background: rgba(255, 80, 80, 0.15);
+  color: #ff6b6b;
+}
+.dw.dw--dark .dw__chip--pending {
+  background: rgba(234, 179, 8, 0.15);
+  color: #fbbf24;
+}
+.dw.dw--dark .dw__btn {
+  border: 0.5px solid rgba(255, 255, 255, 0.15);
+  background: #111111;
+  color: #ffffff;
+}
+.dw.dw--dark .dw__btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+.dw.dw--dark .dw__btn--primary {
+  background: #ffffff;
+  border-color: transparent;
+  color: #0a0a0a;
+}
+.dw.dw--dark .dw__btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.dw.dw--dark .dw__btn--danger {
+  border-color: rgba(255, 80, 80, 0.35);
+  color: #ff6b6b;
+  background: rgba(255, 80, 80, 0.08);
+}
+.dw.dw--dark .dw__btn--danger:hover:not(:disabled) {
+  background: rgba(255, 80, 80, 0.15);
+}
+.dw.dw--dark .dw-modal__card {
+  background: #141416;
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.65);
+}
+.dw.dw--dark .dw-modal__head {
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+.dw.dw--dark .dw-modal__head h3 {
+  color: #ffffff;
+}
+.dw.dw--dark .dw-modal__body {
+  color: rgba(248, 250, 252, 0.88);
+}
+.dw.dw--dark .dw-modal__foot {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+.dw.dw--dark .dw-field span {
+  color: rgba(255, 255, 255, 0.65);
+}
+.dw.dw--dark .dw-field input,
+.dw.dw--dark .dw-field textarea {
+  background: rgba(255, 255, 255, 0.03);
+  border: 0.5px solid rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+}
+.dw.dw--dark .dw-field input:focus,
+.dw.dw--dark .dw-field textarea:focus {
+  outline: none;
+  border-color: rgba(165, 180, 252, 0.55);
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
+}
+.dw.dw--dark .dw-event-card {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+}
+.dw.dw--dark .dw-event-card--on {
+  border-color: rgba(129, 140, 248, 0.55);
+  background: rgba(129, 140, 248, 0.12);
+}
+.dw.dw--dark .dw-event-card__name {
+  color: #f8fafc;
+}
+.dw.dw--dark .dw-event-card__desc {
+  color: rgba(255, 255, 255, 0.5);
+}
+.dw.dw--dark .dw-deliveries {
+  background: #141416;
+  border-left-color: rgba(255, 255, 255, 0.1);
+  box-shadow: -16px 0 32px -12px rgba(0, 0, 0, 0.65);
+}
+.dw.dw--dark .dw-deliveries__head {
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+.dw.dw--dark .dw-deliveries__head h3 {
+  color: #ffffff;
+}
+.dw.dw--dark .dw-deliveries__filter {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.dw.dw--dark .dw-deliveries__filter select {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: #f8fafc;
+}
+.dw.dw--dark .dw-deliveries__item {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.dw.dw--dark .dw-deliveries__time {
+  color: rgba(255, 255, 255, 0.4);
+}
+.dw.dw--dark .dw-deliveries__type {
+  color: rgba(255, 255, 255, 0.65);
+}
+.dw.dw--dark .dw-deliveries__type code {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+}
+.dw.dw--dark .dw-deliveries__err {
+  background: rgba(255, 80, 80, 0.12);
+  color: #ff6b6b;
+}
+.dw.dw--dark .dw-preview__h4 {
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .dw-fade-enter-active,

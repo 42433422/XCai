@@ -55,7 +55,7 @@ def test_register_workflow_employee_catalog_audit_fail(
             "functional_tests": [],
         }
 
-    monkeypatch.setattr("modstore_server.app.run_package_audit_async", fake_audit)
+    monkeypatch.setattr("modstore_server.api.authoring.run_package_audit_async", fake_audit)
 
     r2 = admin_client.post(
         "/api/mods/wf-audit-fail/register-workflow-employee-catalog",

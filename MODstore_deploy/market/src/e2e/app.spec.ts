@@ -97,7 +97,7 @@ test('top navigation stays inside the market router', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'XC AGI' })).toHaveAttribute('href', /\/workbench\/home$/)
   await expect(page.getByRole('link', { name: '工作台' })).toHaveAttribute('href', /\/workbench\/home$/)
   await expect(page.getByRole('link', { name: '会员' })).toHaveAttribute('href', /\/plans$/)
-  await expect(page.getByRole('link', { name: 'AI 员工' })).toHaveAttribute('href', /\/ai-store$/)
+  await expect(page.getByRole('link', { name: 'AI 市场' })).toHaveAttribute('href', /\/ai-store$/)
   await expect(page.getByRole('link', { name: '钱包' })).toHaveAttribute('href', /\/wallet$/)
 })
 
@@ -131,14 +131,15 @@ test('workbench focus tabs switch between employee workflow and repository surfa
   })
 
   await page.goto('/workbench/unified?focus=employee')
-  await expect(page.getByRole('button', { name: '专注员工制作' })).toHaveClass(/mode-tab--active/)
+  await expect(page.getByRole('tab', { name: '专注员工制作' })).toHaveAttribute('aria-selected', 'true')
 
-  await page.locator('.mode-tab', { hasText: '专注工作流' }).click()
+  await page.getByRole('tab', { name: '专注工作流' }).click()
   await expect(page).toHaveURL(/focus=workflow/)
-  await expect(page.getByRole('button', { name: '专注工作流' })).toHaveClass(/mode-tab--active/)
+  await expect(page.getByRole('tab', { name: '专注工作流' })).toHaveAttribute('aria-selected', 'true')
 
-  await page.locator('.mode-tab', { hasText: '专注Mod库' }).click()
+  await page.getByRole('tab', { name: '专注 Mod 库' }).click()
   await expect(page).toHaveURL(/focus=repository/)
+  await expect(page.getByRole('tab', { name: '专注 Mod 库' })).toHaveAttribute('aria-selected', 'true')
 })
 
 test('unknown routes render the not found page', async ({ page }) => {
@@ -146,4 +147,23 @@ test('unknown routes render the not found page', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: '404' })).toBeVisible()
   await expect(page.getByText('抱歉，您访问的页面不存在')).toBeVisible()
+})
+
+test('wallet shows stub balance for logged-in users', async ({ page }) => {
+  await stubCommonApis(page)
+  await page.addInitScript(() => localStorage.setItem('modstore_token', 'token-e2e'))
+
+  await page.goto('/wallet')
+
+  await expect(page.getByRole('heading', { name: '资金与记录' })).toBeVisible()
+  await expect(page.getByText('¥0.00')).toBeVisible()
+})
+
+test('customer service page renders hero for logged-in users', async ({ page }) => {
+  await stubCommonApis(page)
+  await page.addInitScript(() => localStorage.setItem('modstore_token', 'token-e2e'))
+
+  await page.goto('/customer-service')
+
+  await expect(page.getByRole('heading', { level: 1, name: '自动受理、审核、执行与追踪' })).toBeVisible()
 })

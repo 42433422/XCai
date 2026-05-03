@@ -5,26 +5,6 @@
         <div>
           <h1 class="page-title">员工制作工作台</h1>
           <p class="page-desc">统一完成设计、打包、测试、审核、上架，形成可复用的 AI 员工资产。</p>
-          <div class="hero-chips">
-            <span class="hero-chip">Whiteboard Builder</span>
-            <span class="hero-chip">Package Pipeline</span>
-            <span class="hero-chip">Sandbox + Audit</span>
-            <span class="hero-chip">Catalog Listing</span>
-          </div>
-        </div>
-        <div class="hero-metrics">
-          <div class="metric-card">
-            <span class="metric-label">当前阶段</span>
-            <strong>{{ cardModeEnabled ? '并行卡片' : `步骤 ${currentStep + 1}` }}</strong>
-          </div>
-          <div class="metric-card">
-            <span class="metric-label">V2 校验</span>
-            <strong :class="employeeConfigErrors.length ? 'metric-warn' : 'metric-ok'">{{ employeeConfigErrors.length ? '待修复' : '已通过' }}</strong>
-          </div>
-          <div class="metric-card">
-            <span class="metric-label">Workflow 心脏</span>
-          <strong :class="workflowGatePass ? 'metric-ok' : 'metric-warn'">{{ workflowGatePass ? `#${safeResolvedWorkflowId} 已通过` : workflowGate === 'idle' ? '未配置' : '需沙箱' }}</strong>
-          </div>
         </div>
       </div>
       <aside class="guide-inline" aria-label="与 XCAGI manifest 的对应关系">
@@ -42,27 +22,32 @@
 
     <div v-if="showSessionSaveHint" class="session-save-hint" role="status">
       <span>编排内容主要保存在本页会话；对外分发请用「上传打包」「发布上架」或「导出员工包」生成可安装资产。</span>
-      <button type="button" class="btn btn-sm" @click="showSessionSaveHint = false">知道了</button>
+      <button type="button" class="btn btn-sm" @click="dismissSessionHint">知道了</button>
     </div>
 
     <div class="workbench-toolbar">
-      <button type="button" class="btn btn-sm" @click="goBackWorkbench">返回工作台</button>
       <button type="button" class="btn btn-sm btn-primary" @click="toggleFullscreen">
         {{ isFullscreenMode ? '退出全屏' : '进入全屏' }}
       </button>
       <button type="button" class="btn btn-sm" @click="togglePanel('package')">上传打包</button>
       <button type="button" class="btn btn-sm" @click="togglePanel('testing')">测试审核</button>
       <button type="button" class="btn btn-sm" @click="togglePanel('publish')">发布上架</button>
-      <button type="button" class="btn btn-sm" @click="togglePanel('employees')">员工列表</button>
-      <button type="button" class="btn btn-sm" @click="togglePanel('help')">帮助</button>
-      <button
-        type="button"
-        class="btn btn-sm btn-toolbar-danger"
-        :disabled="openPanelCount <= 0"
-        @click="closeAllPanels"
-      >
-        {{ openPanelCount > 0 ? `收起全部(${openPanelCount})` : '收起全部' }}
-      </button>
+      <details class="toolbar-more">
+        <summary class="btn btn-sm toolbar-more-summary">更多</summary>
+        <div class="toolbar-more-body">
+          <button type="button" class="btn btn-sm toolbar-more-btn" @click="goBackWorkbench">返回工作台</button>
+          <button type="button" class="btn btn-sm toolbar-more-btn" @click="togglePanel('employees')">员工列表</button>
+          <button type="button" class="btn btn-sm toolbar-more-btn" @click="togglePanel('help')">帮助</button>
+          <button
+            type="button"
+            class="btn btn-sm btn-toolbar-danger toolbar-more-btn"
+            :disabled="openPanelCount <= 0"
+            @click="closeAllPanels"
+          >
+            {{ openPanelCount > 0 ? `收起全部(${openPanelCount})` : '收起全部' }}
+          </button>
+        </div>
+      </details>
     </div>
 
     <div v-if="showOnboarding" class="onboarding-mask" @click.self="skipOnboarding">
@@ -83,18 +68,7 @@
       <div class="authoring-form-section workbench-surface">
         <section id="builder-section" class="employee-v2-wizard">
           <Step0TemplateSelect :template-id="employeeTemplateId" @change="applyTemplate" />
-          <div class="workbench-header">
-            <div>
-              <h2 class="section-title section-title--tight">员工制作工作台</h2>
-              <p class="workbench-subtitle">三栏编排（模块库 / 画布 / 属性）+ 并行卡片（包文件 / 测试 / 发布）</p>
-            </div>
-            <div class="workbench-badges">
-              <span class="wb-badge">Build</span>
-              <span class="wb-badge">Package</span>
-              <span class="wb-badge">Audit</span>
-              <span class="wb-badge">Publish</span>
-            </div>
-          </div>
+          <p class="builder-context-line" aria-live="polite">{{ heroStatusLine }}</p>
           <EmployeeBlockBuilder
             :config="employeeConfigV2"
             :template-id="employeeTemplateId"
@@ -292,6 +266,7 @@
             <Step9Listing
               :listing-hints="listingHints"
               :industry="form.industry"
+              :industry-options="listingIndustryOptions"
               :price="Number(form.price || 0)"
               :error="error"
               :success="success"
@@ -462,9 +437,10 @@ const router = useRouter()
 
 const PREFILL_KEY = 'modstore_employee_prefill'
 const ONBOARDING_KEY = 'employee_workbench_onboarding_seen_v1'
+const SESSION_SAVE_HINT_KEY = 'modstore_employee_session_hint_once'
 const showOnboarding = ref(false)
 const showGuideInline = ref(false)
-const showSessionSaveHint = ref(true)
+const showSessionSaveHint = ref(false)
 const isFullscreenMode = ref(false)
 const panels = reactive({
   package: false,
@@ -547,8 +523,43 @@ const promoteBusy = ref(false)
 let lastLoadedCatalogEditKey = ''
 
 
-const ALLOWED_INDUSTRIES = new Set(['通用', '电商', '制造', '金融', '医疗', '教育', '物流'])
+const BASE_INDUSTRY_OPTIONS = ['通用', '电商', '制造', '金融', '医疗', '教育', '物流']
+const marketIndustryOptions = ref([])
+const listingIndustryOptions = computed(() => {
+  const out = []
+  const seen = new Set()
+  const add = (raw) => {
+    const text = typeof raw === 'string' ? raw.trim() : ''
+    if (!text || seen.has(text)) return
+    seen.add(text)
+    out.push(text)
+  }
+  add(form.value.industry)
+  add(listingHints.value.industryRaw)
+  add(listingHints.value.industryCoerced)
+  ;(marketIndustryOptions.value || []).forEach(add)
+  BASE_INDUSTRY_OPTIONS.forEach(add)
+  return out
+})
 const openPanelCount = computed(() => Object.values(panels).filter(Boolean).length)
+
+const heroStatusLine = computed(() => {
+  const step = cardModeEnabled.value ? '并行卡片' : `步骤 ${currentStep.value + 1}`
+  const v2 = employeeConfigErrors.value.length ? 'V2：待修复' : 'V2：已通过'
+  let wf = '工作流：需沙箱'
+  if (workflowGatePass.value) wf = `工作流：#${safeResolvedWorkflowId.value} 已就绪`
+  else if (workflowGate.value === 'idle') wf = '工作流：未配置'
+  return `${step} · ${v2} · ${wf}`
+})
+
+function dismissSessionHint() {
+  showSessionSaveHint.value = false
+  try {
+    sessionStorage.setItem(SESSION_SAVE_HINT_KEY, '1')
+  } catch {
+    /* private mode */
+  }
+}
 
 function togglePanel(key) {
   if (!Object.prototype.hasOwnProperty.call(panels, key)) return
@@ -563,7 +574,7 @@ function goBackWorkbench() {
   if (isFullscreenMode.value && document.fullscreenElement) {
     document.exitFullscreen().catch(() => {})
   }
-  void router.push({ name: 'workbench-unified', query: { focus: 'hybrid' } })
+  void router.push({ name: 'workbench-unified', query: { focus: 'employee' } })
 }
 
 async function toggleFullscreen() {
@@ -575,6 +586,16 @@ async function toggleFullscreen() {
     }
   } catch {
     isFullscreenMode.value = !isFullscreenMode.value
+  }
+}
+
+async function loadMarketIndustryOptions() {
+  try {
+    const facets = await api.catalogFacets()
+    const rows = Array.isArray(facets?.industries) ? facets.industries : []
+    marketIndustryOptions.value = rows.map((x) => String(x || '').trim()).filter(Boolean)
+  } catch {
+    marketIndustryOptions.value = []
   }
 }
 
@@ -636,7 +657,7 @@ function dimLabel(key) {
 function coerceIndustry(raw) {
   if (raw == null || typeof raw !== 'string') return ''
   const t = raw.trim()
-  return ALLOWED_INDUSTRIES.has(t) ? t : ''
+  return t
 }
 
 function firstNonEmptyString(...vals) {
@@ -672,6 +693,11 @@ function pickManifestPath(entries) {
 function rawIndustryFromManifest(manifest, wfEntry) {
   const wf = wfEntry && typeof wfEntry === 'object' && !Array.isArray(wfEntry) ? wfEntry : {}
   const r = wf.industry ?? manifest.industry ?? manifest.library_industry
+  if (r && typeof r === 'object' && !Array.isArray(r)) {
+    const name = typeof r.name === 'string' ? r.name.trim() : ''
+    const id = typeof r.id === 'string' ? r.id.trim() : ''
+    return name || id
+  }
   return typeof r === 'string' ? r.trim() : ''
 }
 
@@ -692,9 +718,7 @@ function auditPackageManifest(manifest, wfEntry) {
     }
   }
   const ri = rawIndustryFromManifest(manifest, wfEntry)
-  if (ri && !coerceIndustry(ri)) {
-    notes.push(`包内行业「${ri}」不在预设列表，请在下拉中手动选择`)
-  }
+  if (ri && !BASE_INDUSTRY_OPTIONS.includes(ri)) notes.push(`包内行业「${ri}」已加入上架选项`)
   const mid = typeof manifest.id === 'string' ? manifest.id.trim() : ''
   if (!mid) notes.push('manifest 缺少 id')
   return notes
@@ -1089,7 +1113,7 @@ function hydrateListingHintsFromManifest(manifest, wfEntry) {
   const raw = rawIndustryFromManifest(manifest, wfEntry)
   const coerced =
     coerceIndustry(typeof wf.industry === 'string' ? wf.industry : '') ||
-    coerceIndustry(typeof manifest.industry === 'string' ? manifest.industry : '') ||
+    coerceIndustry(raw) ||
     coerceIndustry(typeof manifest.library_industry === 'string' ? manifest.library_industry : '')
   let priceFromManifest = null
   const comm = manifest.commerce
@@ -1290,12 +1314,20 @@ onMounted(async () => {
   await loadLinkedModMeta()
   applyLinkWorkflowIdFromRoute()
   await loadEligibleWorkflows()
+  await loadMarketIndustryOptions()
   const wid = safeResolvedWorkflowId.value
   if (wid > 0) {
     employeeConfigV2.value.collaboration.workflow.workflow_id = wid
   }
   refreshV2Validation()
   await loadMyEmployees()
+  try {
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SESSION_SAVE_HINT_KEY) !== '1') {
+      showSessionSaveHint.value = true
+    }
+  } catch {
+    /* ignore */
+  }
   showOnboarding.value = localStorage.getItem(ONBOARDING_KEY) !== '1'
   onboardingStep.value = 0
   document.addEventListener('fullscreenchange', syncFullscreenFlag)
@@ -1880,52 +1912,12 @@ async function handleSubmit() {
   margin: 0 0 0.55rem;
 }
 
-.hero-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.hero-chip {
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.16);
-  color: rgba(255,255,255,.82);
-  background: rgba(255,255,255,.05);
-}
-
-.hero-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
-  gap: 0.55rem;
-  min-width: 0;
-  width: 100%;
-}
-
-.metric-card {
-  padding: 0.42rem 0.55rem;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(2, 6, 23, 0.4);
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.metric-label {
-  font-size: 11px;
-  color: rgba(186, 230, 253, 0.75);
-}
-
-.metric-card strong {
+.builder-context-line {
+  margin: 0.35rem 0 0.5rem;
   font-size: 12px;
-  color: #e2e8f0;
+  color: rgba(226, 232, 240, 0.62);
+  line-height: 1.45;
 }
-
-.metric-ok { color: #86efac !important; }
-.metric-warn { color: #fde047 !important; }
 
 .guide-inline {
   margin: 0.65rem 0 0;
@@ -1979,7 +1971,8 @@ async function handleSubmit() {
   white-space: nowrap;
 }
 
-.workbench-toolbar .btn {
+.workbench-toolbar .btn,
+.workbench-toolbar details {
   pointer-events: auto;
   flex: 0 0 auto;
 }
@@ -1987,6 +1980,46 @@ async function handleSubmit() {
 .workbench-toolbar .btn:disabled {
   opacity: .45;
   cursor: not-allowed;
+}
+
+.toolbar-more {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.toolbar-more-summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toolbar-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.toolbar-more-body {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 10.5rem;
+  padding: 0.35rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(14, 14, 14, 0.98);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toolbar-more-btn {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
 }
 
 .btn-toolbar-danger {
@@ -2166,35 +2199,6 @@ async function handleSubmit() {
   border-radius: 0;
   border: none;
   background: transparent;
-}
-
-.workbench-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: flex-start;
-  margin-bottom: 0.45rem;
-}
-
-.workbench-subtitle {
-  margin: -0.45rem 0 0;
-  color: rgba(255, 255, 255, 0.68);
-  font-size: 12px;
-}
-
-.workbench-badges {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.wb-badge {
-  font-size: 11px;
-  padding: 0.16rem 0.5rem;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.18);
-  color: rgba(255,255,255,.85);
-  background: rgba(255,255,255,.05);
 }
 
 .mode-switch {
@@ -3082,14 +3086,8 @@ async function handleSubmit() {
 }
 
 @media (max-width: 900px) {
-  .hero-metrics {
-    grid-template-columns: 1fr 1fr;
-  }
   .workbench-toolbar { left: 4px; right: 4px; max-width: calc(100vw - 8px); }
-  .workbench-header {
-    flex-direction: column;
-  }
-  
+
   .authoring-tips-section {
     grid-template-columns: 1fr;
   }

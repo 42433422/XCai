@@ -1,0 +1,360 @@
+"""支付公共工具：签名、防重放、金额校验、套餐常量与辅助函数。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import time
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Any, Optional
+
+from fastapi import HTTPException
+from pydantic import BaseModel, Field
+
+from modstore_server.models import (
+    CatalogItem,
+    PlanTemplate,
+    Purchase,
+    UserPlan,
+    get_session_factory,
+)
+
+logger = logging.getLogger(__name__)
+
+REPLAY_WINDOW = 300
+processed_requests: set[str] = set()
+
+_AMOUNT_TOLERANCE = 0.01
+
+SVIP_TIER_PLAN_IDS: frozenset[str] = frozenset(
+    {
+        "plan_enterprise",
+        "plan_svip2",
+        "plan_svip3",
+        "plan_svip4",
+        "plan_svip5",
+        "plan_svip6",
+        "plan_svip7",
+        "plan_svip8",
+    }
+)
+SVIP_LOCKED_PLAN_IDS: frozenset[str] = frozenset(
+    {
+        "plan_svip2",
+        "plan_svip3",
+        "plan_svip4",
+        "plan_svip5",
+        "plan_svip6",
+        "plan_svip7",
+        "plan_svip8",
+    }
+)
+MEMBERSHIP_TIER_ORDER: dict[str, int] = {
+    "plan_basic": 0,
+    "plan_pro": 1,
+    "plan_enterprise": 2,
+    "plan_svip2": 3,
+    "plan_svip3": 4,
+    "plan_svip4": 5,
+    "plan_svip5": 6,
+    "plan_svip6": 7,
+    "plan_svip7": 8,
+    "plan_svip8": 9,
+}
+
+
+class SignCheckoutBody(BaseModel):
+    plan_id: str = ""
+    item_id: int = 0
+    total_amount: float = 0
+    subject: str = ""
+    wallet_recharge: bool = False
+
+
+class CheckoutDTO(BaseModel):
+    plan_id: str = ""
+    item_id: int = 0
+    total_amount: float = 0
+    subject: str = ""
+    wallet_recharge: bool = False
+    pay_channel: str = Field(default="alipay", description="alipay 或 wechat，不参与签名字段")
+    request_id: str = Field(..., description="请求唯一标识")
+    timestamp: int = Field(..., description="请求时间戳")
+    signature: str = Field(..., description="请求签名")
+
+
+class RefundDTO(BaseModel):
+    out_trade_no: str
+    reason: str = "用户申请退款"
+
+
+def generate_signature(data: dict, secret: str) -> str:
+    sorted_keys = sorted(data.keys())
+    sign_string = "&".join([f"{k}={data[k]}" for k in sorted_keys])
+    sign_string += secret
+    return hashlib.sha256(sign_string.encode("utf-8")).hexdigest()
+
+
+def verify_signature(data: dict, secret: str, signature: str) -> bool:
+    return generate_signature(data, secret) == signature
+
+
+def check_replay_attack(request_id: str, timestamp: int) -> bool:
+    current_time = int(time.time())
+    if abs(current_time - timestamp) > REPLAY_WINDOW:
+        return True
+    if request_id is None or not str(request_id).strip():
+        return True
+    if request_id in processed_requests:
+        return True
+    processed_requests.add(request_id)
+    return False
+
+
+def _parse_money(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip().replace(",", "")
+    if not s:
+        return None
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _amounts_match(order_amount: Any, paid_amount: Any, *, tol: float = _AMOUNT_TOLERANCE) -> bool:
+    a = _parse_money(order_amount)
+    b = _parse_money(paid_amount)
+    if a is None or b is None:
+        return False
+    return abs(a - b) <= tol
+
+
+def _amount_sign_str(x: Any) -> str:
+    try:
+        xf = float(x or 0)
+    except (TypeError, ValueError):
+        return "0"
+    if xf == int(xf):
+        return str(int(xf))
+    s = f"{xf:.6f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
+def canonical_checkout_sign_data(body: CheckoutDTO) -> dict[str, str]:
+    return {
+        "item_id": str(int(body.item_id or 0)),
+        "plan_id": (body.plan_id or "").strip(),
+        "request_id": str(body.request_id),
+        "subject": (body.subject or "").strip(),
+        "timestamp": str(int(body.timestamp)),
+        "total_amount": _amount_sign_str(body.total_amount),
+        "wallet_recharge": "true" if body.wallet_recharge else "false",
+    }
+
+
+def _catalog_entitlement_metadata(item: CatalogItem, source: str) -> str:
+    material_category = (getattr(item, "material_category", "") or "").strip()
+    if not material_category:
+        art = (getattr(item, "artifact", "") or "").strip()
+        material_category = {
+            "employee_pack": "ai_employee",
+            "workflow_template": "workflow_template",
+            "surface": "page_style",
+            "bundle": "mod_asset",
+            "mod": "mod_asset",
+        }.get(art, "other")
+    license_scope = (getattr(item, "license_scope", "") or "").strip()
+    if not license_scope:
+        license_scope = "commercial" if float(getattr(item, "price", 0) or 0) > 0 else "personal"
+    return json.dumps(
+        {
+            "source": source,
+            "license_scope": license_scope,
+            "material_category": material_category,
+            "origin_type": (getattr(item, "origin_type", "") or "original").strip(),
+            "ip_risk_level": (getattr(item, "ip_risk_level", "") or "low").strip(),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _plan_rows(session) -> list[PlanTemplate]:
+    rows = list(session.query(PlanTemplate).filter(PlanTemplate.is_active == True).all())
+    rows.sort(
+        key=lambda p: (
+            MEMBERSHIP_TIER_ORDER.get(p.id, 9999),
+            p.id or "",
+        )
+    )
+    return rows
+
+
+def _plan_required_predecessor(plan_id: str | None) -> str | None:
+    pid = (plan_id or "").strip()
+    return "plan_enterprise" if pid in SVIP_LOCKED_PLAN_IDS else None
+
+
+def _user_max_membership_tier_order(session, user_id: int) -> int:
+    if not user_id:
+        return -1
+    rows = (
+        session.query(UserPlan.plan_id)
+        .filter(UserPlan.user_id == user_id, UserPlan.is_active == True)
+        .all()
+    )
+    m = -1
+    for (pid,) in rows:
+        s = (pid or "").strip()
+        r = MEMBERSHIP_TIER_ORDER.get(s, -1)
+        if r > m:
+            m = r
+    return m
+
+
+def _user_owns_svip_tier(session, user_id: int) -> bool:
+    if not user_id:
+        return False
+    rows = (
+        session.query(UserPlan.plan_id)
+        .filter(UserPlan.user_id == user_id, UserPlan.is_active == True)
+        .all()
+    )
+    return any((pid or "") in SVIP_TIER_PLAN_IDS for (pid,) in rows)
+
+
+def _plan_as_dict(row: PlanTemplate) -> dict[str, Any]:
+    try:
+        features = __import__("json").loads(row.features_json or "[]")
+    except Exception:
+        features = []
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description or "",
+        "price": float(row.price or 0),
+        "features": features if isinstance(features, list) else [],
+        "requires_plan": _plan_required_predecessor(row.id),
+    }
+
+
+def _plan_quotas(row: PlanTemplate) -> dict[str, int]:
+    try:
+        q = __import__("json").loads(row.quotas_json or "{}")
+    except Exception:
+        q = {}
+    if not isinstance(q, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in q.items():
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _membership_meta(plan_id: str | None) -> dict[str, Any]:
+    pid = (plan_id or "").strip()
+    meta = {
+        "plan_basic": ("vip", "VIP", True, False),
+        "plan_pro": ("vip_plus", "VIP+", True, True),
+        "plan_enterprise": ("svip1", "svip", True, True),
+        "plan_svip2": ("svip2", "SVIP2", True, True),
+        "plan_svip3": ("svip3", "SVIP3", True, True),
+        "plan_svip4": ("svip4", "SVIP4", True, True),
+        "plan_svip5": ("svip5", "SVIP5", True, True),
+        "plan_svip6": ("svip6", "SVIP6", True, True),
+        "plan_svip7": ("svip7", "SVIP7", True, True),
+        "plan_svip8": ("svip8", "SVIP8", True, True),
+    }.get(pid, ("free", "普通用户", False, False))
+    return {"tier": meta[0], "label": meta[1], "is_member": meta[2], "can_byok": meta[3]}
+
+
+def _resolve_checkout_fields(
+    session,
+    body: SignCheckoutBody,
+    user_id: int | None = None,
+) -> tuple[str, float, int, str, str, bool]:
+    subject = (body.subject or "").strip() or "XC AGI 订单"
+    total_amount = float(body.total_amount or 0)
+    plan_id = ""
+    item_id = 0
+    order_kind = ""
+    wallet_recharge = bool(body.wallet_recharge)
+
+    if wallet_recharge:
+        if not total_amount or total_amount <= 0:
+            raise HTTPException(400, "请填写大于 0 的充值金额")
+        subject = (body.subject or "").strip() or "XC AGI 钱包充值"
+        order_kind = "wallet"
+    elif body.plan_id:
+        plan_row = (
+            session.query(PlanTemplate)
+            .filter(PlanTemplate.id == body.plan_id, PlanTemplate.is_active == True)
+            .first()
+        )
+        if not plan_row:
+            raise HTTPException(404, f"套餐 {body.plan_id} 不存在")
+        if (body.plan_id or "").strip() in SVIP_LOCKED_PLAN_IDS:
+            if not user_id or not _user_owns_svip_tier(session, int(user_id)):
+                raise HTTPException(403, "需要先购买 svip 档后才能购买 SVIP2~SVIP8")
+        pid = (body.plan_id or "").strip()
+        t_new = MEMBERSHIP_TIER_ORDER.get(pid, -1)
+        if user_id and t_new >= 0:
+            t_cur = _user_max_membership_tier_order(session, int(user_id))
+            if t_cur >= 0 and t_new < t_cur:
+                raise HTTPException(400, "已拥有更高等级会员，不能购买此低档套餐")
+        plan = _plan_as_dict(plan_row)
+        total_amount = float(plan["price"])
+        subject = str(plan["name"])
+        plan_id = body.plan_id.strip()
+        order_kind = "plan"
+        wallet_recharge = False
+    elif body.item_id:
+        item = session.query(CatalogItem).filter(CatalogItem.id == body.item_id).first()
+        if not item:
+            raise HTTPException(404, "商品不存在")
+        if not item.is_public or (getattr(item, "compliance_status", "") or "") == "delisted":
+            raise HTTPException(403, "该商品已下架，无法购买")
+        if item.price <= 0:
+            raise HTTPException(400, "免费商品，无需支付")
+        total_amount = float(item.price)
+        subject = str(item.name)
+        item_id = int(body.item_id)
+        order_kind = "item"
+        wallet_recharge = False
+        if user_id:
+            dup = (
+                session.query(Purchase)
+                .filter(Purchase.user_id == int(user_id), Purchase.catalog_id == int(body.item_id))
+                .first()
+            )
+            if dup:
+                raise HTTPException(400, "您已购买过该商品，无需重复支付")
+    else:
+        raise HTTPException(400, "请使用 wallet_recharge、plan_id 或 item_id 之一下单")
+
+    if total_amount <= 0:
+        raise HTTPException(400, "金额必须大于 0")
+
+    return subject, total_amount, item_id, plan_id, order_kind, wallet_recharge
+
+
+def _checkout_return_url(request, out_trade_no: str) -> str | None:
+    origin = (os.environ.get("MODSTORE_PUBLIC_ORIGIN") or "").strip().rstrip("/")
+    if not origin:
+        origin = str(request.base_url).rstrip("/")
+    prefix = (os.environ.get("MODSTORE_MARKET_PREFIX") or "/market").strip()
+    if prefix and not prefix.startswith("/"):
+        prefix = "/" + prefix
+    prefix = prefix.rstrip("/")
+    path = f"{prefix}/checkout/{out_trade_no}" if prefix else f"/checkout/{out_trade_no}"
+    return f"{origin}{path}"

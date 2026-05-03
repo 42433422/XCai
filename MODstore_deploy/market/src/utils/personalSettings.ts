@@ -1,5 +1,5 @@
 /**
- * 个性化设置（主题 / 字号 / 长期记忆 / 推荐 prompt）持久化与默认值。
+ * 个性化设置（主题 / 字号 / 长期记忆 / 推荐 prompt / 朗读 TTS）持久化与默认值。
  */
 
 export interface PersonalSettings {
@@ -7,6 +7,14 @@ export interface PersonalSettings {
   fontPx: number
   memory: string
   suggestions: string[]
+  /** 朗读引擎：`edge-online` 为微软在线神经音（经服务端 edge-tts）；`browser` 为本机合成 */
+  ttsEngine: 'edge-online' | 'browser'
+  /** Edge 神经语音 ID，如 zh-CN-XiaoxiaoNeural */
+  ttsEdgeVoice: string
+  /** 浏览器朗读音色：`SpeechSynthesisVoice.name`，空字符串表示自动（优先中文） */
+  ttsVoiceName: string
+  /** 朗读语速：浏览器为 utterance.rate；云端为相对倍率映射到 Edge rate% */
+  ttsRate: number
 }
 
 const KEY = 'workbench_personal_settings_v1'
@@ -23,6 +31,10 @@ export function defaultPersonalSettings(): PersonalSettings {
     fontPx: 15,
     memory: '',
     suggestions: DEFAULT_SUGGESTIONS.slice(),
+    ttsEngine: 'edge-online',
+    ttsEdgeVoice: 'zh-CN-XiaoxiaoNeural',
+    ttsVoiceName: '',
+    ttsRate: 1,
   }
 }
 
@@ -32,6 +44,15 @@ export function loadPersonalSettings(): PersonalSettings {
     if (!raw) return defaultPersonalSettings()
     const obj = JSON.parse(raw) || {}
     const def = defaultPersonalSettings()
+    const rawTtsRate = Number(obj.ttsRate)
+    const ttsRate = Number.isFinite(rawTtsRate) ? Math.max(0.6, Math.min(1.6, rawTtsRate)) : def.ttsRate
+    const ttsVoiceName = typeof obj.ttsVoiceName === 'string' ? obj.ttsVoiceName.slice(0, 256) : def.ttsVoiceName
+    const ttsEngine =
+      obj.ttsEngine === 'browser' || obj.ttsEngine === 'edge-online' ? obj.ttsEngine : def.ttsEngine
+    const ttsEdgeVoice =
+      typeof obj.ttsEdgeVoice === 'string' && obj.ttsEdgeVoice.trim()
+        ? obj.ttsEdgeVoice.trim().slice(0, 120)
+        : def.ttsEdgeVoice
     return {
       theme: obj.theme === 'light' || obj.theme === 'auto' ? obj.theme : 'dark',
       fontPx: Number.isFinite(Number(obj.fontPx)) ? Math.max(13, Math.min(20, Number(obj.fontPx))) : def.fontPx,
@@ -39,6 +60,10 @@ export function loadPersonalSettings(): PersonalSettings {
       suggestions: Array.isArray(obj.suggestions) && obj.suggestions.length
         ? obj.suggestions.filter((x: unknown) => typeof x === 'string' && (x as string).trim()).slice(0, 6)
         : def.suggestions,
+      ttsEngine,
+      ttsEdgeVoice,
+      ttsVoiceName,
+      ttsRate,
     }
   } catch {
     return defaultPersonalSettings()

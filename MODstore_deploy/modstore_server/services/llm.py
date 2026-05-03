@@ -8,6 +8,7 @@ existing behaviour is preserved.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -51,6 +52,17 @@ class LlmChatClient(ABC):
     async def chat(self, request: LlmChatRequest) -> LlmChatResponse:
         ...
 
+    async def chat_stream(self, request: LlmChatRequest) -> AsyncIterator[dict[str, Any]]:
+        """Stream tokens / usage events; default falls back to non-streaming :meth:`chat`."""
+
+        res = await self.chat(request)
+        if res.ok and res.content:
+            yield {"type": "delta", "delta": res.content}
+        if res.usage:
+            yield {"type": "usage", "usage": res.usage}
+        if not res.ok:
+            yield {"type": "error", "error": res.error or "upstream error"}
+
 
 class InProcessLlmChatClient(LlmChatClient):
     """Default port wired to the existing ``llm_chat_proxy``."""
@@ -67,6 +79,56 @@ class InProcessLlmChatClient(LlmChatClient):
             max_tokens=request.max_tokens,
         )
         return LlmChatResponse.from_dict(result)
+
+    async def chat_stream(self, request: LlmChatRequest) -> AsyncIterator[dict[str, Any]]:
+        from modstore_server.llm_chat_proxy import chat_dispatch_stream
+
+        async for ev in chat_dispatch_stream(
+            request.provider,
+            api_key=request.api_key,
+            base_url=request.base_url,
+            model=request.model,
+            messages=list(request.messages),
+            max_tokens=request.max_tokens,
+        ):
+            yield ev
+
+
+async def chat_dispatch_via_session(
+    session: Any,
+    user_id: int,
+    provider: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: Optional[int] = None,
+) -> dict[str, Any]:
+    """Resolve BYOK / platform keys via ``llm_key_resolver`` then call ``chat_dispatch``.
+
+    Keeps ``employee_executor`` / ``workflow_nl_graph`` off direct ``llm_*`` imports.
+    """
+
+    from modstore_server.llm_chat_proxy import chat_dispatch
+    from modstore_server.llm_key_resolver import (
+        OAI_COMPAT_OPENAI_STYLE_PROVIDERS,
+        resolve_api_key,
+        resolve_base_url,
+    )
+
+    api_key, _source = resolve_api_key(session, user_id, provider)
+    if not api_key:
+        return {"ok": False, "error": f"missing api key for provider: {provider}"}
+    base_url = None
+    if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
+        base_url = resolve_base_url(session, user_id, provider)
+    return await chat_dispatch(
+        provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
 
 
 _LOCK = Lock()
@@ -92,6 +154,7 @@ __all__ = [
     "LlmChatClient",
     "LlmChatRequest",
     "LlmChatResponse",
+    "chat_dispatch_via_session",
     "get_default_llm_client",
     "set_default_llm_client",
 ]

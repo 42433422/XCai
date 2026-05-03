@@ -9,6 +9,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.strict-baseline.json",
     "typecheck:loose": "vue-tsc --noEmit",
     "typecheck:strict": "vue-tsc --noEmit -p tsconfig.strict.json",
+    "typecheck:ci": "vue-tsc --noEmit -p tsconfig.strict-baseline.json",
     "test": "npm run test:unit",
     "test:unit": "vitest run",
     "test:watch": "vitest",

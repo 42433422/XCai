@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -20,9 +21,6 @@ import java.util.UUID;
 public class SecurityService {
     
     private final StringRedisTemplate redisTemplate;
-    
-    @Value("${jwt.secret}")
-    private String jwtSecret;
 
     @Value("${payment.secret-key}")
     private String paymentSecretKey;
@@ -62,7 +60,7 @@ public class SecurityService {
             Map<String, Object> canonical = canonicalCheckoutData(data);
             String signString = buildSignString(canonical) + paymentSecretKey;
             String calculatedSignature = generateSHA256(signString);
-            return calculatedSignature.equals(signature);
+            return constantTimeEqualsHex(calculatedSignature, signature);
         } catch (Exception e) {
             log.error("签名验证失败", e);
             return false;
@@ -98,6 +96,18 @@ public class SecurityService {
                 .orElse("");
     }
     
+    static boolean constantTimeEqualsHex(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        String aa = a.toLowerCase(Locale.ROOT);
+        String bb = b.toLowerCase(Locale.ROOT);
+        if (aa.length() != bb.length()) {
+            return false;
+        }
+        return MessageDigest.isEqual(aa.getBytes(StandardCharsets.US_ASCII), bb.getBytes(StandardCharsets.US_ASCII));
+    }
+
     private String generateSHA256(String input) throws NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
@@ -116,15 +126,24 @@ public class SecurityService {
         return UUID.randomUUID().toString().replace("-", "");
     }
 
+    /**
+     * 首次通知返回 true；重复返回 false。Redis 不可用时返回 true 以继续落单（与 {@link #checkReplayAttack} 降级策略一致），
+     * 避免误把「无法去重」当成「已处理」而跳过支付宝回调。
+     */
     public boolean markAlipayNotifySeen(String tradeNo, String outTradeNo) {
         String identifier = tradeNo == null || tradeNo.isBlank() ? outTradeNo : tradeNo;
         if (identifier == null || identifier.isBlank()) {
             return false;
         }
         String key = "payment:notify:" + identifier;
-        Boolean accepted = redisTemplate.opsForValue()
-                .setIfAbsent(key, "1", Duration.ofSeconds(NOTIFY_IDEMPOTENCY_SECONDS));
-        return Boolean.TRUE.equals(accepted);
+        try {
+            Boolean accepted = redisTemplate.opsForValue()
+                    .setIfAbsent(key, "1", Duration.ofSeconds(NOTIFY_IDEMPOTENCY_SECONDS));
+            return Boolean.TRUE.equals(accepted);
+        } catch (Exception e) {
+            log.error("支付回调幂等 Redis 不可用，已降级放行处理: identifier={}", identifier, e);
+            return true;
+        }
     }
 
     public void clearAlipayNotifySeen(String tradeNo, String outTradeNo) {
@@ -132,7 +151,11 @@ public class SecurityService {
         if (identifier == null || identifier.isBlank()) {
             return;
         }
-        redisTemplate.delete("payment:notify:" + identifier);
+        try {
+            redisTemplate.delete("payment:notify:" + identifier);
+        } catch (Exception e) {
+            log.warn("清除支付回调幂等键失败（可忽略）: identifier={}", identifier, e);
+        }
     }
 
     private String stringValue(Object value) {

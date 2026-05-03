@@ -14,6 +14,11 @@ class NeuroDomainName(str, Enum):
     PAYMENT_GATEWAY = "payment_gateway"
     NOTIFICATION = "notification"
     LLM = "llm"
+    WALLET = "wallet"
+    REFUND = "refund"
+    KNOWLEDGE = "knowledge"
+    MARKET = "market"
+    WEBHOOK = "webhook"
 
 
 @dataclass(frozen=True)

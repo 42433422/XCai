@@ -442,6 +442,24 @@
                       个性化与朗读设置
                     </button>
                   </p>
+                  <div v-if="hasWorkflow" class="wb-direct-employee-row">
+                    <label class="wb-direct-employee-label" for="wb-direct-employee-select">测试员工（一档单选）</label>
+                    <select
+                      id="wb-direct-employee-select"
+                      v-model="directChatEmployeeId"
+                      class="wb-direct-employee-select"
+                      :disabled="directLoading"
+                      aria-describedby="wb-direct-employee-hint"
+                    >
+                      <option value="">不绑定（通用检索）</option>
+                      <option v-for="opt in directEmployeeOptions" :key="opt.id" :value="opt.id">
+                        {{ opt.name }} · {{ opt.id }}（{{ opt.sourceLabel }}）
+                      </option>
+                    </select>
+                    <p id="wb-direct-employee-hint" class="wb-direct-employee-hint">
+                      仅选一个员工：知识检索优先使用该 id；与人设并存时仍以本选择为准。
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -1705,6 +1723,12 @@ const directAttachedFiles = ref([])
 const directLoading = ref(false)
 const directError = ref('')
 
+/** 一档直接聊天：单选绑定员工 id（优先于人设 id 参与知识检索）；sessionStorage 持久化 */
+const WB_DIRECT_CHAT_EMPLOYEE_ID_KEY = 'wb_direct_chat_employee_id'
+type DirectEmployeeOption = { id: string; name: string; sourceLabel: string }
+const directChatEmployeeId = ref('')
+const directEmployeeOptions = ref<DirectEmployeeOption[]>([])
+
 // === 一档「直接聊天」会话管理 / 流式 / 多模态 / 工具栏 / 个性化 ===
 const conversations = ref<Conversation[]>([])
 const activeConversationId = ref<string>('')
@@ -2273,12 +2297,16 @@ function buildSystemPrompt(
   activeBotPersona: string,
   knowledgePack: string,
   inlineFiles?: Array<{ name: string; text: string }>,
+  directEmployeeHint?: string,
 ): string {
   const parts: string[] = []
   if (activeBotPersona) {
     parts.push(activeBotPersona)
   } else {
     parts.push('你是一个简洁直接的中文 AI 助手。优先给出可执行答案；如果信息不足，先给合理假设，再列出需要确认的问题。')
+  }
+  if (directEmployeeHint && directEmployeeHint.trim()) {
+    parts.push(directEmployeeHint.trim())
   }
   if (personalSettings.value.memory && personalSettings.value.memory.trim()) {
     parts.push(`关于用户的长期记忆（请在回答中合理利用，但不要每次都重复念出）：\n${personalSettings.value.memory.trim()}`)
@@ -2306,6 +2334,14 @@ function rebuildContextMessages(forSendUpToIndex?: number): Array<{ role: string
   return msgs.slice(0, sliceEnd).map((m) => ({ role: m.role, content: m.content }))
 }
 
+function directEmployeeSystemHint(): string {
+  const id = String(directChatEmployeeId.value || '').trim()
+  if (!id) return ''
+  const picked = directEmployeeOptions.value.find((e) => e.id === id)
+  const label = picked ? `${picked.name}（${picked.sourceLabel}）` : id
+  return `【一档测试绑定员工（单选）】当前绑定 id：${id}；显示：${label}。回答时请尽量贴合该员工职责与知识边界；若问题明显超出该角色，可简要说明后给出通用建议。`
+}
+
 async function runDirectChatTurn(opts: {
   userMsg?: ChatMessage
   assistantId: string
@@ -2320,7 +2356,9 @@ async function runDirectChatTurn(opts: {
     const { provider, model } = await resolveChatProviderModel()
     if (opts.userText) {
       try {
-        const employeeId = activeBot.value?.id || ''
+        const pickedEmp = String(directChatEmployeeId.value || '').trim()
+        const botEmp = String(activeBot.value?.id || '').trim()
+        const employeeId = pickedEmp || botEmp
         const res: any = await api.knowledgeV2Retrieve({
           query: opts.userText,
           top_k: 6,
@@ -2364,7 +2402,12 @@ async function runDirectChatTurn(opts: {
         }
       }
     }
-    const sys = buildSystemPrompt(activeBot.value?.persona || '', knowledgePack, opts.inlineFiles)
+    const sys = buildSystemPrompt(
+      activeBot.value?.persona || '',
+      knowledgePack,
+      opts.inlineFiles,
+      directEmployeeSystemHint(),
+    )
     const ctx = directMessages.value
       .filter((m) => m.id !== opts.assistantId)
       .map((m) => ({ role: m.role, content: m.content }))
@@ -3247,6 +3290,53 @@ function releaseChannelLabel(ch) {
   return x === 'draft' ? '测试通道' : '正式通道'
 }
 
+async function loadDirectEmployeeOptions() {
+  directEmployeeOptions.value = []
+  if (!localStorage.getItem('modstore_token')) return
+  const merged = new Map<string, DirectEmployeeOption>()
+  try {
+    const sqlRows = await api.listEmployees()
+    for (const e of Array.isArray(sqlRows) ? sqlRows : []) {
+      const id = String((e as { id?: unknown })?.id ?? '').trim()
+      if (!id) continue
+      const name = String((e as { name?: unknown })?.name ?? id).trim() || id
+      merged.set(id, { id, name, sourceLabel: '执行器' })
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const r = await api.listV1Packages('employee_pack', '', 120, 0)
+    for (const p of r?.packages || []) {
+      const id = String((p as { id?: unknown })?.id ?? '').trim()
+      if (!id) continue
+      const pkgName = String((p as { name?: unknown })?.name ?? id).trim() || id
+      const existing = merged.get(id)
+      if (existing) {
+        const sl = existing.sourceLabel
+        existing.sourceLabel = sl.includes('目录') ? sl : `${sl}·目录`
+        if (pkgName && pkgName !== existing.name) existing.name = `${existing.name}（${pkgName}）`
+        continue
+      }
+      merged.set(id, { id, name: pkgName, sourceLabel: '本地包' })
+    }
+  } catch {
+    /* ignore */
+  }
+  directEmployeeOptions.value = [...merged.values()].sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), 'zh-CN'),
+  )
+  const cur = String(directChatEmployeeId.value || '').trim()
+  if (cur && !merged.has(cur)) {
+    directChatEmployeeId.value = ''
+    try {
+      sessionStorage.removeItem(WB_DIRECT_CHAT_EMPLOYEE_ID_KEY)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 async function loadWorkbenchRepoPicks() {
   catalogEmployeeRows.value = []
   catalogModRows.value = []
@@ -3287,6 +3377,7 @@ async function loadWorkbenchRepoPicks() {
   } catch {
     catalogModRows.value = []
   }
+  await loadDirectEmployeeOptions()
 }
 
 function goEditEmployeeFromPick() {
@@ -3763,6 +3854,12 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  try {
+    const emp = sessionStorage.getItem(WB_DIRECT_CHAT_EMPLOYEE_ID_KEY)
+    if (emp && emp.trim()) directChatEmployeeId.value = emp.trim()
+  } catch {
+    /* ignore */
+  }
   /* 须在首个 await 之前完成：否则 keep-alive 下 onActivated 可能先于 bots/会话加载执行，客服深链会漏处理 */
   try {
     refreshAllBots()
@@ -3811,6 +3908,16 @@ onMounted(async () => {
 onActivated(() => {
   try {
     applyCustomerServiceRouteContext()
+  } catch {
+    /* ignore */
+  }
+})
+
+watch(directChatEmployeeId, (v) => {
+  try {
+    const s = String(v || '').trim()
+    if (s) sessionStorage.setItem(WB_DIRECT_CHAT_EMPLOYEE_ID_KEY, s)
+    else sessionStorage.removeItem(WB_DIRECT_CHAT_EMPLOYEE_ID_KEY)
   } catch {
     /* ignore */
   }
@@ -7149,6 +7256,48 @@ function onComposerKeydown(e) {
   background: rgba(99, 102, 241, 0.2);
   color: #e0e7ff;
   border-color: rgba(165, 180, 252, 0.35);
+}
+
+.wb-direct-employee-row {
+  margin: 0.55rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+}
+
+.wb-direct-employee-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgba(226, 232, 240, 0.82);
+  flex: 0 0 auto;
+}
+
+.wb-direct-employee-select {
+  min-width: 12rem;
+  max-width: 100%;
+  flex: 1 1 14rem;
+  padding: 0.28rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.55);
+  color: rgba(248, 250, 252, 0.92);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.wb-direct-employee-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.wb-direct-employee-hint {
+  margin: 0;
+  flex: 1 0 100%;
+  font-size: 0.65rem;
+  line-height: 1.45;
+  color: rgba(148, 163, 184, 0.88);
 }
 
 .wb-voice-orb-wrap {
