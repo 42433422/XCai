@@ -57,8 +57,8 @@ else
   echo "[warn] no venv" >&2
 fi
 cd market
-echo "[ok] npm install"
-npm install
+echo "[ok] npm install (--legacy-peer-deps avoids npm edgesOut bug on some Node 20 + lockfile combos)"
+npm install --no-audit --legacy-peer-deps
 export VITE_PUBLIC_BASE=/market/
 echo "[ok] npm run build"
 npm run build

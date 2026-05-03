@@ -1404,8 +1404,11 @@
                   aria-label="语音输入"
                   @click="toggleVoiceListening"
                 >
-                  <span class="wb-voice-orb__ring"></span>
-                  <span class="wb-voice-orb__core"></span>
+                  <JarvisCore
+                    :is-speaking="voiceState === 'listening'"
+                    :is-work-mode="voiceState === 'thinking'"
+                    :is-monitor-mode="voiceState === 'summary'"
+                  />
                 </button>
               </div>
               <div class="wb-voice-copy">
@@ -1538,6 +1541,7 @@ import ConsumptionTierControl from '../components/workbench/ConsumptionTierContr
 import MessageBody from '../components/workbench/MessageBody.vue'
 import MessageActions from '../components/workbench/MessageActions.vue'
 import VoicePhoneModal from '../components/workbench/VoicePhoneModal.vue'
+import JarvisCore from '../components/workbench/JarvisCore.vue'
 import PersonalSettings from '../components/workbench/PersonalSettings.vue'
 import AgentMarket from '../components/workbench/AgentMarket.vue'
 import MediaGenPanel from '../components/workbench/MediaGenPanel.vue'
@@ -7313,64 +7317,28 @@ function onComposerKeydown(e) {
   width: 72%;
   aspect-ratio: 1;
   border: none;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 0.9), transparent 11%),
-    radial-gradient(circle, rgba(125, 211, 252, 0.9), rgba(59, 130, 246, 0.36) 45%, rgba(15, 23, 42, 0.1) 70%);
-  box-shadow:
-    0 0 36px rgba(56, 189, 248, 0.32),
-    0 0 90px rgba(99, 102, 241, 0.2);
+  background: transparent;
   cursor: pointer;
-  animation: wb-orb-breathe 3.2s ease-in-out infinite;
+  display: grid;
+  place-items: center;
+  padding: 0;
 }
 
-.wb-voice-orb__ring,
-.wb-voice-orb__core {
-  position: absolute;
-  inset: -12%;
-  border-radius: inherit;
-  border: 1px solid rgba(125, 211, 252, 0.35);
-  animation: wb-orb-ring 4s linear infinite;
-}
-
-.wb-voice-orb__core {
-  inset: 24%;
-  border: none;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.75), rgba(125, 211, 252, 0.16));
-  animation: none;
+.wb-voice-orb:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .wb-voice-orb--listening {
-  animation-duration: 1.25s;
-  box-shadow:
-    0 0 44px rgba(45, 212, 191, 0.48),
-    0 0 120px rgba(56, 189, 248, 0.35);
+  filter: drop-shadow(0 0 24px rgba(45, 212, 191, 0.45));
 }
 
-.wb-voice-orb--thinking .wb-voice-orb__ring {
-  animation-duration: 1.2s;
-  border-style: dashed;
+.wb-voice-orb--thinking {
+  filter: drop-shadow(0 0 24px rgba(255, 80, 80, 0.45));
 }
 
 .wb-voice-orb--summary {
-  box-shadow:
-    0 0 52px rgba(196, 181, 253, 0.52),
-    0 0 130px rgba(129, 140, 248, 0.36);
-}
-
-@keyframes wb-orb-breathe {
-  0%, 100% {
-    transform: scale(0.96);
-  }
-  50% {
-    transform: scale(1.03);
-  }
-}
-
-@keyframes wb-orb-ring {
-  to {
-    transform: rotate(360deg);
-  }
+  filter: drop-shadow(0 0 28px rgba(255, 215, 0, 0.5));
 }
 
 .wb-voice-transcript {

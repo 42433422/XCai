@@ -111,6 +111,7 @@ def classify_model(provider: str, model_id: str) -> Category:
         "openrouter",
         "dashscope",
         "moonshot",
+        "xiaomi",
         "minimax",
         "doubao",
         "wenxin",

@@ -35,7 +35,7 @@ export const LLM_UI_META = {
     id: 'xiaomi',
     label: '小米 MiMo',
     iconSlug: 'xiaomi',
-    doc: 'https://mimo.xiaomi.com/',
+    doc: 'https://platform.xiaomimimo.com/',
   },
   groq: {
     id: 'groq',

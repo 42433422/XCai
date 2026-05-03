@@ -101,6 +101,7 @@ def _provider_labels() -> Dict[str, str]:
         "openrouter": "OpenRouter",
         "dashscope": "阿里云百炼",
         "moonshot": "月之暗面 Kimi",
+        "xiaomi": "小米 MiMo",
         "minimax": "MiniMax",
         "doubao": "豆包",
         "wenxin": "百度文心 / 千帆",

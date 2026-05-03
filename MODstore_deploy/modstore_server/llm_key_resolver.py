@@ -20,6 +20,8 @@ KNOWN_PROVIDERS = (
     # 国内常用、性价比 OpenAI 兼容（与 SiliconFlow 相邻展示）
     "dashscope",
     "moonshot",
+    # 小米 MiMo：OpenAI 兼容（控制台 https://platform.xiaomimimo.com/ ）
+    "xiaomi",
     "minimax",
     # 字节火山方舟（豆包等，OpenAI 兼容 /api/v3）
     "doubao",
@@ -48,6 +50,8 @@ OPENAI_COMPAT_DEFAULT_ROOT: dict[str, str] = {
     # 阿里云百炼 OpenAI 兼容（北京）；新加坡等见 DASHSCOPE_BASE_URL
     "dashscope": "https://dashscope.aliyuncs.com/compatible-mode",
     "moonshot": "https://api.moonshot.cn",
+    # 小米 MiMo 国内 token 计划域名（与嵌入测试一致）；海外或专线可用 XIAOMI_BASE_URL / MIMO_BASE_URL 覆盖
+    "xiaomi": "https://token-plan-cn.xiaomimimo.com",
     # MiniMax 国内线；国际可设 MINIMAX_BASE_URL=https://api.minimax.io
     "minimax": "https://api.minimaxi.com",
     # 方舟 OpenAI 兼容：根路径含 /api/v3，catalog/chat 不再追加 /v1
@@ -74,6 +78,7 @@ OAI_COMPAT_OPENAI_STYLE_PROVIDERS = frozenset(
         "openrouter",
         "dashscope",
         "moonshot",
+        "xiaomi",
         "minimax",
         "doubao",
         "wenxin",
@@ -126,6 +131,9 @@ def platform_api_key(provider: str) -> Optional[str]:
         return k or None
     if provider == "moonshot":
         k = _env("MOONSHOT_API_KEY")
+        return k or None
+    if provider == "xiaomi":
+        k = _env("XIAOMI_API_KEY") or _env("MIMO_API_KEY") or _env("XIAOMI_MIMO_API_KEY")
         return k or None
     if provider == "minimax":
         k = _env("MINIMAX_API_KEY")
@@ -185,6 +193,9 @@ def platform_base_url(provider: str) -> Optional[str]:
     if provider == "moonshot":
         u = _env("MOONSHOT_BASE_URL")
         return (u or openai_compat_default_root("moonshot")).rstrip("/")
+    if provider == "xiaomi":
+        u = _env("XIAOMI_BASE_URL") or _env("MIMO_BASE_URL") or _env("XIAOMI_MIMO_BASE_URL")
+        return (u or openai_compat_default_root("xiaomi")).rstrip("/")
     if provider == "minimax":
         u = _env("MINIMAX_BASE_URL")
         return (u or openai_compat_default_root("minimax")).rstrip("/")
