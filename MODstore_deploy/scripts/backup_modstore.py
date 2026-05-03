@@ -30,6 +30,24 @@ def run(command: list[str]) -> None:
         raise RuntimeError(f"{' '.join(command)} failed with exit code {proc.returncode}")
 
 
+def compose_service_running(service: str) -> bool:
+    proc = subprocess.run(
+        ["docker", "compose", "ps", "-q", service],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+# 需 exec 进容器打 tar 的组件：若对应服务未启动则跳过（常见于仅起 db/redis 时先部署 api）
+_COMPONENT_SERVICE: dict[str, str] = {
+    "modstore_data": "api",
+    "prometheus": "prometheus",
+    "grafana": "grafana",
+}
+
+
 def docker_tar(service: str, container_path: str, output: Path) -> None:
     parent = str(Path(container_path).parent)
     name = Path(container_path).name
@@ -118,6 +136,17 @@ def main() -> int:
     }
     for component in selected:
         print(f"Backing up {component}...")
+        need_svc = _COMPONENT_SERVICE.get(component)
+        if need_svc and not compose_service_running(need_svc):
+            print(
+                f"Skipping {component}: compose service {need_svc!r} is not running",
+                flush=True,
+            )
+            manifest["components"][component] = {
+                "skipped": True,
+                "reason": f"service {need_svc} not running",
+            }
+            continue
         path = BACKUP_COMPONENTS[component](output_dir)
         manifest["components"][component] = {
             "file": path.name,
