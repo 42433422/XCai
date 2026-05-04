@@ -133,8 +133,14 @@ async function loadEmployees() {
           source: 'v1_catalog',
         })
       }
-    } catch {
-      /* ignore v1 failure if API list already worked */
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!merged.length) {
+        const hint = `本地包目录请求失败（GET /v1/packages）：${msg}`
+        listError.value = listError.value
+          ? `${listError.value}；${hint}`
+          : `${hint}。若使用外层 Nginx，请增加 location /v1/ 反代至 Python API（见 MODstore_deploy/docs/nginx-https-example.conf）。`
+      }
     }
     employees.value = merged
   } finally {
