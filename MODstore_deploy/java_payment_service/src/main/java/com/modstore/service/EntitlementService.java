@@ -80,8 +80,7 @@ public class EntitlementService {
             q.setTotal(0);
             return q;
         });
-        int total = quota.getTotal() == null ? 0 : quota.getTotal();
-        quota.setTotal(total + 1);
+        quota.setTotal(quota.getTotal() + 1);
         quotaRepository.save(quota);
     }
 
