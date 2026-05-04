@@ -18,6 +18,7 @@ from modstore_server.catalog_store import (
     load_store,
     promote_draft_to_stable,
 )
+from modstore_server.catalog_sync import upsert_catalog_item_from_xc_package_dict
 from modstore_server.employee_config_v2 import extract_or_upgrade_v2_config, validate_v2_config
 from modstore_server.industry_taxonomy import get_industry_tree
 from modstore_server.models import get_session_factory
@@ -83,6 +84,11 @@ def api_promote_package(
         saved = promote_draft_to_stable(pid, body.from_version.strip())
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    if str(saved.get("artifact") or "").strip().lower() == "employee_pack":
+        sf = get_session_factory()
+        with sf() as db:
+            upsert_catalog_item_from_xc_package_dict(db, saved, author_id=None)
+            db.commit()
     return {"ok": True, "package": saved}
 
 
@@ -190,6 +196,12 @@ async def api_upload_package(
         tmp = Path(td) / (file.filename or "upload.bin")
         tmp.write_bytes(raw_bytes)
         saved = append_package(rec, tmp)
+
+    if str(saved.get("artifact") or "").strip().lower() == "employee_pack":
+        sf2 = get_session_factory()
+        with sf2() as db:
+            upsert_catalog_item_from_xc_package_dict(db, saved, author_id=None)
+            db.commit()
 
     embedding_text = f"{saved.get('name', '')} {saved.get('description', '')}"
     if embedding_text.strip():

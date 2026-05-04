@@ -1,18 +1,31 @@
 <template>
-  <div class="emp-chat">
-    <header class="emp-chat__head">
+  <div class="emp-chat" :class="{ 'emp-chat--embedded': embedded }">
+    <header v-if="!embedded" class="emp-chat__head">
       <h1>我的员工</h1>
       <p class="emp-chat__sub">从已登记的员工包中选择一名，通过服务端执行管道对话（调用 <code class="emp-mono">/api/employees</code>）。</p>
       <button type="button" class="emp-btn emp-btn--ghost" :disabled="loadingList" @click="loadEmployees">
         {{ loadingList ? '加载中…' : '刷新列表' }}
       </button>
     </header>
+    <div v-else class="emp-chat__toolbar">
+      <button type="button" class="emp-btn emp-btn--ghost" :disabled="loadingList" @click="loadEmployees">
+        {{ loadingList ? '加载中…' : '刷新列表' }}
+      </button>
+    </div>
 
     <div class="emp-chat__layout">
       <aside class="emp-chat__side">
         <h2>员工列表</h2>
+        <p v-if="hasV1OnlyEmployees" class="emp-muted emp-muted--hint">
+          部分条目仅出现在本地 /v1/packages，执行依赖服务端 catalog_items。若发送失败，请管理员同步目录或重新登记。
+        </p>
         <p v-if="listError" class="emp-chat__err">{{ listError }}</p>
-        <p v-else-if="!employees.length && !loadingList" class="emp-muted">暂无可用员工包。请先在 Mod 制作或员工制作中登记 employee_pack。</p>
+        <p v-else-if="!employees.length && !loadingList" class="emp-muted">
+          <template v-if="v1PackagesSeen">
+            检测到本地包目录中有 employee_pack，但尚未进入可执行列表。新上传登记会自动写入数据库；历史包请管理员执行「从 XC catalog 同步」或在本站重新登记。
+          </template>
+          <template v-else>暂无可用员工包。请先在 Mod 制作或员工制作中登记 employee_pack。</template>
+        </p>
         <ul v-else class="emp-list">
           <li v-for="e in employees" :key="e.id">
             <button
@@ -22,7 +35,7 @@
               @click="selectEmployee(e.id)"
             >
               <span class="emp-list__name">{{ e.name || e.id }}</span>
-              <span class="emp-list__id">{{ e.id }}</span>
+              <span class="emp-list__id">{{ e.id }}{{ e.source === 'v1_catalog' ? ' · 仅目录' : '' }}</span>
             </button>
           </li>
         </ul>
@@ -51,12 +64,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api } from '../api'
 
-type EmployeeRow = { id: string; name?: string }
+withDefaults(
+  defineProps<{
+    /** 嵌入统一工作台时隐藏大标题、收紧边距 */
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
+
+type EmployeeRow = { id: string; name?: string; source?: 'executor' | 'v1_catalog' }
 
 const employees = ref<EmployeeRow[]>([])
+const v1PackagesSeen = ref(false)
+const hasV1OnlyEmployees = computed(() => employees.value.some((e) => e.source === 'v1_catalog'))
 const selectedId = ref('')
 const messages = ref<{ role: 'user' | 'assistant'; text: string }[]>([])
 const draft = ref('')
@@ -84,11 +107,36 @@ function extractAssistantText(res: unknown): string {
 async function loadEmployees() {
   listError.value = ''
   loadingList.value = true
+  v1PackagesSeen.value = false
   try {
-    const rows = await api.listEmployees()
-    employees.value = Array.isArray(rows) ? (rows as EmployeeRow[]) : []
-  } catch (e: unknown) {
-    listError.value = e instanceof Error ? e.message : String(e)
+    const idsFromApi = new Set<string>()
+    let sqlRows: EmployeeRow[] = []
+    try {
+      const rows = await api.listEmployees()
+      sqlRows = Array.isArray(rows) ? (rows as EmployeeRow[]) : []
+      sqlRows.forEach((e) => idsFromApi.add(e.id))
+    } catch (e: unknown) {
+      listError.value = e instanceof Error ? e.message : String(e)
+    }
+    const merged: EmployeeRow[] = sqlRows.map((e) => ({ ...e, source: 'executor' as const }))
+    try {
+      const r = await api.listV1Packages('employee_pack', '', 120, 0)
+      const pkgs = r?.packages || []
+      v1PackagesSeen.value = pkgs.length > 0
+      for (const p of pkgs) {
+        const id = String((p as { id?: unknown }).id || '').trim()
+        if (!id || idsFromApi.has(id)) continue
+        idsFromApi.add(id)
+        merged.push({
+          id,
+          name: String((p as { name?: unknown }).name || id),
+          source: 'v1_catalog',
+        })
+      }
+    } catch {
+      /* ignore v1 failure if API list already worked */
+    }
+    employees.value = merged
   } finally {
     loadingList.value = false
   }
@@ -139,6 +187,25 @@ onMounted(() => {
   margin: 0 auto;
   padding: 1.25rem var(--layout-pad-x, 16px) 2rem;
   color: rgba(255, 255, 255, 0.88);
+}
+.emp-chat--embedded {
+  max-width: none;
+  margin: 0;
+  padding: 0.5rem 0.65rem 0.75rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.emp-chat__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+.emp-chat--embedded .emp-chat__layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0;
 }
 .emp-chat__head h1 {
   margin: 0 0 0.35rem;
@@ -280,6 +347,11 @@ onMounted(() => {
 .emp-muted {
   color: rgba(255, 255, 255, 0.45);
   font-size: 0.85rem;
+}
+.emp-muted--hint {
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
 .emp-chat__err {
   color: #f87171;
