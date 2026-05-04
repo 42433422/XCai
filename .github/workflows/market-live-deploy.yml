@@ -1,19 +1,20 @@
-# 在 CI workflow（ci.yml）成功完成后再触发生产部署。
-# 这样 lint/typecheck/unit/coverage/build/e2e 任一失败都会阻断部署。
-# 仍保留 workflow_dispatch 作为应急手动入口。
+# market 生产部署：在 "CI - Market" 工作流成功后触发。
+# 拆分 CI 后不再监听单一的 "CI" 聚合工作流；仅 market/ 变更会走到这里。
 #
-# 在仓库 Settings → Secrets and variables → Actions 中配置：
+# Secrets（仓库 Settings → Secrets and variables → Actions）：
 #   DEPLOY_HOST          例：119.27.178.147
 #   DEPLOY_USER          例：root
 #   DEPLOY_SSH_PRIVATE_KEY  登录该用户的私钥全文（含 BEGIN/END）
-# 仓库 Variables（Settings → Variables）可选覆盖路径/分支：
-#   DEPLOY_REMOTE_REPO、DEPLOY_GIT_BRANCH
+# Variables（可选）：
+#   DEPLOY_MARKET_REMOTE_DIR（推荐，拆仓后指向独立 market 工作树）
+#   DEPLOY_REMOTE_REPO（兼容未拆仓服务器；如果设置会使用 ${REPO}/MODstore_deploy/market）
+#   DEPLOY_GIT_BRANCH（默认 main）
 
 name: Market live deploy
 
 on:
   workflow_run:
-    workflows: ['CI']
+    workflows: ['CI - Market']
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -47,15 +48,29 @@ jobs:
           command_timeout: 25m
           script: |
             set -euo pipefail
-            REPO="${{ vars.DEPLOY_REMOTE_REPO }}"
+            MARKET_DIR="${{ vars.DEPLOY_MARKET_REMOTE_DIR }}"
+            LEGACY_REPO="${{ vars.DEPLOY_REMOTE_REPO }}"
             BRANCH="${{ vars.DEPLOY_GIT_BRANCH }}"
-            if [ -z "${REPO}" ]; then REPO="/root/成都修茈科技有限公司"; fi
             if [ -z "${BRANCH}" ]; then BRANCH="main"; fi
-            cd "${REPO}"
+            if [ -n "${MARKET_DIR}" ]; then
+              TARGET_DIR="${MARKET_DIR}"
+            elif [ -n "${LEGACY_REPO}" ]; then
+              TARGET_DIR="${LEGACY_REPO}/MODstore_deploy/market"
+            else
+              echo "[err] 未设置 DEPLOY_MARKET_REMOTE_DIR 或 DEPLOY_REMOTE_REPO；market 路径不再默认硬编码到 monorepo"
+              exit 1
+            fi
+            echo "[info] market target=${TARGET_DIR} branch=${BRANCH}"
+            cd "${TARGET_DIR}"
             git fetch origin "${BRANCH}"
             git pull --ff-only "origin" "${BRANCH}" || git pull "origin" "${BRANCH}"
-            cd MODstore_deploy/market
-            export VITE_PUBLIC_BASE=/market/
-            npm ci
-            npm run build
+            if [ -f ../scripts/node-release.sh ]; then
+              bash ../scripts/node-release.sh
+            elif [ -f scripts/node-release.sh ]; then
+              bash scripts/node-release.sh
+            else
+              export VITE_PUBLIC_BASE=/market/
+              npm ci
+              npm run build
+            fi
             echo "[ok] market dist updated at $(pwd)/dist"

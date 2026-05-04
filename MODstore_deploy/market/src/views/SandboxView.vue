@@ -16,20 +16,56 @@
         <span v-if="connectError" class="status-chip status-err" role="alert">{{ connectError }}</span>
       </div>
       <div class="toolbar-right">
-        <button class="btn btn-action" :disabled="!connected || pushing" @click="pushAndTest">
+        <button class="btn btn-action" :disabled="!connected || pushing || !effectiveModId" @click="pushAndTest">
           {{ pushing ? '推送中...' : '推送当前 Mod 并测试' }}
         </button>
         <button class="btn btn-action" :disabled="!connected" @click="openFullscreen">全屏</button>
       </div>
     </div>
 
-    <div v-if="connected" class="sandbox-iframe-wrap">
+    <div v-if="connected && (!effectiveModId || isMixedContentBlocked || pushMessage)" class="sandbox-helper">
+      <div class="helper-copy">
+        <strong>{{ isMixedContentBlocked ? '已匹配，但浏览器拦截了画面' : '沙箱已匹配' }}</strong>
+        <p v-if="isMixedContentBlocked">
+          当前市场页是 HTTPS，但匹配到的宿主是 HTTP：{{ iframeSrc }}。请改用 HTTPS 宿主地址，或从本地 HTTP 页面打开沙箱。
+        </p>
+        <p v-else-if="!effectiveModId">
+          当前地址没有携带 modId，所以不能自动推送“当前 Mod”。输入一个测试 Mod ID 后可直接推送并跳转测试。
+        </p>
+        <p v-if="pushMessage" class="helper-message">{{ pushMessage }}</p>
+      </div>
+      <div class="helper-actions">
+        <input
+          v-model="manualModId"
+          class="toolbar-input helper-input"
+          placeholder="测试 Mod ID，例如 example-mod"
+          @keydown.enter="pushAndTest"
+        />
+        <button class="btn btn-action" :disabled="pushing || !effectiveModId" @click="pushAndTest">
+          {{ pushing ? '推送中...' : '推送测试 Mod' }}
+        </button>
+        <button class="btn" :disabled="!hostUrl" @click="openHostInNewTab">打开宿主页</button>
+      </div>
+    </div>
+
+    <div v-if="connected && !isMixedContentBlocked" class="sandbox-iframe-wrap">
       <iframe
         ref="iframeRef"
         :src="iframeSrc"
         class="sandbox-iframe"
         allow="clipboard-read; clipboard-write"
       />
+    </div>
+    <div v-else-if="connected" class="sandbox-placeholder">
+      <div class="placeholder-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+          <line x1="8" y1="21" x2="16" y2="21" />
+          <line x1="12" y1="17" x2="12" y2="21" />
+        </svg>
+      </div>
+      <p class="placeholder-text">画面被浏览器安全策略拦截</p>
+      <p class="placeholder-hint">HTTPS 市场页不能嵌入 HTTP 宿主 iframe。请在上方填入 HTTPS 宿主地址后重新扫描。</p>
     </div>
     <div v-else class="sandbox-placeholder">
       <div class="placeholder-icon">
@@ -57,6 +93,8 @@ const route = useRoute()
 
 /** 上次成功连上的宿主 API 根，供下次优先探测 */
 const SANDBOX_HOST_STORAGE = 'modstore_sandbox_last_host'
+/** 线上默认优先使用同源沙盒，不再先命中 http://域名:4173 导致 HTTPS 混合内容拦截 */
+const DEFAULT_SANDBOX_HOST_PATH = import.meta.env.VITE_SANDBOX_HOST_PATH || '/sandbox'
 
 const hostUrl = ref('')
 const connected = ref(false)
@@ -66,6 +104,13 @@ const probeProgress = ref('')
 const pushing = ref(false)
 const hostInfo = ref(null)
 const iframeRef = ref(null)
+const manualModId = ref('')
+const pushMessage = ref('')
+
+const effectiveModId = computed(() => {
+  const raw = route.query.modId || route.params.modId || manualModId.value
+  return String(raw || '').trim()
+})
 
 const statusText = computed(() => {
   if (connected.value) return '已匹配'
@@ -85,6 +130,16 @@ const iframeSrc = computed(() => {
   return `${base}/?sandbox=1`
 })
 
+const isMixedContentBlocked = computed(() => {
+  if (!connected.value || !hostUrl.value) return false
+  try {
+    const url = new URL(hostUrl.value)
+    return window.location.protocol === 'https:' && url.protocol === 'http:' && !isLoopbackHost(url.hostname)
+  } catch {
+    return window.location.protocol === 'https:' && hostUrl.value.startsWith('http://') && !isLoopbackOrigin(hostUrl.value)
+  }
+})
+
 function formatConnectFailure(e) {
   if (e instanceof ApiError) return e.message || `请求失败（${e.status}）`
   if (e && typeof e === 'object' && 'message' in e && typeof e.message === 'string') return e.message
@@ -95,36 +150,84 @@ function formatConnectFailure(e) {
 function normalizeHostOrigin(raw) {
   const t = String(raw || '').trim()
   if (!t) return ''
+  if (t.startsWith('/')) {
+    return `${window.location.origin}${t}`.replace(/\/+$/, '')
+  }
   try {
     const withProto = /^\w+:\/\//.test(t) ? t : `http://${t}`
     const u = new URL(withProto)
-    return `${u.protocol}//${u.host}`
+    return `${u.protocol}//${u.host}${u.pathname === '/' ? '' : u.pathname}`.replace(/\/+$/, '')
   } catch {
     return t.replace(/\/+$/, '')
   }
 }
 
+function isLoopbackHost(hostname) {
+  const h = String(hostname || '').trim().toLowerCase()
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1'
+}
+
+function isLoopbackOrigin(raw) {
+  try {
+    return isLoopbackHost(new URL(normalizeHostOrigin(raw)).hostname)
+  } catch {
+    return false
+  }
+}
+
+async function probeFromBrowser(url) {
+  const base = normalizeHostOrigin(url)
+  if (!base) return null
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 1200)
+  try {
+    const sameOrigin = new URL(base).origin === window.location.origin
+    // 本机端口必须从用户浏览器探测；线上后端访问 localhost 只会访问服务器自己。
+    const resp = await fetch(`${base}/api/health`, {
+      method: 'GET',
+      mode: sameOrigin ? 'same-origin' : 'no-cors',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (sameOrigin && !resp.ok) return null
+    return { ok: true, host_url: base, source: 'browser-local' }
+  } catch (_) {
+    return null
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+function shouldProbeFromBrowser(url) {
+  if (isLoopbackOrigin(url)) return true
+  try {
+    return new URL(normalizeHostOrigin(url)).origin === window.location.origin
+  } catch {
+    return false
+  }
+}
+
 /**
- * 本机 / 局域网常见 XCAGI FastAPI 与联调端口（含 Vite 同机多实例）；顺序大致为默认 API 优先再 dev。
+ * 本机 / 局域网常见 XCAGI FastAPI 与联调端口；线上 HTTPS 优先用 /sandbox，不再探测裸 HTTP 4173。
  * 每项为端口号，将拼成 http://127.0.0.1:{port} 与 http://localhost:{port}，并对当前页 hostname 复用。
  */
 const LOCAL_PROBE_PORTS = [
   5000, 5001, 5002, 5003,
   5173, 5174, 5175, 5176, 5177,
-  4173, 3000, 8080, 8888,
+  3000, 8080, 8888,
   8000, 8001,
 ]
 
-function addHostPortVariants(add, hostname, ports, includeHttps) {
+function addHostPortVariants(add, hostname, ports, includeHttps, includeHttp = true) {
   const h = String(hostname || '').trim()
   if (!h) return
   for (const p of ports) {
-    add(`http://${h}:${p}`)
     if (includeHttps) add(`https://${h}:${p}`)
+    if (includeHttp) add(`http://${h}:${p}`)
   }
 }
 
-/** 合并去重：URL 参数 → 输入框 → 上次成功 → 当前页同机多端口扫描 → 127.0.0.1/localhost 端口表 */
+/** 合并去重：URL 参数 → 同源 /sandbox → 输入框 → 上次成功 → 本机端口 → 当前页同机多端口扫描 */
 function buildDiscoveryCandidates() {
   const seen = new Set()
   const out = []
@@ -138,6 +241,8 @@ function buildDiscoveryCandidates() {
   const q = route.query.host
   if (q) add(String(q))
 
+  add(DEFAULT_SANDBOX_HOST_PATH)
+
   add(hostUrl.value)
 
   try {
@@ -147,20 +252,11 @@ function buildDiscoveryCandidates() {
     /* ignore */
   }
 
-  /** 若 API 与当前页同端口（少见），优先尝试 */
-  try {
-    const p = String(window.location.port || '').trim()
-    if (p && /^\d+$/.test(p) && p !== '80' && p !== '443') {
-      add(`${window.location.protocol}//${window.location.hostname}:${p}`)
-    }
-  } catch (_) {
-    /* ignore */
-  }
-
   try {
     const { hostname, protocol } = window.location
-    if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
-      addHostPortVariants(add, hostname, LOCAL_PROBE_PORTS, protocol === 'https:')
+    const p = String(window.location.port || '').trim()
+    if (isLoopbackHost(hostname) && p && /^\d+$/.test(p) && p !== '80' && p !== '443') {
+      add(`${protocol}//${hostname}:${p}`)
     }
   } catch (_) {
     /* ignore */
@@ -168,6 +264,16 @@ function buildDiscoveryCandidates() {
 
   addHostPortVariants(add, '127.0.0.1', LOCAL_PROBE_PORTS, false)
   addHostPortVariants(add, 'localhost', LOCAL_PROBE_PORTS, false)
+
+  try {
+    const { hostname, protocol } = window.location
+    if (hostname && !isLoopbackHost(hostname)) {
+      const isHttpsPage = protocol === 'https:'
+      addHostPortVariants(add, hostname, LOCAL_PROBE_PORTS, isHttpsPage, !isHttpsPage)
+    }
+  } catch (_) {
+    /* ignore */
+  }
 
   return out
 }
@@ -179,6 +285,7 @@ async function discoverAndConnect() {
   connected.value = false
   hostInfo.value = null
   connectError.value = ''
+  pushMessage.value = ''
   probeProgress.value = ''
 
   const list = buildDiscoveryCandidates()
@@ -195,7 +302,9 @@ async function discoverAndConnect() {
     hostUrl.value = url
     probeProgress.value = `${i + 1}/${list.length}`
     try {
-      const result = await sandboxApi.connectHost(url)
+      const result = shouldProbeFromBrowser(url)
+        ? await probeFromBrowser(url)
+        : await sandboxApi.connectHost(url)
       if (result && result.ok === true) {
         connected.value = true
         hostInfo.value = result
@@ -226,25 +335,37 @@ async function discoverAndConnect() {
 
 async function pushAndTest() {
   if (!connected.value || pushing.value) return
-  const modId = route.query.modId || route.params.modId
+  const modId = effectiveModId.value
   if (!modId) {
-    console.warn('[Sandbox] 未指定 modId，跳过推送')
+    pushMessage.value = '请先输入要测试的 Mod ID'
     return
   }
   pushing.value = true
+  pushMessage.value = ''
   try {
     const result = await sandboxApi.pushAndTest(hostUrl.value, String(modId))
-    if (result.ok && iframeRef.value) {
-      iframeRef.value.contentWindow?.postMessage(
-        { type: 'sandbox:navigate', path: `/mod/${modId}` },
-        '*'
-      )
+    if (result.ok) {
+      if (iframeRef.value) {
+        iframeRef.value.contentWindow?.postMessage(
+          { type: 'sandbox:navigate', path: `/mod/${modId}` },
+          '*'
+        )
+      }
+      pushMessage.value = `已推送 ${modId}，正在宿主中打开测试页`
+    } else {
+      pushMessage.value = String(result.error || '推送失败，请检查 Mod ID 或宿主状态')
     }
   } catch (e) {
     console.warn('[Sandbox] 推送失败:', e)
+    pushMessage.value = formatConnectFailure(e)
   } finally {
     pushing.value = false
   }
+}
+
+function openHostInNewTab() {
+  if (!iframeSrc.value) return
+  window.open(iframeSrc.value, '_blank', 'noopener,noreferrer')
 }
 
 function openFullscreen() {
@@ -252,6 +373,11 @@ function openFullscreen() {
   const el = iframeRef.value
   if (el.requestFullscreen) el.requestFullscreen()
   else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen()
+}
+
+function shouldAutoPush() {
+  const raw = String(route.query.autoPush || '').trim().toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
 }
 
 let messageHandler = null
@@ -264,7 +390,11 @@ onMounted(() => {
   }
   window.addEventListener('message', messageHandler)
 
-  void discoverAndConnect()
+  void discoverAndConnect().then(() => {
+    if (connected.value && effectiveModId.value && shouldAutoPush()) {
+      void pushAndTest()
+    }
+  })
 })
 
 onBeforeUnmount(() => {
@@ -398,6 +528,52 @@ onBeforeUnmount(() => {
   flex: 1 1 0%;
   min-height: 0;
   position: relative;
+}
+
+.sandbox-helper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: rgba(96, 165, 250, 0.08);
+  border-bottom: 0.5px solid rgba(96, 165, 250, 0.18);
+  color: var(--color-text-primary, #fff);
+  flex-wrap: wrap;
+}
+
+.helper-copy {
+  min-width: 260px;
+  flex: 1 1 360px;
+}
+
+.helper-copy strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.9rem;
+}
+
+.helper-copy p {
+  margin: 0;
+  color: var(--color-text-muted, rgba(255, 255, 255, 0.6));
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.helper-message {
+  margin-top: 4px !important;
+  color: #fbbf24 !important;
+}
+
+.helper-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.helper-input {
+  width: 220px;
 }
 
 .sandbox-iframe {

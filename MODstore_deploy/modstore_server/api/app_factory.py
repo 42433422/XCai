@@ -1,4 +1,8 @@
-"""FastAPI application factory."""
+"""FastAPI application factory.
+
+Gateway note: payment proxy is wired in ``middleware_registry.register_all_middleware``
+via ``_payment_backend_proxy_middleware`` wrapping ``payment_backend_proxy_middleware``.
+"""
 
 from __future__ import annotations
 
@@ -6,22 +10,25 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI
 
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+    _deploy_root = Path(__file__).resolve().parents[2]
+    load_dotenv(_deploy_root / ".env", override=False)
+    # 本机覆盖（.gitignore）；不存在则忽略。后加载以便覆盖 .env 中同名键。
+    _shared_secret_env = {
+        key: os.environ.get(key)
+        for key in ("MODSTORE_JWT_SECRET",)
+        if os.environ.get(key)
+    }
+    load_dotenv(_deploy_root / ".env.local", override=True)
+    # JWT 必须与 Java 支付服务一致；systemd/生产 .env 已有值时禁止 .env.local 覆盖。
+    os.environ.update(_shared_secret_env)
 except ImportError:
     pass
 
-from modstore_server.api.middleware import (
-    market_history_spa_middleware,
-    payment_backend_proxy_middleware,
-    request_id_middleware,
-)
 from modstore_server.constants import DEFAULT_API_PORT, DEFAULT_XCAGI_BACKEND_URL
 
 logger = logging.getLogger(__name__)
@@ -56,36 +63,6 @@ def load_default_config() -> AppConfig:
     return AppConfig(profile="full")
 
 
-def _get_allowed_origins() -> list[str]:
-    env = os.environ.get("CORS_ORIGINS", "").strip()
-    if env:
-        return [o.strip() for o in env.split(",") if o.strip()]
-    return [
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-        "http://127.0.0.1:5174",
-        "http://localhost:5174",
-        "http://127.0.0.1:5175",
-        "http://localhost:5175",
-        "http://127.0.0.1:5176",
-        "http://localhost:5176",
-        "http://127.0.0.1:4173",
-        "http://localhost:4173",
-        "https://xiu-ci.com",
-        "https://www.xiu-ci.com",
-    ]
-
-
-def _get_cors_origin_regex() -> str | None:
-    raw = os.environ.get("CORS_ORIGIN_REGEX", "").strip()
-    if raw:
-        low = raw.lower()
-        if low in ("0", "false", "none", "-"):
-            return None
-        return raw
-    return r"^https://[a-zA-Z0-9.-]+\.edgeone\.cool$"
-
-
 def _include_optional(app: FastAPI, module_path: str) -> None:
     try:
         mod = __import__(module_path, fromlist=["router"])
@@ -99,50 +76,6 @@ def _include_optional(app: FastAPI, module_path: str) -> None:
     if router is None:
         return
     app.include_router(router)
-
-
-def _maybe_mount_dev_docs(app: FastAPI) -> None:
-    docs_root = Path(__file__).resolve().parents[2] / "docs"
-    if not docs_root.is_dir():
-        return
-    app.mount("/dev-docs", StaticFiles(directory=str(docs_root)), name="dev-docs")
-
-
-def _maybe_mount_ui(app: FastAPI) -> None:
-    from fastapi import HTTPException
-    from fastapi.responses import FileResponse
-
-    root = Path(__file__).resolve().parents[2]
-    dist = root / "web" / "dist"
-    if not dist.is_dir():
-        return
-    assets = dist / "assets"
-    if assets.is_dir():
-        app.mount("/assets", StaticFiles(directory=str(assets)), name="ui-assets")
-
-    index_file = dist / "index.html"
-
-    @app.get("/")
-    def ui_root():
-        if index_file.is_file():
-            return FileResponse(index_file)
-        raise HTTPException(404)
-
-    @app.get("/{full_path:path}")
-    def spa_fallback(full_path: str):
-        if (
-            full_path.startswith("api")
-            or full_path.startswith("v1")
-            or full_path.startswith("docs")
-            or full_path.startswith("dev-docs")
-            or full_path.startswith("redoc")
-            or full_path.startswith("market")
-            or full_path == "openapi.json"
-        ):
-            raise HTTPException(404)
-        if index_file.is_file():
-            return FileResponse(index_file)
-        raise HTTPException(404)
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -181,18 +114,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     except Exception:
         logger.exception("outbox dispatcher worker failed to start")
 
-    @app.middleware("http")
-    async def _request_id_middleware(request: Request, call_next):
-        return await request_id_middleware(request, call_next)
+    from modstore_server.middleware_registry import register_all_middleware
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_get_allowed_origins(),
-        allow_origin_regex=_get_cors_origin_regex(),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    register_all_middleware(app)
+
+    from modstore_server.api import csp_report, ui_mount
+
+    app.include_router(csp_report.router)
 
     if cfg.profile != "llm-only":
         from modstore_server.market_api import router as market_router
@@ -224,6 +152,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         "modstore_server.knowledge_v2_api",
         "modstore_server.realtime_ws",
         "modstore_server.workflow_api",
+        "modstore_server.eskill_api",
         "modstore_server.script_workflow_api",
         "modstore_server.runtime_allowlist_api",
         "modstore_server.email_admin_api",
@@ -251,16 +180,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     for _m in _optional:
         _include_optional(app, _m)
 
-    _maybe_mount_dev_docs(app)
-    _maybe_mount_ui(app)
-
-    @app.middleware("http")
-    async def _payment_backend_proxy_middleware(request: Request, call_next):
-        return await payment_backend_proxy_middleware(request, call_next)
-
-    @app.middleware("http")
-    async def _market_history_spa_middleware(request: Request, call_next):
-        return await market_history_spa_middleware(request, call_next)
+    ui_mount.maybe_mount_dev_docs(app)
+    ui_mount.maybe_mount_ui(app)
 
     return app
 

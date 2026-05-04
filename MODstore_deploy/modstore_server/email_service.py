@@ -293,6 +293,31 @@ def send_test_email(email: str) -> Dict[str, object]:
     }
 
 
+def send_simple_html_email(to_email: str, subject: str, html_body: str) -> Dict[str, object]:
+    """发送任意 HTML 邮件（站内通知镜像等）；未配置 SMTP 且非 DEBUG 时静默跳过。"""
+    _load_modstore_env()
+    if _email_debug_enabled():
+        print(f"[MODSTORE_EMAIL_DEBUG] notify to={to_email} subj={subject}", flush=True)
+        return {"mode": "debug", "delivered": True}
+
+    state = _config_state()
+    if not state["configured"]:
+        return {"mode": "unconfigured", "delivered": False}
+
+    user = _smtp_user()
+    password = _smtp_password()
+    sender_name = _sender_name()
+    msg = MIMEText(html_body, "html", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = f"{sender_name} <{_sender_email()}>"
+    msg["To"] = to_email
+
+    with smtplib.SMTP_SSL(_smtp_host(), _smtp_port()) as server:
+        server.login(user, password)
+        server.sendmail(_sender_email(), to_email, msg.as_string())
+    return {"mode": "smtp", "delivered": True}
+
+
 def find_user_by_email(email: str) -> User | None:
     """根据邮箱查找用户（不区分大小写）。"""
     norm = (email or "").strip().lower()

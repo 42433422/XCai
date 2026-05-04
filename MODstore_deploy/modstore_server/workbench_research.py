@@ -7,7 +7,7 @@ import re
 from html import unescape
 from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 from datetime import date
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import httpx
 
@@ -252,7 +252,8 @@ async def build_research_context(
         }
 
     intent_hint = {
-        "workflow": "工作流 自动化 集成",
+        "workflow": "Skill 组 画布编排 ESkill 自动化",
+        "skill": "Skill 组 画布编排 ESkill 自动化",
         "mod": "后端模块 API",
         "employee": "AI 员工 Agent",
     }.get(intent, "")

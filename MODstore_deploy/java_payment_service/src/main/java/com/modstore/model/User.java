@@ -10,7 +10,6 @@ import java.time.LocalDateTime;
 public class User {
     
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     
     @Column(name = "username", unique = true, nullable = false, length = 64)

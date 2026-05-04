@@ -116,28 +116,5 @@ class AiModelPrice(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class LlmModelCapability(Base):
-    """L1 探针 / L3 人审状态；与目录中的 (provider, model) 对齐。"""
-
-    __tablename__ = "llm_model_capabilities"
-    __table_args__ = (UniqueConstraint("provider", "model", name="uq_llm_model_cap"),)
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider = Column(String(64), nullable=False, index=True)
-    model = Column(String(256), nullable=False, index=True)
-    l1_status = Column(String(32), default="pending", index=True)
-    l1_score = Column(Float, nullable=True)
-    l1_at = Column(DateTime, nullable=True)
-    l1_flags_json = Column(Text, default="{}")
-    l1_error = Column(Text, default="")
-    effective_category = Column(String(32), default="")
-    taxonomy_source = Column(String(32), default="heuristic")
-    l3_status = Column(String(32), default="none", index=True)
-    l3_notes = Column(Text, default="")
-    l3_reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    l3_at = Column(DateTime, nullable=True)
-    cs_ticket_id = Column(
-        Integer, ForeignKey("customer_service_tickets.id"), nullable=True, index=True
-    )
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+# 与 ``modstore_server.models`` 共用一张表与同一 Declarative Base，避免双 metadata 下同表冲突。
+from modstore_server.models import LlmModelCapability  # noqa: E402

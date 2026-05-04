@@ -18,7 +18,7 @@ from typing import Any
 
 from prometheus_client import Counter
 
-from modstore_server.eventing.contracts import canonical_event_name
+from modstore_server.eventing.contracts import WORKFLOW_EVENT_TRIGGER, canonical_event_name
 from modstore_server.eventing.events import DomainEvent
 from modstore_server.eventing.global_bus import neuro_bus
 
@@ -113,6 +113,30 @@ def _on_payment_paid(event: DomainEvent) -> None:
         EVENT_PUBLISHED_TOTAL.labels(event.event_name, "subscriber_error").inc()
 
 
+def _on_workflow_event_trigger(event: DomainEvent) -> None:
+    if canonical_event_name(event.event_name) != WORKFLOW_EVENT_TRIGGER:
+        return
+    payload = event.payload or {}
+    try:
+        wf_id = int(payload.get("workflow_id") or 0)
+        uid = int(payload.get("user_id") or 0)
+    except (TypeError, ValueError):
+        return
+    if not wf_id or not uid:
+        return
+    inp = payload.get("input_data")
+    if not isinstance(inp, dict):
+        inp = {}
+    try:
+        from modstore_server.workflow_event_runner import run_workflow_for_trigger
+
+        run_workflow_for_trigger(workflow_id=wf_id, user_id=uid, input_data=inp)
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "workflow_run").inc()
+    except Exception:
+        logger.exception("workflow.event_trigger subscriber failed")
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "subscriber_error").inc()
+
+
 def _on_refund_outcome(event: DomainEvent) -> None:
     name = canonical_event_name(event.event_name)
     if name not in {"refund.approved", "refund.rejected", "refund.failed"}:
@@ -188,6 +212,7 @@ def install_default_subscribers(bus=None) -> None:
     target_bus.subscribe("refund.approved", _on_refund_outcome)
     target_bus.subscribe("refund.rejected", _on_refund_outcome)
     target_bus.subscribe("refund.failed", _on_refund_outcome)
+    target_bus.subscribe(WORKFLOW_EVENT_TRIGGER, _on_workflow_event_trigger)
     _INSTALLED = True
 
 

@@ -27,6 +27,8 @@ export const useAuthStore = defineStore('auth', () => {
   const lastMeFetchedAt = ref(0)
   const ME_STALE_MS = 15_000
   const membership = ref<MembershipState | null>(null)
+  /** 最近一次拉取 /api/payment/my-plan 失败（与「未开通会员」区分） */
+  const membershipFetchFailed = ref(false)
   const isLoggedIn = computed(() => Boolean(user.value && getAccessToken()))
   const isAdmin = computed(() => user.value?.is_admin === true)
   const username = computed(() => displayName(user.value))
@@ -59,6 +61,7 @@ export const useAuthStore = defineStore('auth', () => {
   function resetSession(): void {
     user.value = null
     membership.value = null
+    membershipFetchFailed.value = false
     lastValidatedToken.value = ''
     lastMeFetchedAt.value = 0
   }
@@ -66,10 +69,12 @@ export const useAuthStore = defineStore('auth', () => {
   async function refreshMembership(): Promise<void> {
     if (!getAccessToken()) {
       membership.value = null
+      membershipFetchFailed.value = false
       return
     }
     try {
       const r: any = await api.paymentMyPlan()
+      membershipFetchFailed.value = false
       const m = r?.membership && typeof r.membership === 'object' ? r.membership : null
       if (m && typeof m.tier === 'string') {
         membership.value = {
@@ -81,6 +86,7 @@ export const useAuthStore = defineStore('auth', () => {
         membership.value = { tier: 'free', label: '普通用户', is_member: false }
       }
     } catch {
+      membershipFetchFailed.value = true
       membership.value = null
     }
   }
@@ -147,6 +153,7 @@ export const useAuthStore = defineStore('auth', () => {
     username,
     levelProfile,
     membership,
+    membershipFetchFailed,
     membershipTier,
     hasToken,
     refreshSession,

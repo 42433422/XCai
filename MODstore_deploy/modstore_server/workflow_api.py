@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from modman.manifest_util import read_manifest
@@ -28,6 +30,7 @@ from modstore_server.models import (
 from modstore_server.api.deps import _get_current_user
 from modstore_server.infrastructure.db import get_db
 from modstore_server.quota_middleware import consume_quota, require_quota
+from modstore_server.workflow_event_runner import run_workflow_for_trigger
 from modstore_server.workflow_sandbox_state import (
     record_workflow_sandbox_run,
     sandbox_status_for_workflow,
@@ -35,6 +38,8 @@ from modstore_server.workflow_sandbox_state import (
 )
 
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
+
+workflow_hooks_router = APIRouter(prefix="/api/workflow-hooks", tags=["workflow-hooks"])
 
 
 class CreateWorkflowBody(BaseModel):
@@ -981,21 +986,14 @@ async def webhook_run_workflow(
     )
     if not trig:
         raise HTTPException(400, "该工作流未配置激活的 webhook 触发器")
-    from modstore_server.workflow_engine import execute_workflow as engine_execute
-
-    sf = get_session_factory()
-    with sf() as qdb:
-        require_quota(qdb, user.id, "llm_calls", 1)
     try:
-        output_data = engine_execute(workflow_id, body or {}, user_id=user.id)
-        try:
-            with sf() as qdb2:
-                consume_quota(qdb2, user.id, "llm_calls", 1)
-        except Exception:
-            pass
-        return {"ok": True, "result": output_data}
+        return run_workflow_for_trigger(
+            workflow_id=workflow_id,
+            user_id=user.id,
+            input_data=body or {},
+        )
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
 
 
 @router.post("/{workflow_id}/versions/publish", summary="发布工作流版本（快照当前图）")
@@ -1198,3 +1196,54 @@ async def get_execution_detail(
         "started_at": execution.started_at.isoformat(),
         "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
     }
+
+
+@workflow_hooks_router.post("/webhook/{trigger_key}", summary="公开 Webhook 触发工作流（需在触发器 config 配置 secret）")
+async def public_webhook_run_workflow(trigger_key: str, request: Request, db: Session = Depends(get_db)):
+    """外部系统无需用户 JWT：匹配 ``WorkflowTrigger.trigger_key``，校验 ``X-Workflow-Secret`` 与触发器
+    ``config_json.secret`` 一致后执行；请求 JSON 作为 ``input_data``。
+    """
+    key = (trigger_key or "").strip()
+    trig = (
+        db.query(WorkflowTrigger)
+        .filter(
+            WorkflowTrigger.trigger_key == key,
+            WorkflowTrigger.trigger_type == "webhook",
+            WorkflowTrigger.is_active.is_(True),
+        )
+        .first()
+    )
+    if not trig:
+        raise HTTPException(404, "触发器不存在或未启用")
+
+    cfg: Dict[str, Any] = {}
+    try:
+        raw_cfg = json.loads(trig.config_json or "{}")
+        if isinstance(raw_cfg, dict):
+            cfg = raw_cfg
+    except json.JSONDecodeError:
+        cfg = {}
+
+    secret = str(cfg.get("secret") or "").strip()
+    if secret:
+        hdr = (request.headers.get("X-Workflow-Secret") or "").strip()
+        if not hmac.compare_digest(hdr, secret):
+            raise HTTPException(403, "Webhook secret mismatch")
+    elif os.environ.get("MODSTORE_REQUIRE_WEBHOOK_SECRET", "").strip().lower() in ("1", "true", "yes"):
+        raise HTTPException(400, "请在触发器 config 中配置 secret，或关闭 MODSTORE_REQUIRE_WEBHOOK_SECRET")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    try:
+        return run_workflow_for_trigger(
+            workflow_id=int(trig.workflow_id),
+            user_id=int(trig.user_id),
+            input_data=body,
+        )
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e

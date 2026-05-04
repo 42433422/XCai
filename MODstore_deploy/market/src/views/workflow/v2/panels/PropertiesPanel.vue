@@ -15,6 +15,8 @@ const emit = defineEmits<{
 
 const employees = ref<Array<{ id: string; name?: string }>>([])
 const employeesLoaded = ref(false)
+const eskills = ref<Array<{ id: string | number; name?: string; domain?: string }>>([])
+const eskillsLoaded = ref(false)
 
 const meta = computed(() => (props.selected ? getNodeMeta(props.selected.data!.kind) : null))
 
@@ -58,7 +60,22 @@ async function ensureEmployees() {
   }
 }
 
-onMounted(ensureEmployees)
+async function ensureESkills() {
+  if (eskillsLoaded.value) return
+  try {
+    const list: any = await api.listESkills()
+    eskills.value = Array.isArray(list) ? list : list?.eskills || []
+  } catch {
+    eskills.value = []
+  } finally {
+    eskillsLoaded.value = true
+  }
+}
+
+onMounted(() => {
+  void ensureEmployees()
+  void ensureESkills()
+})
 
 function jsonToString(v: unknown): string {
   if (typeof v === 'string') return v
@@ -92,6 +109,11 @@ function onNumberInput(key: string, ev: Event) {
   const target = ev.target as HTMLInputElement | null
   const val = Number(target?.value || 0)
   setField(key, Number.isFinite(val) ? val : 0)
+}
+
+function eskillLabel(s: { id: string | number; name?: string; domain?: string }) {
+  const name = s.name || String(s.id)
+  return s.domain ? `${name} · ${s.domain}` : name
 }
 </script>
 
@@ -191,6 +213,18 @@ function onNumberInput(key: string, ev: Event) {
             <option value="">— 选择员工 —</option>
             <option v-for="e in employees" :key="String(e.id)" :value="String(e.id)">
               {{ e.name || e.id }}
+            </option>
+          </select>
+
+          <select
+            v-else-if="f.type === 'eskill-picker'"
+            class="wf2-input"
+            :value="String(configDraft[f.key] ?? '')"
+            @change="setField(f.key, ($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">— 选择 ESkill —</option>
+            <option v-for="s in eskills" :key="String(s.id)" :value="String(s.id)">
+              {{ eskillLabel(s) }}
             </option>
           </select>
 

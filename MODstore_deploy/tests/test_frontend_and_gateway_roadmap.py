@@ -16,6 +16,7 @@ MARKET = REPO_ROOT / "market"
 APP_PY = REPO_ROOT / "modstore_server" / "app.py"
 MIDDLEWARE_PY = REPO_ROOT / "modstore_server" / "api" / "middleware.py"
 APP_FACTORY_PY = REPO_ROOT / "modstore_server" / "api" / "app_factory.py"
+MIDDLEWARE_REGISTRY_PY = REPO_ROOT / "modstore_server" / "middleware_registry.py"
 
 
 def test_only_one_vite_config_exists():
@@ -56,7 +57,7 @@ def test_payment_gateway_proxy_remains_in_python_until_gateway_decision():
     """
 
     texts = []
-    for p in (APP_FACTORY_PY, MIDDLEWARE_PY, APP_PY):
+    for p in (APP_FACTORY_PY, MIDDLEWARE_PY, MIDDLEWARE_REGISTRY_PY, APP_PY):
         if p.is_file():
             texts.append(p.read_text(encoding="utf-8"))
     text = "\n".join(texts)

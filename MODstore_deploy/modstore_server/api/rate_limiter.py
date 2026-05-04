@@ -52,7 +52,7 @@ class _RedisBucket:
         pipe.zcard(key)
         pipe.expire(key, window)
         results = pipe.execute()
-        count = results[2]
+        count = int(results[2])
         return count <= limit
 
     def retry_after(self, key: str, window: int) -> int:

@@ -12,12 +12,21 @@ from modstore_server.llm_key_resolver import (
     openai_compat_default_root,
 )
 
+_MODEL_ALIASES: dict[tuple[str, str], str] = {
+    # 小米 2026-05 模型目录已不再接受 mimo-v2-base；兼容前端/账户缓存中的旧选择。
+    ("xiaomi", "mimo-v2-base"): "mimo-v2.5-pro",
+}
+
 
 def _normalize_openai_base(provider: str, base_url: Optional[str]) -> str:
     b = (base_url or openai_compat_default_root(provider)).rstrip("/")
     if not (b.endswith("/v1") or b.endswith("/v2") or b.endswith("/v3") or b.endswith("/v4")):
         b = b + "/v1"
     return b
+
+
+def normalize_model(provider: str, model: str) -> str:
+    return _MODEL_ALIASES.get((provider, model), model)
 
 
 async def chat_openai_compatible(
@@ -212,6 +221,7 @@ async def chat_dispatch(
     messages: List[Dict[str, str]],
     max_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
+    model = normalize_model(provider, model)
     if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
         b = _normalize_openai_base(provider, base_url)
         return await chat_openai_compatible(b, api_key, model, messages, max_tokens=max_tokens)
@@ -231,6 +241,7 @@ async def chat_dispatch_stream(
     messages: List[Dict[str, str]],
     max_tokens: Optional[int] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
+    model = normalize_model(provider, model)
     if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
         b = _normalize_openai_base(provider, base_url)
         async for ev in stream_openai_compatible(b, api_key, model, messages, max_tokens=max_tokens):

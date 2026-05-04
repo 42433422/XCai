@@ -35,3 +35,7 @@
 - 实际恢复时间：
 - 发现的问题：
 - 后续行动项：
+
+## 演练记录索引
+
+每次 dry-run 与预发 `--confirm` 都登记到 [`exercises/`](exercises/README.md) 下的日期目录；最近一次见 [`exercises/2026-05-04/EXERCISE.md`](exercises/2026-05-04/EXERCISE.md)。

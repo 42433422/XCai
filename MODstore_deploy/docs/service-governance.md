@@ -14,6 +14,41 @@
 - 所有反代请求透传 `X-Request-Id`，便于从 Nginx、FastAPI、Java 日志串联。
 - `/nginx-health` 作为容器健康检查，不依赖前端构建产物路由。
 
+## Nginx 与 Java 支付：数据路径（易误解点）
+
+**默认架构里，Nginx 并不直连 Java 支付服务。**
+
+1. 浏览器 → **Nginx** → `proxy_pass` 到 **FastAPI（Python）** 的监听端口（示例为 `127.0.0.1:8765`；你方单机也可能是 `9999` 等，以 `systemctl`/实际为准）。
+2. 仅当环境变量 **`PAYMENT_BACKEND=java`** 时，FastAPI 内的 **`payment_backend_proxy_middleware`**（`modstore_server/api/middleware.py`）才会用 **httpx** 把下列前缀转发到 **`JAVA_PAYMENT_SERVICE_URL`**（默认 `http://127.0.0.1:8080`，无尾斜杠）：
+   - `/api/payment`、`/api/wallet`、`/api/refunds`（与 `payment_contract.PROXY_PREFIXES` 一致）。
+3. **Java 健康检查**在 Spring Boot 上一般为 **`GET http://127.0.0.1:8080/actuator/health`**，不是 Nginx 里常见的 `/health`（后者若反代到 Python，对应的是 Python 自带探针，**不能**用来证明 Java 已就绪）。
+4. 若 Nginx `location /api/` 的 **`proxy_pass` 端口写错**（例如 Python 已改到 `9999` 仍写 `8765`），浏览器会看到 **502**，容易误判为「Java 挂了」；应在**应用所在机**上先执行：
+   - `curl -sS http://127.0.0.1:8080/actuator/health` → 期望 `status":"UP"`；
+   - `curl -sS http://127.0.0.1:<Python端口>/api/payment/plans` → 期望 JSON `plans`；
+   - `grep PAYMENT_BACKEND JAVA_PAYMENT_SERVICE_URL /path/to/MODstore_deploy/.env` → 期望 `PAYMENT_BACKEND=java` 且 URL 与 Java 实际监听一致。
+5. **502 且响应体含** `Java 支付服务不可用` **与** `JAVA_PAYMENT_SERVICE_URL=...`：来自 Python 连不上 Java（地址/端口/防火墙/Java 未起），与 Nginx 到 Python 这一段无关。
+6. **401** 在 `/api/payment/my-plan` 等：多为 JWT 无效；**Java 与 Python 的 `MODSTORE_JWT_SECRET`（及 Java `jwt.secret`）必须一致**，否则 Python 能认、Java 不认。
+
+### 浏览器里 `/api/payment/*`、`/api/wallet/*` 全是 401
+
+Spring 返回体常为 `{"detail":"未登录或登录已过期"}`。含义是：**到达 Java 时要么没有 `Authorization: Bearer …`，要么 JWT 未通过校验**（与 Nginx「是否直连 Java」无关：流量仍是 Nginx→Python→Java）。
+
+按顺序自查：
+
+1. **同一套密钥**  
+   `modstore` 与 `modstore-payment` 的 systemd `EnvironmentFile` 应指向**同一份**生产 `.env`（避免一份更新了 `MODSTORE_JWT_SECRET`、另一份未更新）。改完后**两边都需重启**（至少重启 Java），用户需**重新登录**拿新 access token。
+
+2. **反代是否丢头**  
+   少数 CDN / 边缘规则会去掉 `Authorization`。在 Nginx 对 `location /api/` 显式增加：  
+   `proxy_set_header Authorization $http_authorization;`  
+   并对 `/api/payment/`、`/api/wallet/` 禁用不当的缓存（`proxy_no_cache 1` / `add_header Cache-Control "no-store"`），避免把 401 缓存给别的客户端。
+
+3. **看 Java 日志**  
+   部署带 `JwtAuthenticationFilter` 的告警日志后，拒绝原因会打在 `JWT rejected for …` 一行（过期、签名错、缺 `type=access` 等）。
+
+4. **WebSocket**  
+   `/api/realtime/ws?token=…` 由 **Python** 校验，与 Java 无关；若仅 WS 失败而 HTTP 正常，查 Nginx `Upgrade`/`Connection` 与超时，而不是 Java JWT。
+
 ## FastAPI 网关层
 
 FastAPI 已安装以下治理能力：

@@ -21,13 +21,13 @@ from modstore_server.customer_service_tools import (
     json_dumps,
     json_loads,
 )
-from modstore_server.models import (
+from modstore_server.models import User
+from modstore_server.models_cs import (
     CustomerServiceDecision,
     CustomerServiceMessage,
     CustomerServiceSession,
     CustomerServiceStandard,
     CustomerServiceTicket,
-    User,
 )
 
 

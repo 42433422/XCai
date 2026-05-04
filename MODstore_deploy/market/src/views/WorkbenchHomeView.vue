@@ -790,7 +790,7 @@
         aria-labelledby="wb-wf-link-title"
       >
         <div class="wb-handoff-head">
-          <h2 id="wb-wf-link-title" class="wb-handoff-title">工作流已就绪</h2>
+          <h2 id="wb-wf-link-title" class="wb-handoff-title">Skill 组已就绪</h2>
           <button type="button" class="wb-handoff-close" aria-label="关闭" @click="dismissWorkflowLinkOffer">×</button>
         </div>
         <p class="wb-workflow-link__name">{{ workflowLinkOffer.workflowName }}</p>
@@ -822,7 +822,7 @@
             {{ linkBusy ? '写入中…' : '关联并打开 Mod' }}
           </button>
           <button type="button" class="wb-handoff-secondary" :disabled="linkBusy" @click="() => void openWorkflowCanvasOnly()">
-            仅打开工作流画布
+            仅打开 Skill 组画布
           </button>
         </div>
       </section>
@@ -847,8 +847,8 @@
             rows="4"
             spellcheck="false"
           />
-          <template v-if="pendingHandoff.intentKey === 'workflow'">
-            <label class="wb-handoff-label" for="wb-handoff-name">工作流名称 <span class="wb-handoff-req">必填</span></label>
+          <template v-if="isCanvasSkillIntent(pendingHandoff.intentKey)">
+            <label class="wb-handoff-label" for="wb-handoff-name">Skill 组名称 <span class="wb-handoff-req">必填</span></label>
             <input
               id="wb-handoff-name"
               v-model="pendingHandoff.workflowName"
@@ -868,14 +868,15 @@
             />
           </template>
           <template v-else-if="pendingHandoff.intentKey === 'mod'">
-            <label class="wb-handoff-label" for="wb-handoff-suggest"
-              >Mod ID（已预填，可改）<span class="wb-handoff-opt">选填</span></label>
+            <label class="wb-handoff-label" for="wb-handoff-suggest">
+              Mod ID（根据用户需求填写，相当于关键词；已预填可改）<span class="wb-handoff-opt">选填</span>
+            </label>
             <input
               id="wb-handoff-suggest"
               v-model="pendingHandoff.suggestedModId"
               type="text"
               class="wb-handoff-input"
-              placeholder="小写字母数字点线，如 my-qq-watch"
+              placeholder="如 my-qq-watch，或一句便于检索/生成标识的关键词"
               autocomplete="off"
             />
           </template>
@@ -958,9 +959,10 @@
             class="wb-handoff-actions__timing"
             role="status"
             aria-live="polite"
+            :title="orchestrationTimingTooltip"
           >
             <span class="wb-handoff-actions__timing-line">
-              <span class="wb-handoff-actions__k">预计</span>
+              <span class="wb-handoff-actions__k">耗时参考</span>
               <span class="wb-handoff-actions__v">{{ orchestrationEtaDisplay }}</span>
             </span>
             <span class="wb-handoff-actions__timing-line">
@@ -1335,7 +1337,7 @@
         </p>
       </div>
 
-      <nav v-if="!makeHasActiveTask" class="wb-starters" aria-label="工作流描述快捷提示">
+      <nav v-if="!makeHasActiveTask" class="wb-starters" aria-label="Skill 组描述快捷提示">
         <button
           v-if="hasRepo"
           type="button"
@@ -1366,12 +1368,12 @@
           v-if="hasWorkflow"
           type="button"
           class="wb-starter"
-          :class="{ 'wb-starter--active': hasWorkflow && composerIntent === 'workflow' }"
-          @click="applyStarter('workflow')"
+          :class="{ 'wb-starter--active': hasWorkflow && composerIntent === CANVAS_SKILL_INTENT }"
+          @click="applyStarter(CANVAS_SKILL_INTENT)"
         >
           <div class="wb-starter-text">
-            <span class="wb-starter-title">做工作流</span>
-            <span class="wb-starter-sub">画布编排（调度图）· 填入描述；可执行程序见脚本工作流</span>
+            <span class="wb-starter-title">生成 Skill 组</span>
+            <span class="wb-starter-sub">画布编排（调度图）· 先拆 Skill 再组合；可执行程序见脚本工作流</span>
           </div>
           <span class="wb-starter-arrow" aria-hidden="true">→</span>
         </button>
@@ -1396,21 +1398,33 @@
 
             <section class="wb-gear-scene wb-voice-scene" aria-label="三档语音规划">
               <div class="wb-voice-orb-wrap">
-                <OrbitRings :mode="voiceState" />
+                <!-- 轨道旋转时一、二档仍在视窗外挂载会导致大量 CSS 动画持续跑 GPU；仅在三档展示时再挂载 -->
+                <template v-if="activeGear === 'voice'">
+                  <OrbitRings :mode="voiceState" :lite="voiceState === 'idle'" />
+                  <button
+                    type="button"
+                    class="wb-voice-orb"
+                    :class="`wb-voice-orb--${voiceState}`"
+                    :disabled="voiceBusy"
+                    aria-label="语音输入"
+                    @click="toggleVoiceListening"
+                  >
+                    <JarvisCore
+                      :is-speaking="voiceState === 'listening'"
+                      :is-work-mode="voiceState === 'thinking'"
+                      :is-monitor-mode="voiceState === 'summary'"
+                      :reduce-effects="voiceState === 'idle'"
+                    />
+                  </button>
+                </template>
                 <button
+                  v-else
                   type="button"
-                  class="wb-voice-orb"
-                  :class="`wb-voice-orb--${voiceState}`"
-                  :disabled="voiceBusy"
-                  aria-label="语音输入"
-                  @click="toggleVoiceListening"
-                >
-                  <JarvisCore
-                    :is-speaking="voiceState === 'listening'"
-                    :is-work-mode="voiceState === 'thinking'"
-                    :is-monitor-mode="voiceState === 'summary'"
-                  />
-                </button>
+                  class="wb-voice-orb wb-voice-orb--placeholder"
+                  disabled
+                  aria-hidden="true"
+                  tabindex="-1"
+                ></button>
               </div>
               <div class="wb-voice-copy">
                 <h1 class="wb-voice-title">{{ voiceTitle }}</h1>
@@ -1628,6 +1642,7 @@ const finalizeLoading = ref(false)
 const finalizeError = ref('')
 /** 编排轮询中的会话快照（含 steps） */
 const orchestrationSession = ref(null)
+const orchestrationSessionId = ref('')
 const pollStop = ref(false)
 /** 编排：估算耗时阶段 → 正式执行（估算结束后才开始「已用」计时） */
 const orchPhase = ref('idle')
@@ -1663,6 +1678,9 @@ const planPanelRef = ref(null)
 /** 每次打开规划会话递增，用于 Transition 内层 :key 触发动画 */
 const planSurfaceKey = ref(0)
 
+const MAKE_PROGRESS_CACHE_KEY = 'workbench_home_make_progress_v1'
+const MAKE_PROGRESS_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+
 /** 需求规划加载区：分步提示（定时推进当前步，减少「卡住」感） */
 const planLoadingStepsSummary = Object.freeze([
   '校验登录与默认模型',
@@ -1693,8 +1711,12 @@ const knowledgeUploading = ref(false)
 const knowledgeError = ref('')
 const knowledgeFileInputRef = ref(null)
 const knowledgeDragActive = ref(false)
-/** 与下方 starter 同步：仅标记制作类型，不写入输入框 */
-const composerIntent = ref('workflow')
+/** 与下方 starter 同步：仅标记制作类型，不写入输入框（画布 Skill 组 intent 为 `skill`） */
+const CANVAS_SKILL_INTENT = 'skill'
+function isCanvasSkillIntent(k: string | undefined | null): boolean {
+  return k === CANVAS_SKILL_INTENT || k === 'workflow'
+}
+const composerIntent = ref(CANVAS_SKILL_INTENT)
 const modFrontendEnabled = ref(true)
 const activeGear = ref('make')
 const gearScenes = [
@@ -1871,6 +1893,9 @@ const voiceBusy = ref(false)
 const voiceError = ref('')
 const voiceState = ref('idle')
 let voiceRecognition = null
+/** 合并语音识别 interim 回调，避免超大视图每个音素都整页重渲染 */
+let voiceTranscriptRaf = 0
+let pendingVoiceTranscript = ''
 
 const voiceTitle = computed(() => {
   if (voiceState.value === 'listening') return '我在听'
@@ -3094,6 +3119,7 @@ function startVoiceRecognition() {
     return
   }
   voiceRecognition = rec
+  pendingVoiceTranscript = ''
   voiceTranscript.value = ''
   voiceListening.value = true
   voiceState.value = 'listening'
@@ -3102,12 +3128,29 @@ function startVoiceRecognition() {
     for (let i = event.resultIndex; i < event.results.length; i += 1) {
       text += event.results[i][0]?.transcript || ''
     }
-    voiceTranscript.value = text.trim()
-    if (event.results[event.results.length - 1]?.isFinal && voiceTranscript.value) {
-      voiceDraft.value = voiceTranscript.value
+    const trimmed = text.trim()
+    const finalSeg = event.results[event.results.length - 1]
+    if (finalSeg?.isFinal) {
+      if (voiceTranscriptRaf) {
+        cancelAnimationFrame(voiceTranscriptRaf)
+        voiceTranscriptRaf = 0
+      }
+      voiceTranscript.value = trimmed
+      if (voiceTranscript.value) voiceDraft.value = voiceTranscript.value
+      return
     }
+    pendingVoiceTranscript = trimmed
+    if (voiceTranscriptRaf) return
+    voiceTranscriptRaf = requestAnimationFrame(() => {
+      voiceTranscriptRaf = 0
+      voiceTranscript.value = pendingVoiceTranscript
+    })
   }
   rec.onerror = (event) => {
+    if (voiceTranscriptRaf) {
+      cancelAnimationFrame(voiceTranscriptRaf)
+      voiceTranscriptRaf = 0
+    }
     voiceError.value = event?.error ? `语音识别失败：${event.error}` : '语音识别失败'
     voiceListening.value = false
     voiceState.value = 'idle'
@@ -3130,6 +3173,10 @@ function startVoiceRecognition() {
 }
 
 function stopVoiceRecognition() {
+  if (voiceTranscriptRaf) {
+    cancelAnimationFrame(voiceTranscriptRaf)
+    voiceTranscriptRaf = 0
+  }
   try {
     voiceRecognition?.stop?.()
   } catch {
@@ -3178,7 +3225,7 @@ function confirmVoiceAndOpenHandoff() {
     intentTitle: intentMeta.value.title,
     intentKey,
     workflowName: '',
-    planNotes: intentKey === 'workflow' ? text : '',
+    planNotes: isCanvasSkillIntent(intentKey) ? text : '',
     suggestedModId: intentKey === 'mod' ? suggestModIdFromText(text) : '',
     generateFrontend: intentKey === 'mod' ? modFrontendEnabled.value : false,
     employeeTarget: intentKey === 'employee' ? 'pack_plus_workflow' : 'pack_only',
@@ -3217,6 +3264,10 @@ const modelMode = ref('auto')
 /** 自选时厂商/模型自定义下拉：'provider' | 'model' | null（避免原生 select 白底弹层） */
 const llmDdOpen = ref(null)
 
+const _canvasSkillMeta = {
+  title: '生成 Skill 组',
+  sub: '按描述生成可复用 Skill，并在画布上编排成 Skill 组（调度图）。要「可运行程序本体」请走脚本工作流。',
+}
 const INTENT_META = {
   mod: {
     title: '做 Mod',
@@ -3226,13 +3277,12 @@ const INTENT_META = {
     title: '做员工',
     sub: '提示词与工具 · 在下方用自然语言描述岗位与流程',
   },
-  workflow: {
-    title: '做工作流',
-    sub: '本入口生成画布编排（节点图调度）。要「工作流就是程序」——可运行、可调试、完成任务的脚本——请用顶部「脚本工作流」新建。',
-  },
+  skill: _canvasSkillMeta,
+  /** @deprecated 会话缓存旧键，等同于 skill */
+  workflow: _canvasSkillMeta,
 }
 
-const intentMeta = computed(() => INTENT_META[composerIntent.value] || INTENT_META.workflow)
+const intentMeta = computed(() => INTENT_META[composerIntent.value] || INTENT_META.skill)
 
 const intentRepoPickShow = computed(() => {
   if (!hasWorkflow.value || planSession.value) return false
@@ -3409,15 +3459,15 @@ watch(composerIntent, () => {
   pickModId.value = ''
 })
 
-/** 侧栏与输入脚「当前」主标题：{name} 工作流 / Mod / AI 员工 */
+/** 侧栏与输入脚「当前」主标题：{name} Skill 组 / Mod / AI 员工 */
 const composerMainTitle = computed(() => {
   if (workflowLinkOffer.value?.workflowName) {
-    return `${workflowLinkOffer.value.workflowName} 工作流`
+    return `${workflowLinkOffer.value.workflowName} Skill 组`
   }
   const ph = pendingHandoff.value
-  if (ph?.intentKey === 'workflow') {
+  if (isCanvasSkillIntent(ph?.intentKey)) {
     const n = (ph.workflowName || '').trim()
-    if (n) return `${n} 工作流`
+    if (n) return `${n} Skill 组`
   }
   if (ph?.intentKey === 'mod') {
     const n = (ph.suggestedModId || '').trim()
@@ -3430,14 +3480,14 @@ const composerMainTitle = computed(() => {
   const k = composerIntent.value
   if (k === 'mod') return '做 Mod'
   if (k === 'employee') return '做员工'
-  return '做工作流'
+  return '生成 Skill 组'
 })
 
 const handoffDescLabel = computed(() => {
   const k = pendingHandoff.value?.intentKey
   if (k === 'mod') return 'Mod 需求描述'
   if (k === 'employee') return '员工能力描述'
-  return '工作流描述'
+  return 'Skill 组描述'
 })
 
 const orchestrationButtonLabel = computed(() => {
@@ -3445,9 +3495,10 @@ const orchestrationButtonLabel = computed(() => {
   if (k === 'mod') return '开始生成 Mod'
   if (k === 'employee') return '开始生成员工包'
   const files = pendingHandoff.value?.files
-  if (k === 'workflow' && Array.isArray(files) && files.length > 0) {
+  if (isCanvasSkillIntent(k) && Array.isArray(files) && files.length > 0) {
     return '开始处理附件（AI 生成 Python 脚本）'
   }
+  if (isCanvasSkillIntent(k)) return '开始生成 Skill 组并校验'
   return '开始创建并校验'
 })
 
@@ -3564,6 +3615,32 @@ function parseOrchestrationEtaFromLlmText(text) {
   }
 }
 
+/** 模型未返回 estimated_seconds 时，用清单规模与意图粗估总秒数，避免「预计 —」不可读 */
+function fallbackOrchestrationSecondsEstimate(ctx: {
+  intent: string
+  checklistLen: number
+  generateFrontend?: boolean
+  employeeTarget?: string
+  scriptFileCount?: number
+}): number {
+  let n = 150
+  const cl = Math.max(0, Math.floor(Number(ctx.checklistLen) || 0))
+  n += cl * 95
+  const intent = String(ctx.intent || CANVAS_SKILL_INTENT)
+  if (intent === 'mod') {
+    n += 260
+    if (ctx.generateFrontend) n += 480
+  } else if (intent === 'employee') {
+    n += 320
+    if (String(ctx.employeeTarget || '').includes('pack_plus')) n += 260
+  } else {
+    n += 200
+  }
+  const sf = Math.max(0, Math.floor(Number(ctx.scriptFileCount) || 0))
+  n += sf * 160
+  return Math.round(Math.min(7200, Math.max(120, n)))
+}
+
 async function estimateOrchestrationSeconds(ctx) {
   try {
     const { provider, model } = await resolveChatProviderModel()
@@ -3591,11 +3668,38 @@ async function estimateOrchestrationSeconds(ctx) {
 const orchestrationEtaDisplay = computed(() => {
   if (!finalizeLoading.value) return '—'
   if (orchPhase.value === 'estimating') return '模型推算中…'
-  const sec = orchestrationEtaSeconds.value
-  if (sec == null || !Number.isFinite(sec)) {
-    return orchestrationEtaReason.value ? `—（${orchestrationEtaReason.value}）` : '—'
+  orchElapsedTick.value
+  let sec = orchestrationEtaSeconds.value
+  const h = pendingHandoff.value
+  if ((sec == null || !Number.isFinite(sec)) && orchPhase.value === 'running' && h) {
+    const scriptFiles = isCanvasSkillIntent(h.intentKey) && Array.isArray(h.files) ? h.files : []
+    sec = fallbackOrchestrationSecondsEstimate({
+      intent: String(h.intentKey || CANVAS_SKILL_INTENT),
+      checklistLen: Array.isArray(h.executionChecklist) ? h.executionChecklist.length : 0,
+      generateFrontend: h.intentKey === 'mod' ? modFrontendEnabled.value : false,
+      employeeTarget: h.intentKey === 'employee' ? String(h.employeeTarget || '').trim() : '',
+      scriptFileCount: scriptFiles.length,
+    })
   }
-  return `约 ${formatWallClockSec(sec)}`
+  if (sec == null || !Number.isFinite(sec)) {
+    return orchestrationEtaReason.value
+      ? `未算出数值（${orchestrationEtaReason.value}）`
+      : '未算出数值'
+  }
+  const totalLabel = `总估约 ${formatWallClockSec(sec)}`
+  const t0 = orchTimingStartMs.value
+  if (t0 == null) return `${totalLabel}（即将计时）`
+  const elapsed = (Date.now() - t0) / 1000
+  const rem = sec - elapsed
+  if (rem >= 20) return `${totalLabel} · 剩余约 ${formatWallClockSec(rem)}`
+  if (rem >= 0) return `${totalLabel} · 收尾中`
+  return `${totalLabel} · 已超过估算，仍在执行`
+})
+
+const orchestrationTimingTooltip = computed(() => {
+  if (!finalizeLoading.value) return ''
+  const r = String(orchestrationEtaReason.value || '').trim()
+  return r || '总时长为模型推算或按步骤量粗估；剩余时间按总估与已用时间相减。'
 })
 
 const orchestrationElapsedDisplay = computed(() => {
@@ -3610,7 +3714,7 @@ const orchestrationElapsedDisplay = computed(() => {
 const canRunOrchestration = computed(() => {
   const h = pendingHandoff.value
   if (!h?.description?.trim()) return false
-  if (h.intentKey === 'workflow') return Boolean(h.workflowName?.trim())
+  if (isCanvasSkillIntent(h.intentKey)) return Boolean(h.workflowName?.trim())
   return true
 })
 
@@ -3625,7 +3729,7 @@ const handoffFootNote = computed(() => {
   if (Array.isArray(pendingHandoff.value?.files) && pendingHandoff.value.files.length > 0) {
     return '已选择附件：将生成可复用的「脚本工作流」，成功后自动进入沙箱调试页；你可以继续上传同类 Excel 文件验证脚本输出。若要生成节点与连线的流程图，请先移除附件再提交。'
   }
-  return '创建并校验成功后进入工作流画布；尚无节点时跳过拓扑沙盒。'
+  return '创建并校验成功后进入画布编辑 Skill 组；尚无节点时跳过拓扑沙盒。'
 })
 
 const hasRepo = computed(() => router.hasRoute('workbench-repository'))
@@ -3836,6 +3940,175 @@ function orchStepClass(st) {
   }
 }
 
+function serializablePlanSession(ps) {
+  if (!ps || typeof ps !== 'object') return null
+  return {
+    ...ps,
+    files: Array.isArray(ps.files)
+      ? ps.files.map((f) => ({
+          name: String(f?.name || ''),
+          size: Number(f?.size || 0),
+          type: String(f?.type || ''),
+          cachedOnly: true,
+        }))
+      : [],
+  }
+}
+
+function restorePlanSession(ps) {
+  if (!ps || typeof ps !== 'object') return null
+  const out = {
+    ...ps,
+    files: Array.isArray(ps.files) ? ps.files : [],
+    messages: Array.isArray(ps.messages) ? ps.messages : [],
+    checklistLines: Array.isArray(ps.checklistLines) ? ps.checklistLines : [],
+  }
+  if (out.loading) {
+    out.loading = false
+    out.planError =
+      out.planError ||
+      '页面切换前的规划请求已中断；已恢复当前进度，你可以继续补充或重新触发本步骤。'
+  }
+  return out
+}
+
+function serializablePendingHandoff(h) {
+  if (!h || typeof h !== 'object') return null
+  return {
+    ...h,
+    files: Array.isArray(h.files)
+      ? h.files.map((f) => ({
+          name: String(f?.name || ''),
+          size: Number(f?.size || 0),
+          type: String(f?.type || ''),
+          cachedOnly: true,
+        }))
+      : [],
+    planningMessages: Array.isArray(h.planningMessages)
+      ? h.planningMessages.map((m) => ({ role: m.role, content: m.content }))
+      : [],
+    executionChecklist: Array.isArray(h.executionChecklist) ? [...h.executionChecklist] : [],
+    sourceDocuments: Array.isArray(h.sourceDocuments) ? [...h.sourceDocuments] : [],
+  }
+}
+
+function restorePendingHandoff(h) {
+  if (!h || typeof h !== 'object') return null
+  return {
+    ...h,
+    files: Array.isArray(h.files) ? h.files : [],
+    planningMessages: Array.isArray(h.planningMessages) ? h.planningMessages : [],
+    executionChecklist: Array.isArray(h.executionChecklist) ? h.executionChecklist : [],
+    sourceDocuments: Array.isArray(h.sourceDocuments) ? h.sourceDocuments : [],
+  }
+}
+
+function makeHasCachedProgress() {
+  return Boolean(
+    planSession.value ||
+      pendingHandoff.value ||
+      workflowLinkOffer.value ||
+      finalizeLoading.value ||
+      finalizeError.value ||
+      orchestrationSession.value?.steps?.length ||
+      orchestrationSessionId.value,
+  )
+}
+
+function cacheMakeProgress() {
+  try {
+    if (!makeHasCachedProgress()) {
+      sessionStorage.removeItem(MAKE_PROGRESS_CACHE_KEY)
+      return
+    }
+    sessionStorage.setItem(
+      MAKE_PROGRESS_CACHE_KEY,
+      JSON.stringify({
+        savedAt: Date.now(),
+        activeGear: activeGear.value,
+        draft: draft.value,
+        composerIntent: composerIntent.value,
+        modFrontendEnabled: modFrontendEnabled.value,
+        planSession: serializablePlanSession(planSession.value),
+        planReplyDraft: planReplyDraft.value,
+        planOptionSelections: planOptionSelections.value,
+        planOptionOtherText: { ...planOptionOtherText },
+        pendingHandoff: serializablePendingHandoff(pendingHandoff.value),
+        finalizeLoading: finalizeLoading.value,
+        finalizeError: finalizeError.value,
+        orchestrationSession: orchestrationSession.value,
+        orchestrationSessionId: orchestrationSessionId.value,
+        orchPhase: orchPhase.value,
+        orchestrationEtaSeconds: orchestrationEtaSeconds.value,
+        orchestrationEtaReason: orchestrationEtaReason.value,
+        orchTimingStartMs: orchTimingStartMs.value,
+        workflowLinkOffer: workflowLinkOffer.value,
+      }),
+    )
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearMakeProgressCache() {
+  try {
+    sessionStorage.removeItem(MAKE_PROGRESS_CACHE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+function restoreMakeProgressCache() {
+  try {
+    const raw = sessionStorage.getItem(MAKE_PROGRESS_CACHE_KEY)
+    if (!raw) return
+    const cached = JSON.parse(raw)
+    if (!cached || Date.now() - Number(cached.savedAt || 0) > MAKE_PROGRESS_CACHE_TTL_MS) {
+      clearMakeProgressCache()
+      return
+    }
+    if (cached.activeGear && gearScenes.some((it) => it.key === cached.activeGear)) {
+      activeGear.value = cached.activeGear
+    }
+    if (typeof cached.draft === 'string' && !draft.value.trim()) draft.value = cached.draft
+    if (cached.composerIntent === 'workflow') {
+      composerIntent.value = CANVAS_SKILL_INTENT
+    } else if (INTENT_META[cached.composerIntent]) {
+      composerIntent.value = cached.composerIntent
+    }
+    if (typeof cached.modFrontendEnabled === 'boolean') {
+      modFrontendEnabled.value = cached.modFrontendEnabled
+    }
+    planSession.value = restorePlanSession(cached.planSession)
+    planReplyDraft.value = typeof cached.planReplyDraft === 'string' ? cached.planReplyDraft : ''
+    planOptionSelections.value =
+      cached.planOptionSelections && typeof cached.planOptionSelections === 'object'
+        ? cached.planOptionSelections
+        : {}
+    clearPlanOptionOtherText()
+    if (cached.planOptionOtherText && typeof cached.planOptionOtherText === 'object') {
+      for (const [k, v] of Object.entries(cached.planOptionOtherText)) {
+        planOptionOtherText[k] = String(v || '')
+      }
+    }
+    pendingHandoff.value = restorePendingHandoff(cached.pendingHandoff)
+    finalizeLoading.value = Boolean(cached.finalizeLoading)
+    finalizeError.value = typeof cached.finalizeError === 'string' ? cached.finalizeError : ''
+    orchestrationSession.value = cached.orchestrationSession || null
+    orchestrationSessionId.value = String(cached.orchestrationSessionId || '').trim()
+    orchPhase.value = cached.orchPhase || (finalizeLoading.value ? 'running' : 'idle')
+    orchestrationEtaSeconds.value =
+      cached.orchestrationEtaSeconds == null ? null : Number(cached.orchestrationEtaSeconds)
+    orchestrationEtaReason.value =
+      typeof cached.orchestrationEtaReason === 'string' ? cached.orchestrationEtaReason : ''
+    orchTimingStartMs.value =
+      cached.orchTimingStartMs == null ? null : Number(cached.orchTimingStartMs)
+    workflowLinkOffer.value = cached.workflowLinkOffer || null
+  } catch {
+    clearMakeProgressCache()
+  }
+}
+
 watch(
   () => directMessages.value.map((m) => `${m.id}:${m.content.length}:${m.pending ? 1 : 0}`).join('|'),
   async () => {
@@ -3854,12 +4127,15 @@ onMounted(async () => {
     const pendingDraft = sessionStorage.getItem('workbench_home_pending_draft')
     const pendingIntent = sessionStorage.getItem('workbench_home_pending_intent')
     if (pendingDraft && !draft.value.trim()) draft.value = pendingDraft
-    if (pendingIntent && INTENT_META[pendingIntent]) composerIntent.value = pendingIntent
+    if (pendingIntent && INTENT_META[pendingIntent]) {
+      composerIntent.value = pendingIntent === 'workflow' ? CANVAS_SKILL_INTENT : pendingIntent
+    }
     sessionStorage.removeItem('workbench_home_pending_draft')
     sessionStorage.removeItem('workbench_home_pending_intent')
   } catch {
     /* ignore */
   }
+  restoreMakeProgressCache()
   try {
     const emp = sessionStorage.getItem(WB_DIRECT_CHAT_EMPLOYEE_ID_KEY)
     if (emp && emp.trim()) directChatEmployeeId.value = emp.trim()
@@ -3909,6 +4185,7 @@ onMounted(async () => {
   } catch {
     /* ignore */
   }
+  void resumeCachedOrchestration()
 })
 
 onActivated(() => {
@@ -3948,6 +4225,36 @@ watch(
   },
 )
 
+watch(
+  [
+    planSession,
+    planReplyDraft,
+    planOptionSelections,
+    pendingHandoff,
+    workflowLinkOffer,
+    finalizeLoading,
+    finalizeError,
+    orchestrationSession,
+    orchestrationSessionId,
+    orchPhase,
+    orchestrationEtaSeconds,
+    orchestrationEtaReason,
+    orchTimingStartMs,
+    composerIntent,
+    draft,
+    modFrontendEnabled,
+    activeGear,
+  ],
+  cacheMakeProgress,
+  { deep: true },
+)
+
+watch(
+  () => ({ ...planOptionOtherText }),
+  cacheMakeProgress,
+  { deep: true },
+)
+
 onBeforeUnmount(() => {
   pollStop.value = true
   stopOrchestrationElapsedTicker()
@@ -3973,6 +4280,7 @@ function clearWorkbenchHandoffSession() {
   } catch {
     /* ignore */
   }
+  clearMakeProgressCache()
 }
 
 /** 做 Mod 时屏蔽「选语言 / 选 API 风格 / 选 UI 库」等通用脚手架题（旧回复或误遵指令时兜底） */
@@ -4141,7 +4449,7 @@ const makeHeroTitle = computed(() => {
   }
   const h = pendingHandoff.value
   if (h) {
-    if (h.intentKey === 'workflow' && h.workflowName?.trim()) {
+    if (isCanvasSkillIntent(h.intentKey) && h.workflowName?.trim()) {
       return truncateWorkbenchText(h.workflowName.trim(), MAKE_HERO_TITLE_MAX)
     }
     const idea = extractInitialIdeaFromHandoff(h.description)
@@ -4677,6 +4985,7 @@ function dismissPendingHandoff() {
   pendingHandoff.value = null
   finalizeError.value = ''
   orchestrationSession.value = null
+  orchestrationSessionId.value = ''
   pollStop.value = true
   stopOrchestrationElapsedTicker()
   orchPhase.value = 'idle'
@@ -4716,12 +5025,39 @@ async function pollWorkbenchSession(sessionId) {
   return null
 }
 
+async function resumeCachedOrchestration() {
+  const sid = String(orchestrationSessionId.value || '').trim()
+  if (!sid || !finalizeLoading.value) return
+  pollStop.value = false
+  if (orchPhase.value !== 'estimating') {
+    orchPhase.value = 'running'
+    if (!orchTimingStartMs.value) orchTimingStartMs.value = Date.now()
+    startOrchestrationElapsedTicker()
+  }
+  try {
+    const final = await pollWorkbenchSession(sid)
+    if (!final || pollStop.value) return
+    orchestrationSession.value = final
+    if (final.status === 'error') {
+      finalizeError.value = final.error || '编排失败'
+    }
+  } catch (e: any) {
+    const m = e?.message || String(e)
+    finalizeError.value = m
+  } finally {
+    stopOrchestrationElapsedTicker()
+    finalizeLoading.value = false
+    orchPhase.value = 'idle'
+    orchTimingStartMs.value = null
+  }
+}
+
 async function runOrchestration() {
   const h = pendingHandoff.value
   if (!h || !hasWorkflow.value || finalizeLoading.value) return
   if (!requireLoginForWorkbenchUse()) return
   if (!canRunOrchestration.value) {
-    if (h.intentKey === 'workflow') finalizeError.value = '请填写工作流名称与描述'
+    if (isCanvasSkillIntent(h.intentKey)) finalizeError.value = '请填写 Skill 组名称与描述'
     else finalizeError.value = '请填写描述'
     return
   }
@@ -4729,6 +5065,7 @@ async function runOrchestration() {
   finalizeLoading.value = true
   pollStop.value = false
   orchestrationSession.value = null
+  orchestrationSessionId.value = ''
   orchPhase.value = 'estimating'
   orchestrationEtaSeconds.value = null
   orchestrationEtaReason.value = ''
@@ -4736,9 +5073,9 @@ async function runOrchestration() {
   stopOrchestrationElapsedTicker()
   try {
     await persistManualLlmIfNeeded()
-    const intent = h.intentKey || 'workflow'
+    const intent = h.intentKey || CANVAS_SKILL_INTENT
     const checklist = Array.isArray(h.executionChecklist) ? h.executionChecklist : []
-    const scriptFiles = intent === 'workflow' && Array.isArray(h.files) ? h.files : []
+    const scriptFiles = isCanvasSkillIntent(intent) && Array.isArray(h.files) ? h.files : []
     const eta = await estimateOrchestrationSeconds({
       intent,
       brief: String(h.description || '').trim(),
@@ -4747,8 +5084,20 @@ async function runOrchestration() {
       employeeTarget: intent === 'employee' ? String(h.employeeTarget || '').trim() : '',
       scriptFileCount: scriptFiles.length,
     })
-    orchestrationEtaSeconds.value = eta.seconds
-    orchestrationEtaReason.value = eta.reason || ''
+    let etaSec = eta.seconds
+    let etaReason = String(eta.reason || '').trim()
+    if (etaSec == null || !Number.isFinite(etaSec)) {
+      etaSec = fallbackOrchestrationSecondsEstimate({
+        intent,
+        checklistLen: checklist.length,
+        generateFrontend: intent === 'mod' ? modFrontendEnabled.value : false,
+        employeeTarget: intent === 'employee' ? String(h.employeeTarget || '').trim() : '',
+        scriptFileCount: scriptFiles.length,
+      })
+      if (!etaReason) etaReason = '按步骤量粗估（模型未返回数值）'
+    }
+    orchestrationEtaSeconds.value = etaSec
+    orchestrationEtaReason.value = etaReason
     orchPhase.value = 'running'
     orchTimingStartMs.value = Date.now()
     startOrchestrationElapsedTicker()
@@ -4757,8 +5106,8 @@ async function runOrchestration() {
       intent,
       brief: (h.description || '').trim(),
       workflow_name:
-        intent === 'workflow' ? (h.workflowName || '').trim() : undefined,
-      plan_notes: intent === 'workflow' ? (h.planNotes || '').trim() : '',
+        isCanvasSkillIntent(intent) ? (h.workflowName || '').trim() : undefined,
+      plan_notes: isCanvasSkillIntent(intent) ? (h.planNotes || '').trim() : '',
       suggested_mod_id:
         intent === 'mod' ? (h.suggestedModId || '').trim() || undefined : undefined,
       replace: true,
@@ -4785,7 +5134,7 @@ async function runOrchestration() {
       body.provider = provider
       body.model = model
     }
-    const useScriptMode = intent === 'workflow' && scriptFiles.length > 0
+    const useScriptMode = isCanvasSkillIntent(intent) && scriptFiles.length > 0
     const started = useScriptMode
       ? await api.workbenchStartScriptSession(
           {
@@ -4799,6 +5148,7 @@ async function runOrchestration() {
       : await api.workbenchStartSession(body)
     const sid = started?.session_id
     if (!sid) throw new Error('未返回 session_id')
+    orchestrationSessionId.value = String(sid)
     const final = await pollWorkbenchSession(sid)
     if (pollStop.value) return
     if (!final) throw new Error('轮询已取消')
@@ -4829,6 +5179,7 @@ async function runOrchestration() {
       const scriptWorkflowId = Number(art.script_workflow_id || 0)
       if (Number.isFinite(scriptWorkflowId) && scriptWorkflowId > 0) {
         orchestrationSession.value = null
+        orchestrationSessionId.value = ''
         await router.push({ path: `/script-workflows/${scriptWorkflowId}/edit`, query: { tab: 'sandbox' } })
         return
       }
@@ -4840,11 +5191,15 @@ async function runOrchestration() {
       })
       return
     }
-    if (finIntent === 'workflow' && art.workflow_id != null) {
+    const gid = art.skill_group_id ?? art.workflow_id
+    if (isCanvasSkillIntent(finIntent) && gid != null) {
       workflowLinkOffer.value = {
-        workflowId: art.workflow_id,
+        workflowId: gid,
         workflowName: String(
-          art.workflow_name || (h.workflowName || '').trim() || `工作流 ${art.workflow_id}`,
+          art.skill_group_name ||
+            art.workflow_name ||
+            (h.workflowName || '').trim() ||
+            `Skill 组 ${gid}`,
         ),
         validationErrors: Array.isArray(art.validation_errors) ? art.validation_errors : [],
         llmWarnings: Array.isArray(art.llm_warnings) ? art.llm_warnings : [],
@@ -4855,10 +5210,12 @@ async function runOrchestration() {
       void loadLinkMods()
       pendingHandoff.value = null
       orchestrationSession.value = null
+      orchestrationSessionId.value = ''
       return
     }
     pendingHandoff.value = null
     orchestrationSession.value = null
+    orchestrationSessionId.value = ''
     if (finIntent === 'mod' && art.mod_id) {
       await router.push({
         name: 'mod-authoring',
@@ -4914,6 +5271,7 @@ function applyStarter(kind) {
   const fallback = {
     mod: hasRepo.value ? 'workbench-repository' : null,
     employee: hasEmployee.value ? 'workbench-employee' : null,
+    skill: hasWorkflow.value ? 'workbench-workflow' : null,
     workflow: hasWorkflow.value ? 'workbench-workflow' : null,
   }[kind]
   if (fallback && router.hasRoute(fallback)) {
@@ -4923,8 +5281,8 @@ function applyStarter(kind) {
 
 function buildPlanSystemPrompt(intentKey, intentTitle) {
   const typeHint =
-    intentKey === 'workflow'
-      ? '区分两类产物：（1）画布工作流＝节点图调度（员工/API/条件等），（2）脚本工作流＝可运行程序、直接完成任务。规划时若用户要「程序本体」，引导其需求规划结束后去「脚本工作流」新建；此处仍可为画布描述触发、数据来源、节点顺序、失败重试与人工介入。流程图用 flowchart LR 或 TD，节点用简短中文，避免括号、引号、特殊符号破坏 Mermaid 语法。'
+    isCanvasSkillIntent(intentKey)
+      ? '区分两类产物：（1）Skill 组合工作流＝先把需求拆成可复用 ESkill/Skill，再把这些 Skill 组合成画布工作流；（2）脚本工作流＝可运行程序、直接完成任务。规划时若用户要「程序本体」，引导其需求规划结束后去「脚本工作流」新建；此处必须先识别业务能力边界，拆出多个 Skill，说明每个 Skill 的输入、输出、质量门和触发策略，再描述 Skill 之间的顺序、条件与失败重试。流程图用 flowchart LR 或 TD，主干应体现 SkillA --> SkillB --> SkillC，节点用简短中文，避免括号、引号、特殊符号破坏 Mermaid 语法。'
       : intentKey === 'mod'
         ? [
             '用户目标可能有两档：（1）Mod 草稿骨架：仓库、manifest、行业 JSON、workflow_employees 名片；（2）可执行员工：在骨架基础上生成/登记 employee_pack，绑定 workflow_id，让工作流 employee 节点使用可执行包 id，并完成非 Mock 真实执行验证。',
@@ -4973,8 +5331,8 @@ function buildPlanSystemPrompt(intentKey, intentTitle) {
 /** 仅用于「生成执行清单」单次请求：不得沿用对话里的 Mermaid/PLAN_* 格式，否则模型会拒写 <<<CHECKLIST>>> */
 function buildChecklistGenerationSystemPrompt(intentKey, intentTitle) {
   const scope =
-    intentKey === 'workflow'
-      ? '每条任务应可执行、可验证。若用户要「程序本体」，清单中应出现脚本工作流（编写/运行/沙箱）相关条目；画布调度（员工/API/条件）可作为并列或前置步骤。覆盖触发、数据、输出与人工环节。'
+    isCanvasSkillIntent(intentKey)
+      ? '每条任务应可执行、可验证。若用户要「程序本体」，清单中应出现脚本工作流（编写/运行/沙箱）相关条目；否则必须围绕 Skill 生成闭环：拆分 Skill 蓝图、定义每个 Skill 的输入输出契约、静态逻辑、质量门、动态触发策略、固化策略、Skill 间数据映射、组合工作流与沙盒校验。普通画布节点只作为 start/end/condition 等控制节点。'
       : intentKey === 'mod'
         ? '每条任务应可落到 Mod 仓库与真实可用闭环：仓库、manifest、行业 JSON、员工名片、employee_pack 登记、workflow_id 绑定、employee 节点 id 匹配、Mock 结构沙盒与非 Mock 真实执行验证。若用户只要草稿骨架，也必须在清单中标明后续成为可执行员工还缺哪些步骤。'
         : '每条任务应可落到员工能力、工具配置与交付物。'
@@ -5080,7 +5438,7 @@ function parseChecklistBlock(raw) {
 
 function _providerRowHasUsableKey(row, fernetOk) {
   if (!row) return false
-  if (row.has_platform_key) return true
+  if (row.provider === 'xiaomi' && row.has_platform_key) return true
   if (row.has_user_override && fernetOk) return true
   return false
 }
@@ -5430,7 +5788,7 @@ function confirmPlanAndOpenHandoff() {
     intentTitle: ps.intentTitle,
     intentKey: ik,
     workflowName: '',
-    planNotes: ik === 'workflow' ? ps.checklistText : '',
+    planNotes: isCanvasSkillIntent(ik) ? ps.checklistText : '',
     suggestedModId: ik === 'mod' ? suggestModIdFromText(`${ps.initialBrief}\n${ps.checklistText}`) : '',
     files: Array.isArray(ps.files) ? ps.files : [],
     generateFrontend: ik === 'mod' ? modFrontendEnabled.value : false,
@@ -5849,6 +6207,9 @@ function onComposerKeydown(e) {
   justify-content: center;
   gap: clamp(0.8rem, 1.8vw, 1.25rem);
   text-align: center;
+  /* 隔离语音轨道的绘制与布局，减轻与纵向档位切换、一档聊天的交叉重绘 */
+  contain: layout paint;
+  isolation: isolate;
 }
 
 .wb-direct-scene {
@@ -7332,6 +7693,12 @@ function onComposerKeydown(e) {
 .wb-voice-orb:disabled {
   cursor: not-allowed;
   opacity: 0.7;
+}
+
+.wb-voice-orb.wb-voice-orb--placeholder:disabled {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .wb-voice-orb--listening {
@@ -8864,7 +9231,7 @@ function onComposerKeydown(e) {
 .wb-handoff-actions__v {
   font-variant-numeric: tabular-nums;
   color: rgba(226, 232, 240, 0.9);
-  max-width: 16rem;
+  max-width: min(100%, 28rem);
   text-align: right;
   word-break: break-word;
 }

@@ -1,11 +1,13 @@
 package com.modstore.service;
 
+import com.modstore.model.CatalogItem;
 import com.modstore.model.Entitlement;
 import com.modstore.model.PlanTemplate;
 import com.modstore.model.Purchase;
 import com.modstore.model.Quota;
 import com.modstore.model.User;
 import com.modstore.model.UserPlan;
+import com.modstore.repository.CatalogItemRepository;
 import com.modstore.repository.EntitlementRepository;
 import com.modstore.repository.QuotaRepository;
 import com.modstore.repository.UserPlanRepository;
@@ -32,6 +34,7 @@ public class EntitlementService {
     private final EntitlementRepository entitlementRepository;
     private final UserPlanRepository userPlanRepository;
     private final QuotaRepository quotaRepository;
+    private final CatalogItemRepository catalogItemRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
     
     @Transactional
@@ -50,13 +53,36 @@ public class EntitlementService {
         if (entitlementRepository.findBySourceOrderId(sourceOrderId).isPresent()) {
             return;
         }
+        String entType = "mod";
+        CatalogItem item = catalogItemRepository.findById(catalogId).orElse(null);
+        if (item != null && item.getArtifact() != null
+                && "employee_pack".equalsIgnoreCase(item.getArtifact().trim())) {
+            entType = "employee";
+        }
         Entitlement entitlement = new Entitlement();
         entitlement.setUser(user);
         entitlement.setCatalogId(catalogId);
-        entitlement.setEntitlementType("mod");
+        entitlement.setEntitlementType(entType);
         entitlement.setSourceOrderId(sourceOrderId);
         entitlement.setMetadataJson("{\"source\":\"alipay\"}");
         entitlementRepository.save(entitlement);
+        if ("employee".equals(entType)) {
+            incrementEmployeeCountQuota(user);
+        }
+    }
+
+    private void incrementEmployeeCountQuota(User user) {
+        Quota quota = quotaRepository.findByUserAndQuotaType(user, "employee_count").orElseGet(() -> {
+            Quota q = new Quota();
+            q.setUser(user);
+            q.setQuotaType("employee_count");
+            q.setUsed(0);
+            q.setTotal(0);
+            return q;
+        });
+        int total = quota.getTotal() == null ? 0 : quota.getTotal();
+        quota.setTotal(total + 1);
+        quotaRepository.save(quota);
     }
 
     @Transactional

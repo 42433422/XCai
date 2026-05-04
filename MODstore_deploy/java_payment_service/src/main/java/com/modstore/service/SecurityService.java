@@ -76,6 +76,9 @@ public class SecurityService {
     }
 
     public Map<String, Object> canonicalCheckoutData(Map<String, Object> data) {
+        if (data == null) {
+            throw new IllegalArgumentException("结账数据不能为空");
+        }
         Map<String, Object> canonical = new LinkedHashMap<>();
         canonical.put("item_id", String.valueOf(asLong(data.get("item_id"))));
         canonical.put("plan_id", stringValue(data.get("plan_id")));

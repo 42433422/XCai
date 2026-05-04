@@ -17,7 +17,8 @@ from modstore_server.customer_service_orchestrator import (
     ticket_payload,
 )
 from modstore_server.customer_service_tools import json_dumps, json_loads
-from modstore_server.models import (
+from modstore_server.models import User
+from modstore_server.models_cs import (
     CustomerServiceAction,
     CustomerServiceAuditLog,
     CustomerServiceDecision,
@@ -26,7 +27,6 @@ from modstore_server.models import (
     CustomerServiceSession,
     CustomerServiceStandard,
     CustomerServiceTicket,
-    User,
 )
 
 router = APIRouter(prefix="/api/customer-service", tags=["customer-service"])

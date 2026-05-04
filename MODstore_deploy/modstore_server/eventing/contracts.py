@@ -32,6 +32,7 @@ WORKFLOW_EXECUTION_FAILED = "workflow.execution_failed"
 CATALOG_PACKAGE_PUBLISHED = "catalog.package_published"
 EMPLOYEE_PACK_REGISTERED = "employee.pack_registered"
 WORKFLOW_SANDBOX_COMPLETED = "workflow.sandbox_completed"
+WORKFLOW_EVENT_TRIGGER = "workflow.event_trigger"
 LLM_QUOTA_CONSUMED = "llm.quota_consumed"
 
 EVENT_CONTRACTS: dict[str, EventContract] = {
@@ -111,6 +112,13 @@ EVENT_CONTRACTS: dict[str, EventContract] = {
         aggregate="workflow_execution",
         required_payload=("workflow_id", "user_id", "status", "duration_ms"),
         description="A workflow sandbox run finished (success or failure).",
+    ),
+    WORKFLOW_EVENT_TRIGGER: EventContract(
+        name=WORKFLOW_EVENT_TRIGGER,
+        version=1,
+        aggregate="workflow",
+        required_payload=("workflow_id", "user_id"),
+        description="Request asynchronous workflow execution driven by a domain event.",
     ),
     LLM_QUOTA_CONSUMED: EventContract(
         name=LLM_QUOTA_CONSUMED,

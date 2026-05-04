@@ -75,7 +75,7 @@ Write-Host "[sync] 2/4 scp tgz and remote_sync_extract.sh..."
 $enc = [System.Text.UTF8Encoding]::new($false)
 $extPath = Join-Path $ModstoreDeploy "scripts/remote_sync_extract.sh"
 # 将 sh 转 LF
-$extContent = (Get-Content -Raw -Path $extPath -ErrorAction SilentlyContinue)
+$extContent = [System.IO.File]::ReadAllText($extPath, [System.Text.Encoding]::UTF8)
 if ($extContent) {
   $extContent = $extContent -replace "`r`n", "`n" -replace "`r", "`n"
   $tmpSh = Join-Path $env:TEMP "remote_sync_extract_$(Get-Date -Format 'yyyyMMddHHmmss').sh"
@@ -100,7 +100,7 @@ Remove-Item -Force $tmpBase -ErrorAction SilentlyContinue
 
 $boot = Join-Path $ModstoreDeploy "scripts/remote_sync_bootstrap.sh"
 $bootTmp = Join-Path $env:TEMP "remote_sync_bootstrap_$(Get-Date -Format 'yyyyMMddHHmmss').sh"
-$bootContent = (Get-Content -Raw -Path $boot -ErrorAction Stop)
+$bootContent = [System.IO.File]::ReadAllText($boot, [System.Text.Encoding]::UTF8)
 $bootContent = $bootContent -replace "`r`n", "`n" -replace "`r", "`n"
 [System.IO.File]::WriteAllText($bootTmp, $bootContent, $enc)
 $null = & scp -o BatchMode=yes -q $bootTmp ($SshTarget + ":/tmp/remote_sync_bootstrap.sh") 2>&1
@@ -120,7 +120,7 @@ if ($exit -ne 0) { exit $exit }
 if ($AlignSystemd) {
   Write-Host "[sync] align: uploading align_modstore_systemd_to_deploy.sh..."
   $alignPath = Join-Path $ModstoreDeploy "scripts/align_modstore_systemd_to_deploy.sh"
-  $alignContent = (Get-Content -Raw -Path $alignPath -ErrorAction Stop)
+  $alignContent = [System.IO.File]::ReadAllText($alignPath, [System.Text.Encoding]::UTF8)
   $alignContent = $alignContent -replace "`r`n", "`n" -replace "`r", "`n"
   $alignTmp = Join-Path $env:TEMP "align_modstore_systemd_to_deploy_$(Get-Date -Format 'yyyyMMddHHmmss').sh"
   [System.IO.File]::WriteAllText($alignTmp, $alignContent, $enc)

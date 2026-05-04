@@ -15,6 +15,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.crypto.SecretKey;
 import java.io.IOException;
@@ -23,6 +25,8 @@ import java.util.List;
 
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
 
     private final SecretKey signingKey;
 
@@ -59,14 +63,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
             Long userId = Long.valueOf(claims.getSubject());
             String username = claims.get("username", String.class);
-            AuthenticatedUser principal = new AuthenticatedUser(userId, username);
             List<GrantedAuthority> authorities = JwtRoleAuthorities.fromClaims(claims);
+            boolean admin = authorities.stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()))
+                    || "admin".equalsIgnoreCase(username);
+            AuthenticatedUser principal = new AuthenticatedUser(userId, username, admin);
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(principal, null, authorities);
             authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
             SecurityContextHolder.getContext().setAuthentication(authentication);
         } catch (JwtException | IllegalArgumentException e) {
             SecurityContextHolder.clearContext();
+            log.warn(
+                    "JWT rejected for {} {}: {} (check MODSTORE_JWT_SECRET matches Python / token not expired / type=access)",
+                    request.getMethod(),
+                    request.getRequestURI(),
+                    e.getMessage()
+            );
         }
 
         filterChain.doFilter(request, response);

@@ -15,14 +15,12 @@ from sqlalchemy.orm import Session
 from modstore_server import payment_orders, webhook_dispatcher
 from modstore_server.llm_key_resolver import KNOWN_PROVIDERS
 from modstore_server.llm_model_gates import upsert_l3_proposal
-from modstore_server.models import (
-    CatalogComplaint,
-    CatalogItem,
+from modstore_server.models import CatalogItem, RefundRequest, User
+from modstore_server.models_catalog import CatalogComplaint
+from modstore_server.models_cs import (
     CustomerServiceAction,
     CustomerServiceAuditLog,
     CustomerServiceIntegration,
-    RefundRequest,
-    User,
 )
 from modstore_server.openapi_connector_runtime import call_generated_operation
 from modstore_server.workflow_engine import workflow_engine

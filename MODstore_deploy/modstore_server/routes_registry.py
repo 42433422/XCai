@@ -1081,6 +1081,9 @@ def _include_optional(app: FastAPI, module_path: str) -> None:
     if router is None:
         return
     app.include_router(router)
+    hooks = getattr(mod, "workflow_hooks_router", None)
+    if hooks is not None:
+        app.include_router(hooks)
 
 
 _OPTIONAL_MODULES = (

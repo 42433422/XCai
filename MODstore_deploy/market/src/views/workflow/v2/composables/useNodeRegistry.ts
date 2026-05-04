@@ -3,7 +3,7 @@
  *
  * 与后端 `WorkflowNode.node_type`（modstore_server/models.py）对齐：
  * start, end, employee, condition, openapi_operation, knowledge_search,
- * webhook_trigger, cron_trigger, variable_set。
+ * webhook_trigger, cron_trigger, variable_set, eskill。
  *
  * 任何新增节点类型都应在此处登记 metadata + 属性字段 schema，
  * 编辑器不需要为每种节点单独写 Vue 组件。
@@ -19,13 +19,14 @@ export type NodeKind =
   | 'webhook_trigger'
   | 'cron_trigger'
   | 'variable_set'
+  | 'eskill'
 
 export type NodeCategory = 'flow' | 'employee' | 'logic' | 'integration' | 'trigger' | 'data'
 
 export interface FieldSchema {
   key: string
   label: string
-  type: 'text' | 'textarea' | 'number' | 'switch' | 'select' | 'json' | 'employee-picker'
+  type: 'text' | 'textarea' | 'number' | 'switch' | 'select' | 'json' | 'employee-picker' | 'eskill-picker'
   placeholder?: string
   helper?: string
   options?: { label: string; value: string | number | boolean }[]
@@ -100,6 +101,40 @@ const REGISTRY: Record<NodeKind, NodeMeta> = {
       },
       { key: 'task', label: '任务描述', type: 'textarea', placeholder: '该员工要完成的任务，可使用 {{ input.field }}' },
       { key: 'output_var', label: '输出变量名', type: 'text', placeholder: '默认写入 last_output' },
+    ],
+  },
+  eskill: {
+    kind: 'eskill',
+    label: 'ESkill',
+    category: 'employee',
+    description: '静态优先、必要时动态适配并固化的新型 Skill',
+    accent: '#8b5cf6',
+    icon: 'E',
+    hasInput: true,
+    hasOutput: true,
+    defaultConfig: {
+      skill_id: '',
+      task: '',
+      output_var: 'eskill_output',
+      quality_gate: {},
+      trigger_policy: {},
+      force_dynamic: false,
+      solidify: true,
+    },
+    fields: [
+      {
+        key: 'skill_id',
+        label: 'ESkill',
+        type: 'eskill-picker',
+        required: true,
+        helper: '选择已创建的 ESkill；运行时会使用其 active version',
+      },
+      { key: 'task', label: '任务覆盖', type: 'textarea', placeholder: '可选：覆盖 Skill 内部 task_template' },
+      { key: 'output_var', label: '输出变量名', type: 'text', placeholder: '默认 eskill_output' },
+      { key: 'quality_gate', label: '质量门槛 (JSON)', type: 'json', placeholder: '{"min_length": 24}' },
+      { key: 'trigger_policy', label: '触发策略 (JSON)', type: 'json', placeholder: '{"on_error": true}' },
+      { key: 'force_dynamic', label: '强制动态阶段', type: 'switch' },
+      { key: 'solidify', label: '成功后固化', type: 'switch' },
     ],
   },
   condition: {

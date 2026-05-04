@@ -85,7 +85,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'workflow',
         name: 'workbench-workflow',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'workflow' } }),
+        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'skill' } }),
       },
       {
         path: 'employee',
@@ -101,7 +101,10 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'my-employees',
         name: 'workbench-my-employees',
-        component: () => import('../views/MyEmployeesChatView.vue'),
+        redirect: (to: any) => ({
+          name: 'workbench-unified',
+          query: { ...to.query, focus: 'employee', employeeView: 'list' },
+        }),
       },
     ],
   },

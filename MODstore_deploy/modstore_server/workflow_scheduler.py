@@ -12,7 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from modstore_server import payment_orders
 from modstore_server.models import WorkflowTrigger, get_session_factory
-from modstore_server.workflow_engine import execute_workflow
+from modstore_server.workflow_event_runner import run_workflow_for_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -90,16 +90,7 @@ def _register_cron_trigger(trigger_id: int, workflow_id: int, user_id: int, conf
 
     def job_wrapper() -> None:
         try:
-            sf = get_session_factory()
-            with sf() as qdb:
-                from modstore_server.quota_middleware import require_quota
-
-                require_quota(qdb, uid, "llm_calls", 1)
-            execute_workflow(wf_id, {}, user_id=uid)
-            with sf() as qdb2:
-                from modstore_server.quota_middleware import consume_quota
-
-                consume_quota(qdb2, uid, "llm_calls", 1)
+            run_workflow_for_trigger(workflow_id=wf_id, user_id=uid, input_data={})
         except Exception as e:
             logger.exception("cron workflow failed workflow_id=%s: %s", wf_id, e)
 

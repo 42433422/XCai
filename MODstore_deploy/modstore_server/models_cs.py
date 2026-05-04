@@ -14,7 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 
-from .models_base import Base
+from modstore_server.models import Base
 
 
 class CustomerServiceSession(Base):

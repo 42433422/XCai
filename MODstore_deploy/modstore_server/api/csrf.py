@@ -21,6 +21,7 @@ _CSRF_EXEMPT_PATHS = frozenset(
         "/api/auth/refresh",
         # 运维密钥接口：无用户 Cookie 场景（脚本 / TestClient），由 X-Modstore-Recharge-Token 单独鉴权
         "/api/admin/reset-user-password",
+        "/api/csp-report",
     }
 )
 
@@ -28,6 +29,16 @@ _CSRF_EXEMPT_PATHS = frozenset(
 def _csrf_exempt_path(path: str) -> bool:
     p = (path or "").split("?", 1)[0].rstrip("/") or "/"
     return p in {x.rstrip("/") or "/" for x in _CSRF_EXEMPT_PATHS}
+
+
+def _csrf_disabled_for_tests() -> bool:
+    """仅用于自动化测试（``conftest`` 设置 ``MODSTORE_DISABLE_CSRF=1``）；生产环境禁止开启。"""
+    return (os.environ.get("MODSTORE_DISABLE_CSRF") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 class CSRFMiddleware:
@@ -40,6 +51,10 @@ class CSRFMiddleware:
             return
 
         request = Request(scope, receive, send)
+        if _csrf_disabled_for_tests():
+            await self.app(scope, receive, send)
+            return
+
         method = request.method.upper()
 
         if method in ("GET", "HEAD", "OPTIONS"):

@@ -29,27 +29,20 @@
           >
             统一工作台
           </router-link>
-          <details class="workbench-more">
-            <summary class="workbench-more-summary" :class="{ 'workbench-more-summary--active': moreNavOpenActive }">
-              更多
-            </summary>
-            <div class="workbench-more-body">
-              <router-link
-                :to="{ name: 'script-workflows' }"
-                class="workbench-more-link"
-                :class="{ 'workbench-more-link--active': scriptWorkflowsNavActive }"
-              >
-                脚本工作流
-              </router-link>
-              <router-link
-                :to="{ name: 'workbench-my-employees' }"
-                class="workbench-more-link"
-                :class="{ 'workbench-more-link--active': route.name === 'workbench-my-employees' }"
-              >
-                我的员工
-              </router-link>
-            </div>
-          </details>
+          <router-link
+            :to="{ name: 'script-workflows' }"
+            class="workbench-tab"
+            :class="{ 'workbench-tab--active': scriptWorkflowsNavActive }"
+          >
+            脚本工作流
+          </router-link>
+          <router-link
+            :to="{ name: 'workbench-unified', query: { focus: 'employee', employeeView: 'list' } }"
+            class="workbench-tab"
+            :class="{ 'workbench-tab--active': myEmployeesNavActive }"
+          >
+            我的员工
+          </router-link>
         </nav>
       </div>
     </header>
@@ -79,10 +72,12 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 const isEmployeeRoute = computed(() => String(route.name || '') === 'workbench-employee')
 const scriptWorkflowsNavActive = computed(() => String(route.path || '').startsWith('/script-workflows'))
-
-const moreNavOpenActive = computed(
-  () => scriptWorkflowsNavActive.value || route.name === 'workbench-my-employees',
-)
+const myEmployeesNavActive = computed(() => {
+  if (String(route.name || '') !== 'workbench-unified') return false
+  const f = String(route.query.focus || '').trim().toLowerCase()
+  const v = String(route.query.employeeView || '').trim().toLowerCase()
+  return f === 'employee' && v === 'list'
+})
 </script>
 
 <style scoped>
@@ -179,6 +174,8 @@ const moreNavOpenActive = computed(
 
 .workbench-tabs {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 0.25rem;
 }
 
@@ -198,67 +195,6 @@ const moreNavOpenActive = computed(
 .workbench-tab--active {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.1);
-}
-
-.workbench-more {
-  position: relative;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.workbench-more-summary {
-  cursor: pointer;
-  list-style: none;
-  padding: 0.45rem 0.85rem;
-  font-size: clamp(0.88rem, 0.82rem + 0.2vw, 0.98rem);
-  color: rgba(255, 255, 255, 0.55);
-  user-select: none;
-}
-
-.workbench-more-summary--active {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.workbench-more summary::-webkit-details-marker {
-  display: none;
-}
-
-.workbench-more-body {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
-  min-width: 11rem;
-  padding: 0.35rem;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(18, 18, 18, 0.98);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.workbench-more-link {
-  display: block;
-  padding: 0.45rem 0.65rem;
-  border-radius: 6px;
-  font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.78);
-  text-decoration: none;
-}
-
-.workbench-more-link:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-}
-
-.workbench-more-link--active {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.12);
 }
 
 .workbench-main {

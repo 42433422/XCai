@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -196,7 +197,53 @@ def _perception_real(
         return _perception_excel(payload)
     if p_type == "image":
         return _perception_image(payload, session, user_id)
+    if p_type == "document":
+        return _perception_document(payload)
+    if p_type in ("web_rankings", "ai_model_rankings"):
+        return _perception_web_rankings(payload)
     return {"normalized_input": payload, "type": p_type}
+
+
+def _perception_document(input_data: Any) -> Dict[str, Any]:
+    """文档类输入：优先抽取文本字段供认知层处理。"""
+    if isinstance(input_data, dict):
+        text = (
+            input_data.get("content")
+            or input_data.get("text")
+            or input_data.get("body")
+            or input_data.get("markdown")
+        )
+        if isinstance(text, str) and text.strip():
+            meta = {
+                k: v
+                for k, v in input_data.items()
+                if k not in ("content", "text", "body", "markdown", "base64", "url")
+            }
+            return {
+                "normalized_input": {"text": text, "meta": meta},
+                "type": "document",
+                "parse_ok": True,
+            }
+        if input_data.get("url"):
+            return {
+                "normalized_input": input_data,
+                "type": "document",
+                "note": "document.url 需宿主或后续链路拉取正文；已原样传入认知层",
+            }
+    return {"normalized_input": input_data, "type": "document"}
+
+
+def _perception_web_rankings(input_data: Any) -> Dict[str, Any]:
+    """排行榜 / 模型对比类感知：结构化包裹后由认知层推理（执行器内无实时爬虫）。"""
+    payload = input_data if isinstance(input_data, dict) else {"raw": input_data}
+    return {
+        "normalized_input": {
+            "ranking_task": True,
+            "instructions": "请基于给定 payload 完成排序、对比或摘要；若信息不足请明确说明。",
+            "payload": payload,
+        },
+        "type": "web_rankings",
+    }
 
 
 def _memory_real(config: Dict[str, Any], ctx: Dict[str, Any], session, user_id: int) -> Dict[str, Any]:
@@ -436,6 +483,61 @@ def _action_openapi_tool(
     }
 
 
+def _tpl_str(s: str, reasoning: Dict[str, Any], task: str) -> str:
+    rtxt = str((reasoning or {}).get("reasoning") or "")
+    return (s or "").replace("{{reasoning}}", rtxt).replace("{{task}}", task or "")
+
+
+def _tpl_obj(obj: Any, reasoning: Dict[str, Any], task: str) -> Any:
+    if isinstance(obj, str):
+        return _tpl_str(obj, reasoning, task)
+    if isinstance(obj, dict):
+        return {str(k): _tpl_obj(v, reasoning, task) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_tpl_obj(x, reasoning, task) for x in obj]
+    return obj
+
+
+def _action_fhd_business(
+    actions_cfg: Dict[str, Any], reasoning: Dict[str, Any], task: str
+) -> Dict[str, Any]:
+    biz = actions_cfg.get("fhd_business") or {}
+    base = str(
+        biz.get("fhd_base_url")
+        or biz.get("base_url")
+        or os.environ.get("FHD_BUSINESS_BASE_URL")
+        or ""
+    ).strip()
+    path = str(biz.get("api_path") or biz.get("path") or "").strip().lstrip("/")
+    method = str(biz.get("method") or "POST").strip().upper()
+    if not base:
+        return {"handler": "fhd_business", "error": "missing fhd_base_url"}
+    if not path:
+        return {"handler": "fhd_business", "error": "missing api_path"}
+    raw_body = biz.get("body")
+    body: Dict[str, Any] = {}
+    if isinstance(raw_body, dict):
+        tb = _tpl_obj(raw_body, reasoning, task)
+        body = tb if isinstance(tb, dict) else {}
+    headers_in = biz.get("headers") if isinstance(biz.get("headers"), dict) else {}
+    hdrs = {str(k): _tpl_str(str(v), reasoning, task) for k, v in headers_in.items()}
+    key = str(biz.get("business_key") or os.environ.get("FHD_BUSINESS_API_KEY") or "").strip()
+    if key:
+        hdrs.setdefault("X-FHD-Business-Key", key)
+    url = f"{base.rstrip('/')}/api/business/{path}"
+    try:
+        timeout = float(biz.get("timeout") or 30.0)
+        resp = httpx.request(method, url, json=body or None, headers=hdrs, timeout=timeout)
+        return {
+            "handler": "fhd_business",
+            "url": url,
+            "status_code": resp.status_code,
+            "response": (resp.text or "")[:2000],
+        }
+    except Exception as e:  # noqa: PERF203
+        return {"handler": "fhd_business", "error": str(e), "url": url}
+
+
 def _actions_real(
     config: Dict[str, Any],
     reasoning: Dict[str, Any],
@@ -501,6 +603,25 @@ def _actions_real(
             outputs.append(_action_wechat_notify(actions_cfg, reasoning, task))
         elif handler == "openapi_tool":
             outputs.append(_action_openapi_tool(actions_cfg, reasoning, task, employee_id, user_id))
+        elif handler == "fhd_business":
+            outputs.append(_action_fhd_business(actions_cfg, reasoning, task))
+        elif handler == "voice_output":
+            vo = (
+                actions_cfg.get("voice_output")
+                if isinstance(actions_cfg.get("voice_output"), dict)
+                else {}
+            )
+            text = str(reasoning.get("reasoning") or "").strip()
+            outputs.append(
+                {
+                    "handler": "voice_output",
+                    "status": "pending_tts",
+                    "note": "未配置 TTS 服务：返回待合成文本，可由宿主接入阿里云/讯飞/OpenAI TTS",
+                    "text_preview": text[:800],
+                    "provider": str(vo.get("provider") or "").strip(),
+                    "voice_id": str(vo.get("voice_id") or "").strip(),
+                }
+            )
         else:
             outputs.append({"handler": str(handler), "error": "unknown handler"})
     return {

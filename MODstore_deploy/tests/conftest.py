@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+import os
+
+# ``create_app`` → ``register_all_middleware`` 要求非空 ``MODSTORE_JWT_SECRET``（除非显式不安全标志）。
+# 在收集/导入 ``modstore_server.app`` 之前写入，避免本地未配 .env 时整包测试失败。
+if not (os.environ.get("MODSTORE_JWT_SECRET") or "").strip():
+    os.environ["MODSTORE_JWT_SECRET"] = "pytest-default-secret-at-least-32-characters"
+
+# TestClient 多数 POST 不带浏览器 Cookie；与 ``register_all_middleware`` 中的 CSRF 叠加会 403。
+os.environ.setdefault("MODSTORE_DISABLE_CSRF", "1")
+
 import pytest
 from fastapi.testclient import TestClient
 

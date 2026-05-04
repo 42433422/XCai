@@ -1,8 +1,31 @@
 #!/usr/bin/env bash
-# Run on server: extract modstore_deploy_sync.tgz, keep .env, pip, npm, mvn, restart
+# [DEPRECATED] 全链 pip+npm+mvn 发布脚本。保留仅用于未完成拆仓迁移的服务器。
+# 新代码请使用组件化入口：
+#   - scripts/python-release.sh   （仅 Python / modstore_server）
+#   - scripts/node-release.sh     （仅 market 前端）
+#   - scripts/java-release.sh     （仅 Java 支付子服务）
+# 这些子脚本允许 Python / Node / Java 独立发布与回滚，避免跨语言构建耦合。
+#
+# 退役时间表：Phase 3 收尾阶段（见 docs/migration/release-contracts.md）。
+# 维护者在看到此告示后请优先改用新脚本；若必须用本脚本，建议打开 STRICT 模式
+# （export MODSTORE_STRICT_FULLCHAIN=1）以便升级期间显式确认是"有意图的全链发布"。
+#
+# 原始用途：Run on server: extract modstore_deploy_sync.tgz, keep .env, pip, npm, mvn, restart
 # Usage: export REMOTE_BASE=/root/modstore-git; bash remote_sync_extract.sh
 # 可选：export MODSTORE_API_HEALTH_PORTS="9999 8765" 若 FastAPI 监听非默认端口
 set -e
+if [ "${MODSTORE_STRICT_FULLCHAIN:-0}" = "1" ]; then
+  echo "[warn] remote_sync_extract.sh 已标记为 deprecated；正在以 STRICT 模式继续执行全链发布" >&2
+elif [ "${MODSTORE_ALLOW_LEGACY_FULLCHAIN:-0}" != "1" ]; then
+  cat >&2 <<'MSG'
+[warn] remote_sync_extract.sh 已标记为 deprecated。推荐改用组件化发布：
+         scripts/python-release.sh / scripts/node-release.sh / scripts/java-release.sh
+       若确实需要继续使用全链脚本，请显式设置
+         export MODSTORE_ALLOW_LEGACY_FULLCHAIN=1
+       （仅用于未拆仓过渡期；Phase 3 之后本脚本将被删除）
+MSG
+  exit 2
+fi
 # 与 sync-modstore-to-server.ps1 默认一致；须与 modstore、modstore-payment 的 -jar 为同一工作树
 BASE="${REMOTE_BASE:-/root/modstore-git}"
 TAR="/tmp/modstore_deploy_sync.tgz"

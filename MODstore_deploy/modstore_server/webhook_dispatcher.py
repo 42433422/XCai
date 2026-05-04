@@ -52,9 +52,38 @@ def _retry_count() -> int:
         return 2
 
 
+_WEBHOOK_EVENTS_DIR_WARNED = False
+
+
 def _events_dir() -> Path:
+    """解析 webhook 投递落盘目录。
+
+    优先级：
+    1. ``MODSTORE_WEBHOOK_EVENTS_DIR`` — 显式路径（兼容历史部署，compose 已用）；
+    2. ``MODSTORE_RUNTIME_DIR`` — 新的统一运行期数据根，会追加
+       ``webhook_events/`` 子目录；
+    3. 源码内 ``modstore_server/webhook_events``（仅 dev fallback，会记 warning）。
+
+    生产环境必须通过 (1) 或 (2) 指向持久化卷，避免投递 JSON 文件进入 git 仓库。
+    """
+    global _WEBHOOK_EVENTS_DIR_WARNED
     raw = (os.environ.get("MODSTORE_WEBHOOK_EVENTS_DIR") or "").strip()
-    path = Path(raw).expanduser() if raw else Path(__file__).resolve().parent / "webhook_events"
+    if raw:
+        path = Path(raw).expanduser()
+    else:
+        runtime_dir = (os.environ.get("MODSTORE_RUNTIME_DIR") or "").strip()
+        if runtime_dir:
+            path = Path(runtime_dir).expanduser() / "webhook_events"
+        else:
+            path = Path(__file__).resolve().parent / "webhook_events"
+            if not _WEBHOOK_EVENTS_DIR_WARNED:
+                logger.warning(
+                    "webhook_dispatcher using in-source default events dir %s; "
+                    "set MODSTORE_RUNTIME_DIR or MODSTORE_WEBHOOK_EVENTS_DIR in production "
+                    "to avoid writing runtime artifacts into the source tree.",
+                    path,
+                )
+                _WEBHOOK_EVENTS_DIR_WARNED = True
     path.mkdir(parents=True, exist_ok=True)
     return path
 

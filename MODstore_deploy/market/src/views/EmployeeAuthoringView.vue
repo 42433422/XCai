@@ -132,12 +132,12 @@
             <router-link
               v-if="workflowEditQuery"
               class="btn"
-              :to="{ name: 'workbench-unified', query: { focus: 'workflow', edit: workflowEditQuery, tab: 'editor' } }"
+              :to="{ name: 'workbench-unified', query: { focus: 'skill', edit: workflowEditQuery, tab: 'editor' } }"
             >打开关联工作流</router-link>
             <router-link
               v-if="workflowEditQuery"
               class="btn btn-primary"
-              :to="{ name: 'workbench-unified', query: { focus: 'workflow', edit: workflowEditQuery, tab: 'sandbox' } }"
+              :to="{ name: 'workbench-unified', query: { focus: 'skill', edit: workflowEditQuery, tab: 'sandbox' } }"
             >拆解与沙盒测试</router-link>
           </div>
           <p v-if="workflowPanelErr" class="flash flash-err">{{ workflowPanelErr }}</p>

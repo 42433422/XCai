@@ -142,6 +142,8 @@ class Workflow(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     migration_status = Column(String(16), default="", index=True)
     migrated_to_id = Column(Integer, nullable=True, index=True)
+    #: 画布语义：`""` 历史未知；`skill_group` 表示 Skill 组（画布编排容器）
+    kind = Column(String(32), default="", index=True)
 
 
 class WorkflowNode(Base):
@@ -308,6 +310,59 @@ class WorkflowExecution(Base):
     input_data = Column(Text, default="{}")  # JSON input data
     output_data = Column(Text, default="{}")  # JSON output data
     error_message = Column(Text, default="")
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class ESkill(Base):
+    """可进化 Skill 的注册表入口。"""
+
+    __tablename__ = "eskills"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_eskill_user_name"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(128), nullable=False)
+    domain = Column(Text, default="")
+    description = Column(Text, default="")
+    active_version = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ESkillVersion(Base):
+    """ESkill 的不可变静态版本快照。"""
+
+    __tablename__ = "eskill_versions"
+    __table_args__ = (UniqueConstraint("eskill_id", "version", name="uq_eskill_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    eskill_id = Column(Integer, ForeignKey("eskills.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    static_logic_json = Column(Text, default="{}")
+    trigger_policy_json = Column(Text, default="{}")
+    quality_gate_json = Column(Text, default="{}")
+    source_run_id = Column(Integer, nullable=True, index=True)
+    note = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ESkillRun(Base):
+    """ESkill 单次运行记录，用于追踪动态补丁与固化来源。"""
+
+    __tablename__ = "eskill_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    eskill_id = Column(Integer, ForeignKey("eskills.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workflow_id = Column(Integer, nullable=True, index=True)
+    workflow_node_id = Column(Integer, nullable=True, index=True)
+    stage = Column(String(32), default="static", index=True)
+    input_json = Column(Text, default="{}")
+    output_json = Column(Text, default="{}")
+    patch_json = Column(Text, default="{}")
+    error_message = Column(Text, default="")
+    duration_ms = Column(Float, default=0.0)
     started_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
 
@@ -603,6 +658,32 @@ class AiModelPrice(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class LlmModelCapability(Base):
+    """L1 探针 / L3 人审状态；与目录中的 (provider, model) 对齐。"""
+
+    __tablename__ = "llm_model_capabilities"
+    __table_args__ = (UniqueConstraint("provider", "model", name="uq_llm_model_cap"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(64), nullable=False, index=True)
+    model = Column(String(256), nullable=False, index=True)
+    l1_status = Column(String(32), default="pending", index=True)
+    l1_score = Column(Float, nullable=True)
+    l1_at = Column(DateTime, nullable=True)
+    l1_flags_json = Column(Text, default="{}")
+    l1_error = Column(Text, default="")
+    effective_category = Column(String(32), default="")
+    taxonomy_source = Column(String(32), default="heuristic")
+    l3_status = Column(String(32), default="none", index=True)
+    l3_notes = Column(Text, default="")
+    l3_reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    l3_at = Column(DateTime, nullable=True)
+    # 与 ``customer_service_tickets`` 的逻辑关联；不设 ORM FK，避免 models / models_cs 分叉 Base。
+    cs_ticket_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ChatConversation(Base):
     __tablename__ = "chat_conversations"
 
@@ -855,6 +936,10 @@ class ScriptWorkflowRun(Base):
     completed_at = Column(DateTime, nullable=True)
 
 
+# 客服 ORM 与主库共用 ``Base``/metadata，确保 ``init_db`` 建表且 ``users`` FK 可解析。
+import modstore_server.models_cs  # noqa: F401, E402
+
+
 def default_db_path() -> Path:
     raw = (os.environ.get("MODSTORE_DB_PATH") or "").strip()
     if raw:
@@ -972,6 +1057,10 @@ def init_db(db_path: Optional[Path] = None):
         pass
     try:
         _sqlite_add_column_if_missing(engine, "workflows", "migrated_to_id", "INTEGER")
+    except Exception:
+        pass
+    try:
+        _sqlite_add_column_if_missing(engine, "workflows", "kind", "TEXT DEFAULT ''")
     except Exception:
         pass
     init_default_plan_templates()

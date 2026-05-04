@@ -150,3 +150,157 @@ def test_run_employee_ai_scaffold_registers_runtime_catalog(tmp_path, monkeypatc
         assert row.artifact == "employee_pack"
         assert row.author_id == user_id
         assert row.stored_filename
+
+
+def test_employee_pack_can_attach_generated_skill_workflow(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODSTORE_CATALOG_DIR", str(tmp_path / "catalog"))
+    monkeypatch.setenv("MODSTORE_DB_PATH", str(tmp_path / "modstore.db"))
+
+    from modman.repo_config import RepoConfig
+    from modstore_server import models
+    from modstore_server.mod_scaffold_runner import (
+        attach_nl_workflow_to_employee_pack_dir,
+        run_employee_ai_scaffold_async,
+    )
+    from modstore_server.workflow_engine import run_workflow_sandbox
+
+    models._engine = None
+    models._SessionFactory = None
+    models.init_db()
+
+    sf = models.get_session_factory()
+    with sf() as db:
+        user = models.User(username="skill-flow", email="skill-flow@example.local", password_hash="x")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        user_id = user.id
+
+    async def fake_employee_chat(*args, **kwargs):
+        return {
+            "ok": True,
+            "content": json.dumps(
+                {
+                    "id": "invoice-employee-pack",
+                    "name": "发票处理员工",
+                    "version": "1.0.0",
+                    "description": "处理发票字段抽取与复核",
+                    "employee": {"id": "invoice-worker", "label": "发票员工", "capabilities": ["invoice.extract"]},
+                    "workflow_employees": [
+                        {
+                            "id": "invoice-worker",
+                            "label": "发票员工",
+                            "panel_title": "发票处理",
+                            "panel_summary": "抽取发票字段并输出复核结果。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+    skill_workflow_payload = {
+        "skill_blueprints": [
+            {
+                "temp_skill_id": "skill_invoice_extract",
+                "name": "Invoice Extract Skill",
+                "domain": "发票字段抽取",
+                "description": "从发票输入中抽取金额、税号和购方信息。",
+                "static_logic": {
+                    "type": "template_transform",
+                    "template": "发票字段：${value}",
+                    "dynamic_template": "发票字段：${value}；补充修复：${details}",
+                    "fallback_template": "发票字段待复核：${value}",
+                    "required_fields": ["value"],
+                    "domain_keywords": ["发票", "金额", "税号"],
+                    "output_var": "invoice_fields",
+                    "metadata": {
+                        "repair_hints": ["缺金额时从 details 中查找含税金额"],
+                        "failure_modes": ["missing_amount", "quality_below_threshold"],
+                    },
+                },
+                "quality_gate": {"required_keys": ["invoice_fields"]},
+                "trigger_policy": {"on_error": True, "on_quality_below_threshold": True},
+            }
+        ],
+        "workflow": {
+            "nodes": [
+                {"temp_id": "start", "node_type": "start", "name": "开始", "config": {}, "position_x": 0, "position_y": 0},
+                {
+                    "temp_id": "extract",
+                    "node_type": "eskill",
+                    "name": "发票字段抽取",
+                    "config": {"temp_skill_id": "skill_invoice_extract", "output_var": "invoice_fields"},
+                    "position_x": 220,
+                    "position_y": 0,
+                },
+                {"temp_id": "end", "node_type": "end", "name": "结束", "config": {}, "position_x": 440, "position_y": 0},
+            ],
+            "edges": [
+                {"source_temp_id": "start", "target_temp_id": "extract", "condition": ""},
+                {"source_temp_id": "extract", "target_temp_id": "end", "condition": ""},
+            ],
+        },
+    }
+
+    async def fake_workflow_chat(*args, **kwargs):
+        return {"ok": True, "content": json.dumps(skill_workflow_payload, ensure_ascii=False)}
+
+    monkeypatch.setattr("modstore_server.mod_scaffold_runner.chat_dispatch", fake_employee_chat)
+    monkeypatch.setattr("modstore_server.workflow_nl_graph.chat_dispatch_via_session", fake_workflow_chat)
+    monkeypatch.setattr("modstore_server.mod_scaffold_runner.resolve_api_key", lambda *args, **kwargs: ("k", "test"))
+    monkeypatch.setattr(
+        "modstore_server.mod_scaffold_runner.resolve_llm_provider_model",
+        lambda db, user, provider, model: (provider or "test", model or "test-model", None),
+    )
+    monkeypatch.setattr(
+        "modstore_server.mod_scaffold_runner.load_config",
+        lambda: RepoConfig(library_root=str(tmp_path / "library"), xcagi_root="", xcagi_backend_url="http://test.invalid"),
+    )
+
+    with sf() as db:
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        employee_res = asyncio.run(
+            run_employee_ai_scaffold_async(
+                db,
+                user,
+                brief="生成发票处理员工，并挂接 Skill 工作流",
+                provider="deepseek",
+                model="deepseek-chat",
+            )
+        )
+        assert employee_res["ok"] is True
+
+        attach_res = asyncio.run(
+            attach_nl_workflow_to_employee_pack_dir(
+                db,
+                user,
+                pack_dir=Path(employee_res["path"]),
+                brief="发票处理员工：先生成发票字段抽取 Skill，再组合工作流",
+                workflow_name="发票 Skill 工作流",
+                provider="deepseek",
+                model="deepseek-chat",
+            )
+        )
+        assert attach_res["ok"] is True
+        assert attach_res["nl"]["ok"] is True
+        assert attach_res["nl"]["skills_created"] == 1
+
+        workflow_id = int(attach_res["workflow_id"])
+        workflow = db.query(models.Workflow).filter_by(id=workflow_id, user_id=user.id).one()
+        eskill_node = db.query(models.WorkflowNode).filter_by(workflow_id=workflow.id, node_type="eskill").one()
+        cfg = json.loads(eskill_node.config)
+        assert cfg["skill_id"].isdigit()
+
+        skill = db.query(models.ESkill).filter_by(user_id=user.id, name="Invoice Extract Skill").one()
+        version = db.query(models.ESkillVersion).filter_by(eskill_id=skill.id, version=1).one()
+        logic = json.loads(version.static_logic_json)
+        assert logic["dynamic_template"].endswith("补充修复：${details}")
+        assert "缺金额时从 details 中查找含税金额" in logic["metadata"]["repair_hints"]
+
+        report = run_workflow_sandbox(workflow.id, {}, mock_employees=True, validate_only=True, user_id=user.id)
+        assert report["ok"] is True
+
+        manifest = json.loads((Path(employee_res["path"]) / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["workflow_attachment"]["workflow_id"] == workflow.id
+        assert manifest["workflow_attachment"]["nl_graph_ok"] is True

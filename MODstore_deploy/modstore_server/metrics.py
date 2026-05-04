@@ -34,6 +34,15 @@ PROXY_LATENCY = Histogram(
     buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
 )
 
+CSP_REPORT_ONLY_VIOLATIONS = Counter(
+    "modstore_csp_report_only_violations_total",
+    "Violations reported by browsers under Content-Security-Policy-Report-Only.",
+)
+
+
+def observe_csp_violation() -> None:
+    CSP_REPORT_ONLY_VIOLATIONS.inc()
+
 
 def _route_path(request: Request) -> str:
     route = request.scope.get("route")

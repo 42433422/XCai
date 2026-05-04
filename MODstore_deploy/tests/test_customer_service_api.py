@@ -52,7 +52,8 @@ def test_customer_service_refund_chat_creates_ticket_action_and_refund(
 ):
     from modstore_server.app import app
     from modstore_server import customer_service_api, webhook_dispatcher
-    from modstore_server.models import CustomerServiceTicket, RefundRequest, get_session_factory
+    from modstore_server.models import RefundRequest, get_session_factory
+    from modstore_server.models_cs import CustomerServiceTicket
 
     user = _make_user("cs_user")
     order_no = _paid_order(tmp_path, monkeypatch, user.id)

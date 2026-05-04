@@ -16,10 +16,13 @@ from sqlalchemy import func
 
 from modstore_server.models import DeveloperToken, User, Wallet, get_session_factory
 
-_JWT_SECRET = os.environ.get("MODSTORE_JWT_SECRET", "modstore-dev-secret-change-in-prod")
 _JWT_ALGORITHM = "HS256"
 _JWT_EXPIRE_HOURS = 72
 _JWT_REFRESH_EXPIRE_DAYS = int(os.environ.get("MODSTORE_JWT_REFRESH_EXPIRE_DAYS", "30"))
+
+
+def _jwt_secret() -> str:
+    return os.environ.get("MODSTORE_JWT_SECRET", "modstore-dev-secret-change-in-prod")
 
 
 def hash_password(raw: str) -> str:
@@ -41,12 +44,12 @@ def create_access_token(user_id: int, username: str, *, is_admin: bool = False) 
         "roles": roles,
         "exp": expire,
     }
-    return jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+    return jwt.encode(payload, _jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[dict]:
     try:
-        payload = jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+        payload = jwt.decode(token, _jwt_secret(), algorithms=[_JWT_ALGORITHM])
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
     # 兼容历史 token（无 type 字段）：默认按 access 处理；显式标 refresh 的不走这里。
@@ -64,12 +67,12 @@ def create_refresh_token(user_id: int, username: str) -> str:
         "type": "refresh",
         "exp": expire,
     }
-    return jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+    return jwt.encode(payload, _jwt_secret(), algorithm=_JWT_ALGORITHM)
 
 
 def decode_refresh_token(token: str) -> Optional[dict]:
     try:
-        payload = jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+        payload = jwt.decode(token, _jwt_secret(), algorithms=[_JWT_ALGORITHM])
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
     if payload.get("type") != "refresh":

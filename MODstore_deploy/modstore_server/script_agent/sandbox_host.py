@@ -241,7 +241,7 @@ class SandboxRpcServer:
         return rows
 
     async def _handle_employee_run(self, params: Dict[str, Any]) -> Any:
-        from modstore_server.employee_executor import execute_employee_task
+        from modstore_server.services.employee import get_default_employee_client
 
         eid = str(params.get("employee_id") or "").strip()
         task = str(params.get("task") or "")
@@ -250,9 +250,16 @@ class SandboxRpcServer:
             raise RuntimeError("employee_id 不能为空")
         if not isinstance(payload, dict):
             raise RuntimeError("payload 必须是对象")
-        return await asyncio.to_thread(
-            execute_employee_task, eid, task, payload, self.ctx.user_id
-        )
+
+        def _run():
+            return get_default_employee_client().execute_task(
+                employee_id=eid,
+                task=task,
+                input_data=payload,
+                user_id=self.ctx.user_id,
+            )
+
+        return await asyncio.to_thread(_run)
 
     async def _handle_http_get(self, params: Dict[str, Any]) -> Any:
         import httpx

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import json
 import re
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -13,8 +12,8 @@ _SCRIPT_RE = re.compile(r"<\s*script[^>]*>.*?<\s*/\s*script\s*>", re.IGNORECASE 
 
 def _sanitize_value(value):
     if isinstance(value, str):
-        value = _SCRIPT_RE.sub("", value)
-        return html.escape(value, quote=True)
+        # 仅剥离 ``<script>`` 片段；勿对 JSON 字符串做 ``html.escape``，否则会破坏 OpenAPI/YAML 等合法载荷。
+        return _SCRIPT_RE.sub("", value)
     if isinstance(value, dict):
         return {k: _sanitize_value(v) for k, v in value.items()}
     if isinstance(value, list):

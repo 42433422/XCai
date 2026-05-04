@@ -20,6 +20,7 @@
               ]"
               >{{ membershipLabel }}</span
             >
+            <span v-if="isAdmin" class="acct-chip acct-chip--admin">管理员</span>
           </div>
         </div>
       </div>
@@ -55,7 +56,7 @@
         <details class="acct-details">
           <summary>经验如何累计？</summary>
           <p class="acct-details__body">
-            每 <strong>1 元 = 100 经验</strong>（实付 / 实扣）：商品、会员、钱包充值等订单实付；使用<strong>平台密钥</strong>调用大模型时，预授权从钱包按用量结算的实扣金额（与顶部导航栏余额变动一致）。<strong>BYOK</strong> 不经平台钱包扣费，不计此项经验。订单退款成功会扣回该笔订单已发放的经验。
+            每 <strong>1 元 = 100 经验</strong>（实付 / 实扣）：商品、会员、钱包充值等订单实付；使用大模型且<strong>未使用 BYOK</strong>时，预授权从钱包按用量结算的实扣金额（与顶部导航栏余额变动一致）。<strong>BYOK</strong> 不经平台钱包扣模型费，不计此项经验。订单退款成功会扣回该笔订单已发放的经验。
           </p>
         </details>
       </section>
@@ -67,6 +68,7 @@
           <strong :class="['acct-plan-tier', membershipTier ? `acct-plan-tier--${membershipTier}` : '']">{{
             membershipLabel
           }}</strong>
+          <span v-if="isAdmin" class="acct-plan-admin-note">（你已具备后台管理权限）</span>
         </p>
         <p class="acct-plan-desc">{{ membershipHint }}</p>
         <div class="acct-plan-actions">
@@ -143,7 +145,14 @@ import { normalizeMeResponse } from '../domain/accountLevel'
 import { useAuthStore } from '../stores/auth'
 
 const authStore = useAuthStore()
-const { levelProfile, membership, membershipTier, username: storeUsername } = storeToRefs(authStore)
+const {
+  levelProfile,
+  membership,
+  membershipTier,
+  membershipFetchFailed,
+  username: storeUsername,
+  isAdmin,
+} = storeToRefs(authStore)
 
 const username = ref('')
 const email = ref('')
@@ -176,6 +185,7 @@ const avatarInitial = computed(() => {
 })
 
 const membershipLabel = computed(() => {
+  if (membershipFetchFailed.value) return '暂不可用'
   const m = membership.value
   if (m?.label) return String(m.label)
   if (m?.tier && m.tier !== 'free') return String(m.tier)
@@ -183,6 +193,9 @@ const membershipLabel = computed(() => {
 })
 
 const membershipHint = computed(() => {
+  if (membershipFetchFailed.value) {
+    return '无法连接支付服务以读取会员档位（网络或网关异常）。请稍后刷新页面；若已购买仍异常，请联系运维核对支付服务与数据库。'
+  }
   const t = (membershipTier.value || 'free').toLowerCase()
   if (t === 'free' || !membership.value?.is_member) {
     return '未开通会员。升级可享受更高 AI 额度、BYOK、会员标识等权益。'
@@ -350,6 +363,17 @@ async function changePw() {
   color: #fff;
   border: none;
   background: linear-gradient(120deg, rgba(244, 114, 182, 0.5), rgba(251, 191, 36, 0.45), rgba(52, 211, 153, 0.4));
+}
+.acct-chip--admin {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.12);
+}
+.acct-plan-admin-note {
+  margin-left: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: rgba(252, 165, 165, 0.95);
 }
 
 /* —— 主区：两列面板（类控制台「套餐 / 用量」分区） —— */

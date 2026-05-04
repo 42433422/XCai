@@ -65,7 +65,7 @@
    | `industry` | 生成行业卡片 | 写入行业卡片与 UI shell（侧栏菜单等） |
    | `employees` | 创建员工骨架 | 将多名员工写入 `workflow_employees`（名片级） |
    | `employee_impls` | 生成员工脚本 | `generate_mod_employee_impls_async` → 每名员工一份 `backend/employees/<stem>.py`，含 `async def run(payload, ctx)`（可经 FHD `mods_bus` 加载） |
-   | `workflows` | 制作员工工作流 | `create_mod_suite_workflows_async` → 为各员工生成/绑定画布工作流 |
+   | `workflows` | 生成员工 Skill 组（画布编排） | `create_mod_suite_workflows_async` → 为各员工创建 **MODstore 画布 Workflow**（`apply_nl_workflow_graph` 节点与边）。与 ESkill 双层文档一致：**Workflow Node = Skill**，整条画布工作流产品侧可称 **Skill 组**（`eskill-prototype/docs/DUAL_LAYER_ARCHITECTURE.md`）。**AI 市场「Skill」类目**指可上架素材包，与引擎里「节点=Skill」不是同一层概念 |
    | `register_packs` | 登记员工包并修复图 | 对齐画布 `employee` 节点与可执行包 id，**登记 `employee_pack` 到 Catalog** |
    | `api` | 生成/绑定 API 节点 | 汇总工作流中的 OpenAPI 类节点及待配置告警 |
    | `workflow_sandbox` | 工作流沙箱测试 | **Mock 结构沙盒**：验证图可走通；**不等于**生产里真实员工已成功执行业务 |

@@ -20,6 +20,5 @@
     },
     "types": ["vite/client", "node", "vitest/globals"]
   },
-  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts", "playwright.config.ts"],
-  "references": []
+  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts", "playwright.config.ts"]
 }

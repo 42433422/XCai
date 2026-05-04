@@ -1,4 +1,8 @@
-"""工作流引擎：执行、沙盒追踪、拓扑校验。"""
+"""Skill 组（画布）执行引擎：执行、沙盒追踪、拓扑校验。
+
+`workflow_id` 参数在存储层对应 ``workflows.id`` 行；产品侧同义称 **skill_group_id**
+（见 ``workbench_api`` 的 artifact 别名）。本模块保留历史参数名以兼容外键与调用栈。
+"""
 
 from __future__ import annotations
 
@@ -67,6 +71,7 @@ class WorkflowEngine:
             "webhook_trigger": self._execute_webhook_trigger_node,
             "cron_trigger": self._execute_cron_trigger_node,
             "variable_set": self._execute_variable_set_node,
+            "eskill": self._execute_eskill_node,
         }
 
     def register_executor(self, node_type: str, executor):
@@ -197,6 +202,8 @@ class WorkflowEngine:
                 current_node,
                 current_data,
                 config,
+                session=session,
+                workflow_id=workflow.id,
                 mock_employee=mock_employees,
                 user_id=user_id,
             )
@@ -221,6 +228,23 @@ class WorkflowEngine:
                 )
 
             current_data.update(node_output)
+
+            # 支持模板如 {{nodes.prev.output.phone}}：保留扁平字段兼容，并挂载结构化 nodes.*
+            node_blob = {
+                "id": current_node.id,
+                "name": current_node.name,
+                "type": current_node.node_type,
+                "output": node_output,
+            }
+            nb = current_data.get("nodes")
+            if not isinstance(nb, dict):
+                nb = {}
+            nb[str(current_node.id)] = node_blob
+            nm = (current_node.name or "").strip()
+            if nm:
+                nb[nm] = node_blob
+            nb["prev"] = node_blob
+            current_data["nodes"] = nb
 
             if current_node.node_type == "end":
                 break
@@ -283,6 +307,8 @@ class WorkflowEngine:
         data: Dict[str, Any],
         config: Dict[str, Any],
         *,
+        session: Session,
+        workflow_id: int,
         mock_employee: bool,
         user_id: int = 0,
     ) -> Dict[str, Any]:
@@ -295,8 +321,19 @@ class WorkflowEngine:
             return self._execute_openapi_operation_mock(node, data, config)
         if node.node_type == "knowledge_search" and mock_employee:
             return self._execute_knowledge_search_mock(node, data, config)
+        if node.node_type == "eskill" and mock_employee:
+            return self._execute_eskill_node_mock(node, data, config)
         if node.node_type in ("employee", "openapi_operation", "knowledge_search"):
             return executor(node, data, config, user_id=user_id)
+        if node.node_type == "eskill":
+            return executor(
+                node,
+                data,
+                config,
+                session=session,
+                workflow_id=workflow_id,
+                user_id=user_id,
+            )
         return executor(node, data, config)
 
     def _execute_employee_node_mock(
@@ -348,6 +385,22 @@ class WorkflowEngine:
             "execution_time": datetime.utcnow().isoformat(),
         }
 
+    def _execute_eskill_node_mock(
+        self, node: WorkflowNode, data: Dict[str, Any], config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        out_var = str(config.get("output_var") or "eskill_result")
+        return {
+            out_var: {
+                "sandbox": True,
+                "message": "沙盒 Mock：未触发真实 ESkill 运行时",
+                "skill_id": config.get("skill_id"),
+                "task": config.get("task") or "",
+                "echo_keys": list(data.keys())[:24],
+            },
+            "eskill_id": config.get("skill_id"),
+            "execution_time": datetime.utcnow().isoformat(),
+        }
+
     def _execute_knowledge_search_node(
         self,
         node: WorkflowNode,
@@ -371,7 +424,8 @@ class WorkflowEngine:
         logger.info("执行知识检索节点: %s", node.name)
         from modstore_server import rag_service
 
-        ctx = {"nodes": data, "global": data, "result": data}
+        nodes_ctx = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+        ctx = {"nodes": nodes_ctx, "global": data, "result": data}
         raw_query = config.get("query_template") or config.get("query") or ""
         query_text = ""
         if isinstance(raw_query, str):
@@ -445,7 +499,9 @@ class WorkflowEngine:
         task = config.get("task")
         if not employee_id or not task:
             raise ValueError("员工节点缺少必要的配置: employee_id 和 task")
-        input_data = resolve_value(config.get("input_mapping") or data, {"nodes": data, "global": data, "result": data})
+        nodes_ctx = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+        tmpl_ctx = {"nodes": nodes_ctx, "global": data, "result": data}
+        input_data = resolve_value(config.get("input_mapping") or data, tmpl_ctx)
         timeout_seconds = int(config.get("timeout_seconds") or 30)
         retry_count = int(config.get("retry_count") or 0)
         output_mapping = config.get("output_mapping") or {}
@@ -472,7 +528,7 @@ class WorkflowEngine:
                         last_err = e
             if result is None:
                 raise RuntimeError(f"employee node failed: {last_err}")
-            mapped = resolve_value(output_mapping, {"result": result, "nodes": data, "global": data})
+            mapped = resolve_value(output_mapping, {"result": result, "nodes": nodes_ctx, "global": data})
             base = {
                 "employee_result": result,
                 "employee_id": employee_id,
@@ -485,6 +541,75 @@ class WorkflowEngine:
         except Exception as e:
             logger.error("员工执行失败: %s", e)
             raise
+
+    def _execute_eskill_node(
+        self,
+        node: WorkflowNode,
+        data: Dict[str, Any],
+        config: Dict[str, Any],
+        *,
+        session: Session,
+        workflow_id: int,
+        user_id: int = 0,
+    ) -> Dict[str, Any]:
+        logger.info("执行 ESkill 节点: %s", node.name)
+        skill_id = config.get("skill_id") or config.get("eskill_id")
+        if not skill_id:
+            raise ValueError("ESkill 节点缺少 skill_id 配置")
+        try:
+            eskill_id = int(skill_id)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("ESkill 节点 skill_id 必须是数字") from exc
+
+        nodes_ctx = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+        tmpl_ctx = {"nodes": nodes_ctx, "global": data, "result": data}
+        input_data = resolve_value(config.get("input_mapping") or data, tmpl_ctx)
+        if not isinstance(input_data, dict):
+            input_data = {"value": input_data}
+        logic_overrides: Dict[str, Any] = {}
+        task = str(config.get("task") or "").strip()
+        if task:
+            logic_overrides["task_template"] = task
+            logic_overrides["task"] = task
+        output_var = str(config.get("output_var") or "").strip()
+        if output_var:
+            logic_overrides["output_var"] = output_var
+
+        from modstore_server.eskill_runtime import default_eskill_runtime
+
+        result = default_eskill_runtime.run(
+            session,
+            eskill_id=eskill_id,
+            user_id=user_id,
+            input_data=input_data,
+            workflow_id=workflow_id,
+            workflow_node_id=node.id,
+            logic_overrides=logic_overrides,
+            trigger_policy_override=config.get("trigger_policy") or {},
+            quality_gate_override=config.get("quality_gate") or {},
+            force_dynamic=bool(config.get("force_dynamic")),
+            solidify=bool(config.get("solidify", True)),
+        )
+        runtime_output = result.get("output") if isinstance(result, dict) else {}
+        if not isinstance(runtime_output, dict):
+            runtime_output = {"value": runtime_output}
+
+        output_mapping = config.get("output_mapping") or {}
+        mapped = resolve_value(
+            output_mapping,
+            {"result": result, "output": runtime_output, "nodes": nodes_ctx, "global": data},
+        )
+        base: Dict[str, Any] = {
+            "eskill_result": result,
+            "eskill_id": eskill_id,
+            "eskill_stage": result.get("stage"),
+            "execution_time": datetime.utcnow().isoformat(),
+        }
+        if output_var:
+            base[output_var] = runtime_output
+        if isinstance(mapped, dict):
+            base.update(mapped)
+        return base
 
     def _execute_openapi_operation_node(
         self,
@@ -503,7 +628,8 @@ class WorkflowEngine:
             connector_id_int = int(connector_id)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"connector_id 必须为整数: {connector_id!r}") from exc
-        ctx = {"nodes": data, "global": data, "result": data}
+        nodes_ctx = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+        ctx = {"nodes": nodes_ctx, "global": data, "result": data}
         params = resolve_value(config.get("input_mapping") or {}, ctx) or {}
         body = resolve_value(config.get("body") or None, ctx) if config.get("body") is not None else None
         headers = resolve_value(config.get("headers") or {}, ctx) or {}
@@ -534,7 +660,7 @@ class WorkflowEngine:
                 break
             last_err = str(last_result.get("error") or "")
         mapped = resolve_value(
-            output_mapping, {"result": last_result, "nodes": data, "global": data}
+            output_mapping, {"result": last_result, "nodes": nodes_ctx, "global": data}
         )
         base = {
             "openapi_result": last_result,
@@ -577,7 +703,8 @@ class WorkflowEngine:
         name = str(config.get("name") or "").strip()
         if not name:
             raise ValueError("variable_set 节点缺少 name")
-        ctx = {"nodes": data, "global": data, "result": data}
+        nodes_ctx = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+        ctx = {"nodes": nodes_ctx, "global": data, "result": data}
         resolved = resolve_value(config.get("value"), ctx)
         return {name: resolved}
 
@@ -688,6 +815,13 @@ class WorkflowValidator:
                     config = {}
                 if not str(config.get("name") or "").strip():
                     errors.append(f"变量赋值节点 {node.name} 缺少 name 配置")
+            elif node.node_type == "eskill":
+                try:
+                    config = json.loads(node.config) if node.config else {}
+                except (TypeError, ValueError):
+                    config = {}
+                if not str(config.get("skill_id") or config.get("eskill_id") or "").strip():
+                    errors.append(f"ESkill 节点 {node.name} 缺少 skill_id 配置")
             elif node.node_type == "cron_trigger":
                 try:
                     config = json.loads(node.config) if node.config else {}

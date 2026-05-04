@@ -4,14 +4,39 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from enum import Enum
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
-from modstore_server.models import Notification, get_session_factory
+from modstore_server.models import Notification, User, get_session_factory
 
 logger = logging.getLogger(__name__)
+
+
+def _mirror_notification_email(user_id: int, title: str, content: str) -> None:
+    """可选：将站内通知抄送用户邮箱（``MODSTORE_MIRROR_NOTIFICATIONS_EMAIL=1``）。"""
+    if (os.environ.get("MODSTORE_MIRROR_NOTIFICATIONS_EMAIL") or "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    sf = get_session_factory()
+    with sf() as db:
+        u = db.query(User).filter(User.id == user_id).first()
+        addr = (getattr(u, "email", None) or "").strip() if u else ""
+    if not addr or "@" not in addr:
+        return
+    try:
+        from modstore_server.email_service import send_simple_html_email
+
+        html = f"<html><body><h2>{title}</h2><p>{content}</p></body></html>"
+        send_simple_html_email(addr, f"[MODstore] {title}", html)
+    except Exception as e:
+        logger.debug("notification email mirror skipped: %s", e)
 
 
 class NotificationType(str, Enum):
@@ -59,6 +84,10 @@ def create_notification(
                     "title": notif.title,
                 },
             )
+        except Exception:
+            pass
+        try:
+            _mirror_notification_email(notif.user_id, notif.title, notif.content)
         except Exception:
             pass
         return notif

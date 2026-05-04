@@ -121,7 +121,14 @@ async def chat_dispatch_via_session(
     base_url = None
     if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
         base_url = resolve_base_url(session, user_id, provider)
-    return await chat_dispatch(
+
+    uid = int(user_id or 0)
+    if uid > 0:
+        from modstore_server.quota_middleware import consume_quota, require_quota
+
+        require_quota(session, uid, "llm_calls", 1)
+
+    result = await chat_dispatch(
         provider,
         api_key=api_key,
         base_url=base_url,
@@ -129,6 +136,12 @@ async def chat_dispatch_via_session(
         messages=messages,
         max_tokens=max_tokens,
     )
+    if uid > 0 and result.get("ok"):
+        try:
+            consume_quota(session, uid, "llm_calls", 1)
+        except Exception:
+            pass
+    return result
 
 
 _LOCK = Lock()

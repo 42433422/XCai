@@ -71,3 +71,4 @@
 - 备份：`scripts/backup_modstore.py`。
 - 灾备：`docs/runbooks/disaster-recovery.md`。
 - 支付灰度：`docs/PAYMENT_GRAY_RELEASE.md`。
+- 演练记录：`docs/runbooks/exercises/`（dry-run / tabletop / 预发 confirm 全部按日期归档）。

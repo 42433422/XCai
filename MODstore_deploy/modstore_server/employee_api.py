@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 from modstore_server.api.deps import _get_current_user
 from modstore_server.infrastructure.db import get_db
 from modstore_server.models import CatalogItem, Entitlement, User, UserPlan
-from modstore_server.quota_middleware import consume_quota, require_quota
-from modstore_server.employee_executor import execute_employee_task, get_employee_status, list_employees as list_employees_exec
+from modstore_server.services.employee import get_default_employee_client
+from modstore_server.employee_executor import get_employee_status, list_employees as list_employees_exec
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -101,21 +101,17 @@ async def execute_employee_task_endpoint(
     if not _user_may_execute_employee_pack(db, user.id, employee_id):
         raise HTTPException(403, "您无权执行该员工，请先购买或订阅套餐")
 
-    sf = get_session_factory()
-    with sf() as qdb:
-        require_quota(qdb, user.id, "llm_calls", 1)
     failure: str | None = None
     try:
-        result = execute_employee_task(employee_id, task, input_data or {}, user.id)
+        result = get_default_employee_client().execute_task(
+            employee_id=employee_id,
+            task=task,
+            input_data=input_data or {},
+            user_id=user.id,
+        )
     except Exception as e:
         failure = str(e)
         result = None
-    try:
-        if failure is None:
-            with sf() as qdb2:
-                consume_quota(qdb2, user.id, "llm_calls", 1)
-    except Exception:
-        pass
     try:
         from modstore_server import webhook_dispatcher
         from modstore_server.eventing.contracts import EMPLOYEE_EXECUTION_COMPLETED

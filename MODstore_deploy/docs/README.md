@@ -5,6 +5,7 @@
 - **API（自动生成）**：服务启动后访问 Swagger UI `/docs`、ReDoc `/redoc`、OpenAPI JSON `/openapi.json`。
 - **制作向导（Web `/author`）**：展示内置 `extension_surface.json`（manifest/蓝图约定）；可合并宿主 `openapi.json` 中 `/api*` 路由摘要；各 Mod 详情「蓝图/API」页签静态扫描 `backend/blueprints.py`。
 - **架构决策（ADR）**：[docs/adr/](adr/) 目录。
+- **贡献指南（代码分层与门禁）**：[CONTRIBUTING.md](../CONTRIBUTING.md) — T1 核心 / T2 脚本 / T3 兼容层 / T4 生成产物。
 - **公网 Catalog（/v1）**：`modstore_server` 挂载 `GET/POST /v1/*`；数据目录由环境变量 `MODSTORE_CATALOG_DIR` 控制（默认 `modstore_server/catalog_data/`）；上传需 `Authorization: Bearer <MODSTORE_CATALOG_UPLOAD_TOKEN>`。CLI：`modman publish <zip> --catalog-url URL --token TOKEN`（需 `pip install httpx`）。
 
 ## 运行环境与 Uvicorn（必读）

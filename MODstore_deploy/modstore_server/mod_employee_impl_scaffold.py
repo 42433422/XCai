@@ -10,6 +10,8 @@ host 注入的最小运行时（见 ``render_suite_blueprints_py`` 里的 build_
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import json
 import py_compile
 import re
@@ -29,6 +31,35 @@ from modstore_server.models import User
 
 
 _SAFE_ID_RE = re.compile(r"[^a-z0-9_]")
+
+_MAX_CONCURRENT_LLM = 3
+_MAX_REPAIR_ATTEMPTS = 2
+
+_FORBIDDEN_IMPORTS = frozenset({
+    "os",
+    "subprocess",
+    "shutil",
+    "sys",
+    "pathlib",
+    "socket",
+    "ctypes",
+    "multiprocessing",
+    "threading",
+    "signal",
+    "resource",
+    "fcntl",
+    "mmap",
+})
+_FORBIDDEN_ATTRS = frozenset({
+    "system",
+    "popen",
+    "exec",
+    "eval",
+    "compile",
+    "__import__",
+    "open",
+})
+_ALLOWED_MOD_SDK_PREFIX = "app.mod_sdk."
 
 
 def sanitize_employee_stem(emp_id: str) -> str:
@@ -122,6 +153,69 @@ def _employee_brief_lines(
     return lines
 
 
+def _security_check(src: str) -> Optional[str]:
+    """AST 级安全审查。返回 None 表示通过；否则返回违规描述。"""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        return f"语法错误: {e}"
+
+    violations: List[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root_mod = alias.name.split(".")[0]
+                if root_mod in _FORBIDDEN_IMPORTS:
+                    violations.append(f"禁止 import {alias.name}")
+
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                root_mod = node.module.split(".")[0]
+                if root_mod in _FORBIDDEN_IMPORTS:
+                    violations.append(f"禁止 from {node.module} import ...")
+                if root_mod == "app" and not node.module.startswith(_ALLOWED_MOD_SDK_PREFIX):
+                    violations.append(
+                        f"仅允许 from app.mod_sdk.<子模块> import ...，禁止 from {node.module}"
+                    )
+
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                attr_name = node.func.attr
+                if attr_name in _FORBIDDEN_ATTRS:
+                    violations.append(f"禁止调用 .{attr_name}()")
+
+            if isinstance(node.func, ast.Name):
+                if node.func.id in ("eval", "exec", "compile", "__import__"):
+                    violations.append(f"禁止调用 {node.func.id}()")
+
+    if violations:
+        return "安全审查未通过: " + "; ".join(violations[:8])
+    return None
+
+
+def _behavior_check(src: str) -> Optional[str]:
+    """行为校验：检查 run 函数是否存在且签名基本正确。"""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        return f"语法错误: {e}"
+
+    has_run = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run":
+            has_run = True
+            arg_names = [a.arg for a in node.args.args]
+            if "payload" not in arg_names or "ctx" not in arg_names:
+                return "run() 签名必须为 async def run(payload, ctx)"
+            break
+
+    if not has_run:
+        return "缺少 async def run(payload, ctx) 函数定义"
+
+    return None
+
+
 def _compile_check(src: str) -> Optional[str]:
     """返回 None 表示通过；否则返回编译错误字符串。"""
     try:
@@ -184,45 +278,58 @@ async def _generate_one_employee_py(
     )
     if not res.get("ok"):
         return {"ok": False, "error": res.get("error") or "upstream error"}
-    raw = _strip_code_fence(str(res.get("content") or ""))
-    err = _compile_check(raw)
-    if not err:
-        return {"ok": True, "source": raw}
-    repair_messages = [
-        {"role": "system", "content": SYSTEM_PROMPT_EMPLOYEE_IMPL_REPAIR},
-        {
-            "role": "user",
-            "content": (
-                f"py_compile 报错：\n{err}\n\n原始代码（保持业务逻辑，仅修语法）：\n{raw[:8000]}"
-            ),
-        },
-    ]
-    res2 = await chat_dispatch(
-        prov,
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-        messages=repair_messages,
-        max_tokens=3072,
-    )
-    if not res2.get("ok"):
-        return {
-            "ok": False,
-            "error": f"repair upstream: {res2.get('error') or 'error'}",
-            "raw": raw,
-            "compile_error": err,
-        }
-    fixed = _strip_code_fence(str(res2.get("content") or ""))
-    err2 = _compile_check(fixed)
-    if err2:
-        return {
-            "ok": False,
-            "error": f"repair still invalid: {err2}",
-            "raw": raw,
-            "repair_raw": fixed,
-            "compile_error": err2,
-        }
-    return {"ok": True, "source": fixed, "repair_used": True}
+    raw_orig = _strip_code_fence(str(res.get("content") or ""))
+    current_source = raw_orig
+
+    last_err: Optional[str] = None
+    for attempt in range(_MAX_REPAIR_ATTEMPTS):
+        err = _compile_check(current_source)
+        if not err:
+            sec_err = _security_check(current_source)
+            if sec_err:
+                return {"ok": False, "error": sec_err, "raw": raw_orig}
+            beh_err = _behavior_check(current_source)
+            if beh_err:
+                return {"ok": False, "error": beh_err, "raw": raw_orig}
+            return {
+                "ok": True,
+                "source": current_source,
+                "repair_used": attempt > 0,
+            }
+
+        last_err = err
+        repair_messages = [
+            {"role": "system", "content": SYSTEM_PROMPT_EMPLOYEE_IMPL_REPAIR},
+            {
+                "role": "user",
+                "content": (
+                    f"py_compile 报错：\n{err}\n\n原始代码（保持业务逻辑，仅修语法）：\n{current_source[:8000]}"
+                ),
+            },
+        ]
+        res2 = await chat_dispatch(
+            prov,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            messages=repair_messages,
+            max_tokens=3072,
+        )
+        if not res2.get("ok"):
+            return {
+                "ok": False,
+                "error": f"repair upstream: {res2.get('error') or 'error'}",
+                "raw": raw_orig,
+                "compile_error": err,
+            }
+        current_source = _strip_code_fence(str(res2.get("content") or ""))
+
+    return {
+        "ok": False,
+        "error": f"经过 {_MAX_REPAIR_ATTEMPTS} 次修复仍无法通过编译",
+        "raw": raw_orig,
+        "compile_error": last_err,
+    }
 
 
 def _fallback_employee_py(emp_id: str, label: str, panel_summary: str) -> str:
@@ -321,40 +428,37 @@ async def generate_mod_employee_impls_async(
         if prov in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
             base = resolve_base_url(db, user.id, prov)
 
-    generated: List[Dict[str, Any]] = []
-    errors: List[Dict[str, Any]] = []
-    total = sum(1 for e in employees if isinstance(e, dict))
-    cur = 0
-    for emp in employees:
-        if not isinstance(emp, dict):
-            continue
+    valid_employees = [e for e in employees if isinstance(e, dict) and str(e.get("id") or "").strip()]
+    total = len(valid_employees)
+    sem = asyncio.Semaphore(_MAX_CONCURRENT_LLM)
+    progress_lock = asyncio.Lock()
+    done_cnt = 0
+
+    async def _gen_one(idx: int, emp: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal done_cnt
         eid = str(emp.get("id") or "").strip()
-        if not eid:
-            continue
-        cur += 1
         stem = sanitize_employee_stem(eid)
         target = out_dir / f"{stem}.py"
         label = str(emp.get("label") or emp.get("panel_title") or eid).strip()
         panel_summary = str(emp.get("panel_summary") or "").strip()
-        if status_hook:
-            short = (label[:24] + "…") if len(label) > 24 else label
-            await status_hook(f"第 {cur}/{max(total, 1)} 名员工「{short}」：请求模型生成实现代码…")
 
         used_fallback = False
         gen_err = ""
         source = ""
+
         if prov and mdl and api_key:
-            gen = await _generate_one_employee_py(
-                prov=prov,
-                api_key=api_key,
-                base_url=base,
-                model=mdl,
-                emp=emp,
-                mod_id=mod_id,
-                mod_name=mod_name,
-                mod_brief=mod_brief,
-                industry_card=industry_card,
-            )
+            async with sem:
+                gen = await _generate_one_employee_py(
+                    prov=prov,
+                    api_key=api_key,
+                    base_url=base,
+                    model=mdl,
+                    emp=emp,
+                    mod_id=mod_id,
+                    mod_name=mod_name,
+                    mod_brief=mod_brief,
+                    industry_card=industry_card,
+                )
             if gen.get("ok"):
                 source = str(gen.get("source") or "").strip() + "\n"
             else:
@@ -375,8 +479,18 @@ async def generate_mod_employee_impls_async(
         }
         if used_fallback and gen_err:
             entry["note"] = gen_err[:400]
-            errors.append(entry)
-        generated.append(entry)
+
+        async with progress_lock:
+            done_cnt += 1
+            if status_hook:
+                await status_hook(f"已完成 {done_cnt}/{max(total, 1)} 名员工实现生成（并发上限 {_MAX_CONCURRENT_LLM}）…")
+
+        return entry
+
+    results = await asyncio.gather(*[_gen_one(i, e) for i, e in enumerate(valid_employees)])
+
+    generated = list(results)
+    errors = [e for e in generated if e.get("fallback") and e.get("note")]
 
     return {
         "ok": not errors,

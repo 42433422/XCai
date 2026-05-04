@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -17,6 +19,18 @@ _CONNECT_TIMEOUT = 6.0
 _READ_TIMEOUT = 10.0
 
 
+def _sandbox_install_headers() -> dict[str, str]:
+    """FHD 沙盒 CSRF 中间件：带 Bearer 的变更请求跳过 cookie/csrf 校验。
+
+    市场后端用 httpx 推送 .xcmod，无法携带浏览器 csrf_token；须显式带 Authorization。
+    可选环境变量 MODSTORE_SANDBOX_PUSH_BEARER（与沙盒侧约定同一密钥更安全）。
+    """
+    bearer = (os.environ.get("MODSTORE_SANDBOX_PUSH_BEARER") or "").strip()
+    if not bearer:
+        bearer = "modstore-sandbox-push"
+    return {"Authorization": f"Bearer {bearer}"}
+
+
 class ConnectRequest(BaseModel):
     host_url: str
 
@@ -27,7 +41,15 @@ class PushAndTestRequest(BaseModel):
 
 
 def _normalize_url(raw: str) -> str:
-    return raw.strip().rstrip("/")
+    value = raw.strip()
+    if value.startswith("/"):
+        origin = (
+            os.environ.get("MODSTORE_PUBLIC_ORIGIN")
+            or os.environ.get("PUBLIC_ORIGIN")
+            or "http://localhost:8765"
+        ).rstrip("/")
+        return urljoin(f"{origin}/", value.lstrip("/")).rstrip("/")
+    return value.rstrip("/")
 
 
 @router.post("/connect")
@@ -89,6 +111,7 @@ def api_sandbox_push_and_test(body: PushAndTestRequest, _user=Depends(require_us
                 with open(zip_path, "rb") as f:
                     resp = client.post(
                         f"{url}/api/mod-store/install",
+                        headers=_sandbox_install_headers(),
                         files={"file": (f"{mod_id}.xcmod", f, "application/zip")},
                     )
                 resp.raise_for_status()

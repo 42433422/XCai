@@ -196,7 +196,7 @@ def api_register(body: RegisterDTO):
         user = register_user(body.username, body.password, email_norm)
     except ValueError as e:
         raise HTTPException(409, str(e))
-    access_token = create_access_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username, is_admin=bool(user.is_admin))
     refresh_token = create_refresh_token(user.id, user.username)
     return {
         "ok": True,
@@ -211,7 +211,7 @@ def api_login(body: LoginDTO):
     user = authenticate_user(body.username, body.password)
     if not user:
         raise HTTPException(401, "用户名或密码错误")
-    access_token = create_access_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username, is_admin=bool(user.is_admin))
     refresh_token = create_refresh_token(user.id, user.username)
     return {
         "ok": True,
@@ -336,7 +336,7 @@ def api_login_with_code(body: LoginWithCodeDTO):
         vc.used = True
         session.commit()
 
-    access_token = create_access_token(user.id, user.username)
+    access_token = create_access_token(user.id, user.username, is_admin=bool(user.is_admin))
     refresh_token = create_refresh_token(user.id, user.username)
     return {
         "ok": True,
@@ -482,14 +482,14 @@ def api_refresh_token(body: RefreshTokenDTO):
     
     user_id = int(payload["sub"])
     username = payload["username"]
-    
+
     # 验证用户是否存在
     user = get_user_by_id(user_id)
     if not user:
         raise HTTPException(401, "用户不存在")
     
     # 生成新的访问令牌和刷新令牌
-    new_access_token = create_access_token(user_id, username)
+    new_access_token = create_access_token(user_id, username, is_admin=bool(user.is_admin))
     new_refresh_token = create_refresh_token(user_id, username)
     
     return {

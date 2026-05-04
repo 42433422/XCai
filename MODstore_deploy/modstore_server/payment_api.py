@@ -413,7 +413,10 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
 
     user_id = int(order.get("user_id") or 0)
     if not user_id:
-        payment_orders.merge_fields(out_trade_no, fulfilled=True)
+        logger.error(
+            "订单 %s 已支付但 user_id=0，无法发放权益；不标记 fulfilled，请补全订单用户后重试 query/补单",
+            out_trade_no,
+        )
         return
 
     try:
@@ -442,6 +445,45 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
     sf = get_session_factory()
     with sf() as session:
         try:
+            # 幂等：避免异步重复回调或「DB 已入账但本地订单未标 fulfilled」时的重复发放
+            if item_id:
+                exists_ent = (
+                    session.query(Entitlement)
+                    .filter(Entitlement.source_order_id == out_trade_no)
+                    .first()
+                )
+                if exists_ent:
+                    payment_orders.merge_fields(out_trade_no, fulfilled=True)
+                    logger.info("商品订单权益已存在，幂等跳过: %s", out_trade_no)
+                    return
+            elif plan_id or kind == "plan":
+                exists_plan = (
+                    session.query(Entitlement)
+                    .filter(
+                        Entitlement.source_order_id == out_trade_no,
+                        Entitlement.entitlement_type == "plan",
+                    )
+                    .first()
+                )
+                if exists_plan:
+                    payment_orders.merge_fields(out_trade_no, fulfilled=True)
+                    logger.info("套餐权益已存在，幂等跳过: %s", out_trade_no)
+                    return
+            else:
+                txn_marker = f"({out_trade_no})"
+                dup_wallet = (
+                    session.query(Transaction)
+                    .filter(
+                        Transaction.user_id == user_id,
+                        Transaction.description.contains(txn_marker),
+                    )
+                    .first()
+                )
+                if dup_wallet:
+                    payment_orders.merge_fields(out_trade_no, fulfilled=True)
+                    logger.info("钱包/充值流水已存在，幂等跳过: %s", out_trade_no)
+                    return
+
             # 开始事务
             now = datetime.now(timezone.utc)
             if item_id:
@@ -468,8 +510,11 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
                         q = session.query(Quota).filter(
                             Quota.user_id == user_id, Quota.quota_type == "employee_count"
                         ).first()
-                        if q:
-                            q.total += 1
+                        if not q:
+                            q = Quota(user_id=user_id, quota_type="employee_count", total=1, used=0)
+                        else:
+                            q.total = int(q.total or 0) + 1
+                        session.add(q)
             elif plan_id or kind == "plan":
                 plan = session.query(PlanTemplate).filter(PlanTemplate.id == plan_id).first()
                 if plan:
@@ -620,6 +665,12 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
             # OutboxDispatcherWorker 会负责把 outbox 行 drain 到外部 webhook。
             payment_orders.merge_fields(out_trade_no, fulfilled=True)
             logger.info("订单权益已发放: %s user=%s amount=%s", out_trade_no, user_id, total_amount)
+            try:
+                from modstore_server.modstore_xcagi_deploy import try_auto_deploy_after_purchase
+
+                try_auto_deploy_after_purchase(item_id=item_id, order_kind=kind or "")
+            except Exception:
+                logger.debug("购买后自动部署 XCAGI 跳过或失败", exc_info=True)
         except Exception as e:
             # 回滚事务
             session.rollback()

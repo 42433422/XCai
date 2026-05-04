@@ -396,6 +396,9 @@ export const api: any = {
     req(`/api/script-workflows/sessions/${encodeURIComponent(sid)}`),
 
   listWorkflows: () => req('/api/workflow/'),
+  listESkills: () => req('/api/eskills'),
+  createESkill: (body: unknown) => req('/api/eskills', { method: 'POST', body: JSON.stringify(body || {}) }),
+  runESkill: (id: string | number, body: unknown) => req(`/api/eskills/${id}/run`, { method: 'POST', body: JSON.stringify(body || {}) }),
   listEmployeeEligibleWorkflows: () => req('/api/workflow/employee-eligible'),
   listWorkflowsByEmployee: (employeeId: string) => req(`/api/workflow/by-employee?employee_id=${encodeURIComponent(employeeId)}`),
   getWorkflow: (id: string | number) => req(`/api/workflow/${id}`),

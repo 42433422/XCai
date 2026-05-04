@@ -55,24 +55,29 @@ public class WalletController {
     public Map<String, Object> getBalance() {
         try {
             User user = currentUserService.requireCurrentUser();
-            int refYuan = walletService.getMembershipReferenceLineYuan(user);
-            Map<String, Object> m = new HashMap<>();
-            m.put("membership_reference_yuan", refYuan);
-            walletService.getWallet(user).ifPresentOrElse(
-                    w -> {
-                        m.put("balance", w.getBalance());
-                        m.put("updated_at", w.getUpdatedAt());
-                    },
-                    () -> {
-                        m.put("balance", BigDecimal.ZERO);
-                        m.put("updated_at", "");
-                    }
-            );
-            return m;
+            return buildBalancePayload(user);
         } catch (Exception e) {
             log.error("获取钱包余额失败", e);
             return Map.of("ok", false, "message", "系统内部错误");
         }
+    }
+
+    /** 与 {@link #getBalance()} 相同字段，供资金中心聚合；不吞异常，避免 overview 把错误 JSON 嵌进 wallet。 */
+    private Map<String, Object> buildBalancePayload(User user) {
+        int refYuan = walletService.getMembershipReferenceLineYuan(user);
+        Map<String, Object> m = new HashMap<>();
+        m.put("membership_reference_yuan", refYuan);
+        walletService.getWallet(user).ifPresentOrElse(
+                w -> {
+                    m.put("balance", w.getBalance());
+                    m.put("updated_at", w.getUpdatedAt());
+                },
+                () -> {
+                    m.put("balance", BigDecimal.ZERO);
+                    m.put("updated_at", "");
+                }
+        );
+        return m;
     }
 
     @PostMapping("/recharge")
@@ -246,7 +251,7 @@ public class WalletController {
     ) {
         try {
             User user = currentUserService.requireCurrentUser();
-            Map<String, Object> wallet = getBalance();
+            Map<String, Object> wallet = buildBalancePayload(user);
             List<Map<String, Object>> transactions = walletService.getTransactions(user, limit, offset).stream()
                     .map(this::transactionToMap)
                     .toList();

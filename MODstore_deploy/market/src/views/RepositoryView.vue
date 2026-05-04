@@ -88,6 +88,14 @@
           <button class="btn btn-sm" @click="viewMod(m.id)">制作 / 编辑</button>
           <button
             type="button"
+            class="btn btn-sm btn-secondary"
+            title="把该 Mod ID 自动带入沙箱页，并指向线上 FHD 沙盒宿主"
+            @click="testModInSandbox(m.id)"
+          >
+            沙箱测试
+          </button>
+          <button
+            type="button"
             class="btn btn-sm btn-danger"
           :disabled="deleteModBusy === libraryFolderForDeleteApi(m)"
           title="从当前账号的 Mod 库中整包删除（需已登录）；不可恢复"
@@ -362,6 +370,15 @@ function isBundle(m) {
 
 function viewMod(id) {
   router.push({ name: 'mod-authoring', params: { modId: id } })
+}
+
+function testModInSandbox(id) {
+  const modId = String(id || '').trim()
+  if (!modId) {
+    flash('该 Mod 缺少 id，无法带入沙箱测试', false)
+    return
+  }
+  router.push({ name: 'sandbox', query: { modId, host: '/sandbox', autoPush: '1' } })
 }
 
 function registerKey(modId, workflowIndex) {

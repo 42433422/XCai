@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
+# [DEPRECATED] 全链 pip+npm+mvn 发布脚本（_remote_deploy_extract.sh）。
+# 请改用组件化脚本：python-release.sh / node-release.sh / java-release.sh。
+# 保留仅为过渡期兼容；退役见 docs/migration/release-contracts.md。
 set -eu
+if [ "${MODSTORE_ALLOW_LEGACY_FULLCHAIN:-0}" != "1" ]; then
+  echo "[warn] _remote_deploy_extract.sh 已 deprecated；export MODSTORE_ALLOW_LEGACY_FULLCHAIN=1 以强制使用。" >&2
+  exit 2
+fi
 DEPLOY_ROOT="/root/成都修茈科技有限公司/MODstore_deploy"
 BACKUP_ENV="/tmp/modstore.env.deploy.bak"
 cp "$DEPLOY_ROOT/.env" "$BACKUP_ENV"

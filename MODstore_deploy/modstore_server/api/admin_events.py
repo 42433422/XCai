@@ -15,7 +15,7 @@ from modstore_server.models import OutboxDeadLetter, OutboxEvent, User
 router = APIRouter(prefix="/api/admin/events", tags=["admin-events"])
 
 
-def _require_admin(user: User) -> None:
+def assert_user_is_admin(user: User) -> None:
     if not user.is_admin:
         raise HTTPException(403, "需要管理员权限")
 
@@ -32,7 +32,7 @@ def admin_replay_outbox(
 ):
     """将匹配条件的 ``event_outbox`` 行重新标记为 pending 以便 dispatcher 重放。"""
 
-    _require_admin(user)
+    assert_user_is_admin(user)
     q = db.query(OutboxEvent)
     if event_id:
         q = q.filter(OutboxEvent.event_id == event_id.strip())
@@ -58,7 +58,7 @@ def admin_list_dlq(
     db: Session = Depends(get_db),
     user: User = Depends(_get_current_user),
 ):
-    _require_admin(user)
+    assert_user_is_admin(user)
     rows = db.query(OutboxDeadLetter).order_by(OutboxDeadLetter.id.desc()).limit(max(1, min(limit, 200))).all()
     return {
         "ok": True,
@@ -82,7 +82,7 @@ def admin_discard_dlq(
     db: Session = Depends(get_db),
     user: User = Depends(_get_current_user),
 ):
-    _require_admin(user)
+    assert_user_is_admin(user)
     row = db.query(OutboxDeadLetter).filter(OutboxDeadLetter.id == row_id).first()
     if not row:
         raise HTTPException(404, "DLQ 行不存在")

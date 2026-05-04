@@ -545,7 +545,7 @@ const homeIntentHint = ref('')
 const INTENT_FROM_HOME = {
   mod: '从首页带入：做 Mod（仓库 + 行业 JSON + 员工命名）',
   employee: '从首页带入：做员工',
-  workflow: '从首页带入：做工作流',
+  workflow: '从首页带入：生成 Skill 组',
 }
 
 // 画布引用

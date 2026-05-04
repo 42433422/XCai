@@ -202,7 +202,7 @@
           <div class="llm-card-head__text">
             <h3 class="llm-section-title">大模型 API</h3>
             <p class="llm-intro">
-              模型目录由各厂商接口拉取并缓存约 10 分钟，可随时刷新；下方按「语言 / 视觉 / 生图 / 视频」分组。默认模型写入账户；密钥可走平台环境变量或 BYOK（服务端加密）。
+              模型目录由各厂商接口拉取并缓存约 10 分钟，可随时刷新；下方按「语言 / 视觉 / 生图 / 视频」分组。默认模型写入账户；BYOK 经服务端加密保存。除<strong>小米 MiMo</strong>外，磁贴「已配置」仅看 BYOK；小米若服务端配置了环境变量密钥，会显示「平台密钥」并视为已配置。
             </p>
           </div>
         </div>
@@ -328,7 +328,7 @@
           v-if="currentProviderBlock && !currentProviderBlock.models.length"
           class="llm-empty-models"
         >
-          暂无可用模型：请配置该平台或 BYOK 的 API Key 后点击「刷新模型列表」。
+          暂无可用模型：请配置 BYOK 的 API Key 后点击「刷新模型列表」。
         </div>
 
         <details class="llm-details">
@@ -383,10 +383,13 @@
               <div class="llm-byok-row__main">
                 <span class="llm-byok-row__name">{{ st.label || st.provider }}</span>
                 <span class="llm-byok-tags">
-                  <span v-if="st.has_platform_key" class="tag">平台密钥</span>
                   <span v-if="st.has_user_override" class="tag tag-user">BYOK</span>
+                  <span v-if="st.provider === 'xiaomi' && st.has_platform_key" class="tag">平台密钥</span>
                   <span v-if="st.masked_key" class="llm-mask">{{ st.masked_key }}</span>
-                  <span v-else-if="!st.has_user_override" class="llm-byok-row__dash">—</span>
+                  <span
+                    v-else-if="!st.has_user_override && !(st.provider === 'xiaomi' && st.has_platform_key)"
+                    class="llm-byok-row__dash"
+                  >—</span>
                 </span>
               </div>
               <button
@@ -411,8 +414,8 @@
               <div class="llm-byok-head">
                 <strong>{{ st.label || st.provider }}</strong>
                 <span class="llm-byok-tags">
-                  <span v-if="st.has_platform_key" class="tag">平台密钥</span>
                   <span v-if="st.has_user_override" class="tag tag-user">BYOK</span>
+                  <span v-if="st.provider === 'xiaomi' && st.has_platform_key" class="tag">平台密钥</span>
                   <span v-if="st.masked_key" class="llm-mask">{{ st.masked_key }}</span>
                 </span>
               </div>
@@ -630,6 +633,7 @@ function providerTileState(block) {
   const keyPresent = hasAnyLlmKey(st)
   if (!keyPresent) return 'inactive'
   const issue = classifyLlmCatalogIssue(block.error, block.fetch_source)
+  if (issue === 'expired') return 'danger'
   if (issue === 'danger') return 'danger'
   if (issue === 'warn') return 'warn'
   return 'ok'
@@ -643,11 +647,26 @@ function llmTileIconFailKey(block) {
 /** @param {{ provider: string, label?: string, error?: string|null, fetch_source?: string|null }} block */
 function providerTileTitle(block) {
   const n = block.label || block.provider
+  const st = llmStatusByProvider.value[block.provider]
   const ps = providerTileState(block)
-  if (ps === 'inactive') return `${n}：未配置平台或 BYOK 密钥`
-  if (ps === 'warn') return `${n}：密钥已配置；模型列表拉取降级或限流，请检查网络、额度或稍后重试`
-  if (ps === 'danger') return `${n}：密钥已配置；模型接口不可用（认证失败、额度/账单或配置错误）`
-  return `${n}：密钥已配置，模型列表正常`
+  const keyTag =
+    st?.has_user_override === true
+      ? 'BYOK'
+      : block.provider === 'xiaomi' && st?.has_platform_key
+        ? '平台密钥'
+        : 'BYOK'
+  if (ps === 'inactive') {
+    if (block.provider === 'xiaomi') {
+      return `${n}：未配置 BYOK，且未检测到服务端小米密钥`
+    }
+    return `${n}：未配置 BYOK 密钥`
+  }
+  if (ps === 'warn') return `${n}：${keyTag} 已配置；模型列表拉取降级或限流，请检查网络、额度或稍后重试`
+  if (classifyLlmCatalogIssue(block.error, block.fetch_source) === 'expired') {
+    return `${n}：${keyTag} 已过期或失效；请删除旧密钥后重新配置`
+  }
+  if (ps === 'danger') return `${n}：${keyTag} 已配置；模型接口不可用（认证失败、额度/账单或配置错误）`
+  return `${n}：${keyTag} 已配置，模型列表正常`
 }
 
 function llmInitials(label) {
@@ -1315,7 +1334,7 @@ function formatDate(iso) {
   border-color: rgba(255, 255, 255, 0.22);
   background: rgba(255, 255, 255, 0.06);
 }
-/* 已配置平台或 BYOK 密钥：底层 conic 铺满卡片 + 全幅半透明磨砂，流光完整可见 */
+/* 已配置 BYOK：底层 conic 铺满卡片 + 全幅半透明磨砂，流光完整可见 */
 .llm-tile--keyed {
   /* 旋转层略大于卡片，避免矩形旋转时四角露底；可单独加大到 1.65 等 */
   --llm-rainbow-scale: 1.55;

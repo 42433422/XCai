@@ -23,6 +23,7 @@ class EntitlementServiceTest {
     @Mock EntitlementRepository entitlementRepository;
     @Mock UserPlanRepository userPlanRepository;
     @Mock QuotaRepository quotaRepository;
+    @Mock CatalogItemRepository catalogItemRepository;
 
     @InjectMocks EntitlementService entitlementService;
 
@@ -57,6 +58,10 @@ class EntitlementServiceTest {
         void grantsEntitlementWhenNoDuplicate() {
             when(entitlementRepository.findBySourceOrderId("OT-1")).thenReturn(Optional.empty());
             when(entitlementRepository.save(any(Entitlement.class))).thenAnswer(inv -> inv.getArgument(0));
+            CatalogItem modItem = new CatalogItem();
+            modItem.setId(42L);
+            modItem.setArtifact("mod");
+            when(catalogItemRepository.findById(42L)).thenReturn(Optional.of(modItem));
 
             entitlementService.grantCatalogEntitlement(user, 42L, "OT-1");
 
@@ -65,6 +70,25 @@ class EntitlementServiceTest {
                     e.getCatalogId().equals(42L) &&
                     "mod".equals(e.getEntitlementType()) &&
                     "OT-1".equals(e.getSourceOrderId())));
+        }
+
+        @Test
+        void grantsEmployeeEntitlementForEmployeePackAndIncrementsQuota() {
+            when(entitlementRepository.findBySourceOrderId("OT-EMP")).thenReturn(Optional.empty());
+            when(entitlementRepository.save(any(Entitlement.class))).thenAnswer(inv -> inv.getArgument(0));
+            CatalogItem empItem = new CatalogItem();
+            empItem.setId(99L);
+            empItem.setArtifact("employee_pack");
+            when(catalogItemRepository.findById(99L)).thenReturn(Optional.of(empItem));
+            when(quotaRepository.findByUserAndQuotaType(user, "employee_count")).thenReturn(Optional.empty());
+            when(quotaRepository.save(any(Quota.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            entitlementService.grantCatalogEntitlement(user, 99L, "OT-EMP");
+
+            verify(entitlementRepository).save(argThat(e ->
+                    "employee".equals(e.getEntitlementType()) && "OT-EMP".equals(e.getSourceOrderId())));
+            verify(quotaRepository).save(argThat(q ->
+                    "employee_count".equals(q.getQuotaType()) && q.getTotal() == 1));
         }
 
         @Test

@@ -13,11 +13,12 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from modstore_server.api.deps import _get_current_user
 from modstore_server.models import (
+    CatalogItem,
     get_session_factory,
     ScriptWorkflow,
     ScriptWorkflowRun,
@@ -45,7 +46,9 @@ from modstore_server.mod_scaffold_runner import (
     write_mod_suite_ui_shell,
 )
 from modstore_server.mod_employee_impl_scaffold import (
+    _fallback_employee_py,
     generate_mod_employee_impls_async,
+    sanitize_employee_stem,
 )
 from modstore_server.workflow_engine import run_workflow_sandbox
 from modstore_server.workflow_nl_graph import apply_nl_workflow_graph
@@ -65,8 +68,33 @@ router = APIRouter(prefix="/api/workbench", tags=["workbench"])
 
 _LOG = logging.getLogger(__name__)
 
+_MAX_EMPLOYEES_FOR_LLM = 10
+
 WORKBENCH_SESSIONS: Dict[str, Dict[str, Any]] = {}
 _SESSION_LOCK = asyncio.Lock()
+
+# 画布编排 intent：`workflow` 已规范为 `skill`（Skill 组）
+CANVAS_SKILL_INTENT = "skill"
+
+
+def _canonical_workbench_intent(intent: Optional[str]) -> str:
+    s = (intent or "").strip().lower()
+    if s == "workflow":
+        return CANVAS_SKILL_INTENT
+    return s
+
+
+def _enrich_artifact_skill_aliases(artifact: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not artifact or not isinstance(artifact, dict):
+        return artifact
+    out = dict(artifact)
+    wid = out.get("workflow_id")
+    if wid is not None:
+        out.setdefault("skill_group_id", wid)
+    wn = out.get("workflow_name")
+    if wn is not None:
+        out.setdefault("skill_group_name", wn)
+    return out
 
 
 def _workbench_session_store_dir() -> Path:
@@ -119,6 +147,8 @@ def _hydrate_workbench_session_unlocked(sid: str) -> None:
         return
     loaded = _load_workbench_session_unlocked(sid)
     if loaded and str(loaded.get("id") or "") == str(sid):
+        if loaded.get("intent") == "workflow":
+            loaded["intent"] = CANVAS_SKILL_INTENT
         WORKBENCH_SESSIONS[sid] = loaded
 
 
@@ -129,16 +159,28 @@ async def _persist_workbench_session(sid: str) -> None:
 
 class WorkbenchResearchBody(BaseModel):
     brief: str = Field(..., min_length=3, max_length=4000)
-    intent: Literal["workflow", "mod", "employee"] = "workflow"
+    intent: Literal["workflow", "mod", "employee", "skill"] = "skill"
     max_repos: int = Field(3, ge=1, le=5)
     max_web: int = Field(6, ge=1, le=12, description="Tavily 网页摘要条数上限")
     max_chars: int = Field(8000, ge=2000, le=20000)
 
+    @field_validator("intent", mode="before")
+    @classmethod
+    def _research_intent_alias(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip().lower() == "workflow":
+            return "skill"
+        return v
+
 
 class WorkbenchSessionCreateBody(BaseModel):
-    intent: Literal["mod", "employee", "workflow"]
+    intent: Literal["mod", "employee", "workflow", "skill"]
     brief: str = Field(..., min_length=3, max_length=30000)
     workflow_name: Optional[str] = Field(None, max_length=256)
+    skill_group_name: Optional[str] = Field(
+        None,
+        max_length=256,
+        description="画布 Skill 组名称；若填且未填 workflow_name，则写入 workflow_name",
+    )
     plan_notes: Optional[str] = Field("", max_length=4000)
     suggested_mod_id: Optional[str] = Field(None, max_length=64)
     replace: bool = True
@@ -146,7 +188,7 @@ class WorkbenchSessionCreateBody(BaseModel):
     model: Optional[str] = Field(None, max_length=128)
     generate_workflow_graph: bool = Field(
         True,
-        description="为 workflow intent 时是否用 LLM 生成节点与边（false 则仅创建空工作流）",
+        description="为画布 intent（skill，旧称 workflow）时是否用 LLM 生成节点与边（false 则仅创建空 Skill 组容器）",
     )
     generate_full_suite: bool = Field(
         True,
@@ -175,6 +217,24 @@ class WorkbenchSessionCreateBody(BaseModel):
         description="可选 FHD 宿主根 URL，用于编排末尾 GET /api/mods/ 连通性探测",
     )
 
+    @field_validator("intent", mode="before")
+    @classmethod
+    def _session_intent_alias(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip().lower() == "workflow":
+            return CANVAS_SKILL_INTENT
+        return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _skill_group_name_merge(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        wn = (data.get("workflow_name") or "").strip()
+        sg = (data.get("skill_group_name") or "").strip()
+        if not wn and sg:
+            data["workflow_name"] = sg
+        return data
+
 
 def _default_steps(
     intent: str,
@@ -182,6 +242,7 @@ def _default_steps(
     *,
     employee_target: str = "pack_only",
 ) -> List[Dict[str, Any]]:
+    intent = _canonical_workbench_intent(intent)
     if execution_mode == "script":
         return [
             {"id": "spec", "label": "理解任务", "status": "pending", "message": None},
@@ -198,7 +259,12 @@ def _default_steps(
             {"id": "industry", "label": "生成行业卡片", "status": "pending", "message": None},
             {"id": "employees", "label": "创建员工骨架", "status": "pending", "message": None},
             {"id": "employee_impls", "label": "生成员工脚本", "status": "pending", "message": None},
-            {"id": "workflows", "label": "制作员工工作流", "status": "pending", "message": None},
+            {
+                "id": "workflows",
+                "label": "生成员工 Skill 组（画布编排）",
+                "status": "pending",
+                "message": None,
+            },
             {"id": "register_packs", "label": "登记员工包并修复图", "status": "pending", "message": None},
             {"id": "api", "label": "生成/绑定 API 节点", "status": "pending", "message": None},
             {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
@@ -214,7 +280,7 @@ def _default_steps(
         if (employee_target or "").strip().lower() == "pack_plus_workflow":
             base.extend(
                 [
-                    {"id": "workflow", "label": "生成画布工作流", "status": "pending", "message": None},
+                    {"id": "workflow", "label": "生成 Skill 组（画布）", "status": "pending", "message": None},
                     {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
                     {"id": "mod_sandbox", "label": "包体与 Python 校验", "status": "pending", "message": None},
                     {"id": "host_check", "label": "宿主连通性检查", "status": "pending", "message": None},
@@ -223,15 +289,15 @@ def _default_steps(
         else:
             base.extend(
                 [
-                    {"id": "workflow", "label": "画布工作流", "status": "pending", "message": None},
+                    {"id": "workflow", "label": "Skill 组（画布）", "status": "pending", "message": None},
                     {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
                     {"id": "mod_sandbox", "label": "包体与 Python 校验", "status": "pending", "message": None},
                     {"id": "host_check", "label": "宿主连通性检查", "status": "pending", "message": None},
                 ]
             )
     base.append({"id": "complete", "label": "完成", "status": "pending", "message": None})
-    if intent == "workflow":
-        base[1]["label"] = "创建工作流"
+    if intent == CANVAS_SKILL_INTENT:
+        base[1]["label"] = "创建 Skill 组"
     return base
 
 
@@ -277,6 +343,43 @@ async def _fail_session(sid: str, step_id: str, err: str) -> None:
                     s["message"] = err
                     break
         _persist_workbench_session_unlocked(sid)
+
+
+def _cleanup_mod_pipeline_resources(db: Session, resources: List[Dict[str, Any]]) -> None:
+    """做 Mod 全流程失败时尽量撤销已创建目录与数据库记录（尽力而为）。"""
+    import shutil
+
+    for res in reversed(resources):
+        try:
+            if res["type"] == "mod_dir":
+                p = Path(res["path"])
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+            elif res["type"] == "workflow_ids":
+                for wid in res.get("ids") or []:
+                    try:
+                        wid_int = int(wid)
+                    except (TypeError, ValueError):
+                        continue
+                    db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wid_int).delete(
+                        synchronize_session=False
+                    )
+                    db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wid_int).delete(
+                        synchronize_session=False
+                    )
+                    wf = db.query(Workflow).filter(Workflow.id == wid_int).first()
+                    if wf:
+                        db.delete(wf)
+                db.commit()
+            elif res["type"] == "catalog_by_pkg":
+                pkg_id = str(res.get("pkg_id") or "").strip()
+                if pkg_id:
+                    db.query(CatalogItem).filter(CatalogItem.pkg_id == pkg_id).delete(
+                        synchronize_session=False
+                    )
+                    db.commit()
+        except Exception:
+            _LOG.exception("cleanup pipeline resource failed res=%s", res)
 
 
 def _script_workflow_brief(payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -374,7 +477,8 @@ def _commit_script_workflow_from_result(
 
 
 async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None:
-    intent = payload["intent"]
+    intent = _canonical_workbench_intent(str(payload.get("intent") or ""))
+    payload["intent"] = intent
     execution_mode = str(payload.get("execution_mode") or "workflow")
     brief = (payload.get("brief") or "").strip()
     prov = (payload.get("provider") or "").strip() or None
@@ -537,213 +641,271 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 f"manifest.id={manifest.get('id')}，员工 {len(employees)} 名{repair_note}",
             )
 
-            await _set_step(sid, "repo", "running", "正在新建或覆盖 Mod 仓库")
-            imported = import_mod_suite_repository(
-                db,
-                user,
-                parsed=parsed,
-                replace=replace,
-                generate_frontend=generate_frontend,
-            )
-            if not imported.get("ok"):
-                await _fail_session(sid, "repo", imported.get("error") or "Mod 仓库创建失败")
-                return
-            # import 可能补全 parsed.blueprint.frontend_app，与本地 blueprint 变量再对齐
-            blueprint = parsed.get("blueprint") or blueprint
-            mod_dir = Path(imported["path"])
-            repo_done = f"已写入 {imported.get('id')}"
-            if generate_frontend:
-                repo_done += (
-                    "；含 Vue 定制页（frontend/routes.js、frontend/views/HomeView.vue）"
-                    + ("，frontend_app 由模型省略已自动补齐" if imported.get("had_frontend_fallback") else "")
+            _pipeline_resources: List[Dict[str, Any]] = []
+
+            async def _abort_mod_pipeline(step_id: str, err: str) -> None:
+                _cleanup_mod_pipeline_resources(db, _pipeline_resources)
+                await _fail_session(sid, step_id, err)
+
+            try:
+                await _set_step(sid, "repo", "running", "正在新建或覆盖 Mod 仓库")
+                imported = import_mod_suite_repository(
+                    db,
+                    user,
+                    parsed=parsed,
+                    replace=replace,
+                    generate_frontend=generate_frontend,
                 )
-            await _set_step(sid, "repo", "done", repo_done)
+                if not imported.get("ok"):
+                    await _fail_session(sid, "repo", imported.get("error") or "Mod 仓库创建失败")
+                    return
+                # import 可能补全 parsed.blueprint.frontend_app，与本地 blueprint 变量再对齐
+                blueprint = parsed.get("blueprint") or blueprint
+                mod_dir = Path(imported["path"])
+                _pipeline_resources.append({"type": "mod_dir", "path": str(mod_dir)})
+                repo_done = f"已写入 {imported.get('id')}"
+                if generate_frontend:
+                    repo_done += (
+                        "；含 Vue 定制页（frontend/routes.js、frontend/views/HomeView.vue）"
+                        + ("，frontend_app 由模型省略已自动补齐" if imported.get("had_frontend_fallback") else "")
+                    )
+                await _set_step(sid, "repo", "done", repo_done)
 
-            await _set_step(sid, "industry", "running", "正在写入行业卡片")
-            try:
-                industry_card = write_mod_suite_industry_card(mod_dir, blueprint)
-                ui_shell = write_mod_suite_ui_shell(mod_dir, blueprint)
-            except Exception as e:  # noqa: BLE001
-                await _fail_session(sid, "industry", f"行业/UI 配置生成失败: {e}")
-                return
-            await _set_step(
-                sid,
-                "industry",
-                "done",
-                f"{industry_card.get('name') or '通用'}；侧栏 {len(ui_shell.get('sidebar_menu') or [])} 项",
-            )
+                await _set_step(sid, "industry", "running", "正在写入行业卡片")
+                try:
+                    industry_card = write_mod_suite_industry_card(mod_dir, blueprint)
+                    ui_shell = write_mod_suite_ui_shell(mod_dir, blueprint)
+                except Exception as e:  # noqa: BLE001
+                    await _abort_mod_pipeline("industry", f"行业/UI 配置生成失败: {e}")
+                    return
+                await _set_step(
+                    sid,
+                    "industry",
+                    "done",
+                    f"{industry_card.get('name') or '通用'}；侧栏 {len(ui_shell.get('sidebar_menu') or [])} 项",
+                )
 
-            await _set_step(sid, "employees", "running", f"正在创建 {len(employees)} 名员工骨架")
-            await _set_step(sid, "employees", "done", f"已写入 workflow_employees：{len(employees)} 名")
+                await _set_step(sid, "employees", "running", f"正在创建 {len(employees)} 名员工骨架")
+                await _set_step(sid, "employees", "done", f"已写入 workflow_employees：{len(employees)} 名")
 
-            # 新步骤：为每员工生成真实 Python 实现（backend/employees/<stem>.py）
-            await _set_step(sid, "employee_impls", "running", "开始为每员工生成可执行脚本…")
+                employees_for_llm = employees[:_MAX_EMPLOYEES_FOR_LLM]
+                if len(employees) > _MAX_EMPLOYEES_FOR_LLM:
+                    await _set_step(
+                        sid,
+                        "employee_impls",
+                        "running",
+                        f"员工数 {len(employees)} 超过 LLM 上限 {_MAX_EMPLOYEES_FOR_LLM}，"
+                        f"仅前 {_MAX_EMPLOYEES_FOR_LLM} 名请求模型；其余写入兜底实现…",
+                    )
+                    emp_dir = mod_dir / "backend" / "employees"
+                    emp_dir.mkdir(parents=True, exist_ok=True)
+                    for emp in employees[_MAX_EMPLOYEES_FOR_LLM:]:
+                        if not isinstance(emp, dict):
+                            continue
+                        eid = str(emp.get("id") or "").strip()
+                        if not eid:
+                            continue
+                        stem = sanitize_employee_stem(eid)
+                        label = str(emp.get("label") or emp.get("panel_title") or eid).strip()
+                        panel_summary = str(emp.get("panel_summary") or "").strip()
+                        fb = _fallback_employee_py(eid, label, panel_summary)
+                        (emp_dir / f"{stem}.py").write_text(fb, encoding="utf-8")
 
-            async def _emp_impl_step_msg(text: str) -> None:
-                await _set_step(sid, "employee_impls", "running", text)
+                # 新步骤：为每员工生成真实 Python 实现（backend/employees/<stem>.py）
+                await _set_step(sid, "employee_impls", "running", "开始为每员工生成可执行脚本…")
 
-            try:
-                impl_result = await generate_mod_employee_impls_async(
+                async def _emp_impl_step_msg(text: str) -> None:
+                    await _set_step(sid, "employee_impls", "running", text)
+
+                try:
+                    impl_result = await generate_mod_employee_impls_async(
+                        db,
+                        user,
+                        mod_dir=mod_dir,
+                        employees=employees_for_llm,
+                        mod_id=str(manifest.get("id") or mod_dir.name),
+                        mod_name=str(manifest.get("name") or manifest.get("id") or mod_dir.name),
+                        mod_brief=brief,
+                        industry_card=industry_card,
+                        provider=gen.get("provider"),
+                        model=gen.get("model"),
+                        status_hook=_emp_impl_step_msg,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _LOG.exception("workbench mod employee_impls failed session=%s", sid)
+                    await _abort_mod_pipeline(
+                        "employee_impls",
+                        f"生成员工脚本异常（可查看服务端日志）: {exc!s}"[:1000],
+                    )
+                    return
+                impl_errs = impl_result.get("errors") or []
+                impl_done_msg = (
+                    f"已生成 {len(impl_result.get('generated') or [])} 份员工脚本"
+                    + (f"，{len(impl_errs)} 份走兜底实现" if impl_errs else "")
+                )
+                await _set_step(sid, "employee_impls", "done", impl_done_msg)
+
+                await _set_step(
+                    sid,
+                    "workflows",
+                    "running",
+                    "开始生成员工 Skill 组（画布节点与连线；ESkill 口径下单节点即 Skill）…",
+                )
+
+                async def _workflows_step_msg(text: str) -> None:
+                    await _set_step(sid, "workflows", "running", text)
+
+                wf = await create_mod_suite_workflows_async(
                     db,
                     user,
                     mod_dir=mod_dir,
                     employees=employees,
-                    mod_id=str(manifest.get("id") or mod_dir.name),
-                    mod_name=str(manifest.get("name") or manifest.get("id") or mod_dir.name),
-                    mod_brief=brief,
-                    industry_card=industry_card,
+                    brief=brief,
                     provider=gen.get("provider"),
                     model=gen.get("model"),
-                    status_hook=_emp_impl_step_msg,
+                    step_message_hook=_workflows_step_msg,
                 )
-            except Exception as exc:  # noqa: BLE001
-                _LOG.exception("workbench mod employee_impls failed session=%s", sid)
-                await _fail_session(
+                workflow_results = wf.get("workflow_results") or []
+                wf_ids = [
+                    x.get("workflow_id")
+                    for x in workflow_results
+                    if isinstance(x, dict) and x.get("workflow_id") is not None
+                ]
+                _pipeline_resources.append({"type": "workflow_ids", "ids": wf_ids})
+                failed_workflows = [
+                    x for x in workflow_results if isinstance(x, dict) and not x.get("ok", True)
+                ]
+                await _set_step(
                     sid,
-                    "employee_impls",
-                    f"生成员工脚本异常（可查看服务端日志）: {exc!s}"[:1000],
+                    "workflows",
+                    "done",
+                    f"已生成 {len(workflow_results)} 条工作流，失败 {len(failed_workflows)} 条",
                 )
-                return
-            impl_errs = impl_result.get("errors") or []
-            impl_done_msg = (
-                f"已生成 {len(impl_result.get('generated') or [])} 份员工脚本"
-                + (f"，{len(impl_errs)} 份走兜底实现" if impl_errs else "")
-            )
-            await _set_step(sid, "employee_impls", "done", impl_done_msg)
 
-            await _set_step(sid, "workflows", "running", "开始为员工生成工作流图…")
+                # 新步骤：自动修复画布 employee 节点 id 对齐 + 五维审核登记 Catalog
+                await _set_step(sid, "register_packs", "running", "修复画布员工节点对齐…")
+                graph_patch_result = patch_workflow_graph_employee_nodes(
+                    db, user, mod_dir=mod_dir, workflow_results=workflow_results
+                )
 
-            async def _workflows_step_msg(text: str) -> None:
-                await _set_step(sid, "workflows", "running", text)
+                async def _register_step_msg(text: str) -> None:
+                    await _set_step(sid, "register_packs", "running", text)
 
-            wf = await create_mod_suite_workflows_async(
-                db,
-                user,
-                mod_dir=mod_dir,
-                employees=employees,
-                brief=brief,
-                provider=gen.get("provider"),
-                model=gen.get("model"),
-                step_message_hook=_workflows_step_msg,
-            )
-            workflow_results = wf.get("workflow_results") or []
-            failed_workflows = [x for x in workflow_results if isinstance(x, dict) and not x.get("ok", True)]
-            await _set_step(
-                sid,
-                "workflows",
-                "done",
-                f"已生成 {len(workflow_results)} 条工作流，失败 {len(failed_workflows)} 条",
-            )
-
-            # 新步骤：自动修复画布 employee 节点 id 对齐 + 五维审核登记 Catalog
-            await _set_step(sid, "register_packs", "running", "修复画布员工节点对齐…")
-            graph_patch_result = patch_workflow_graph_employee_nodes(
-                db, user, mod_dir=mod_dir, workflow_results=workflow_results
-            )
-
-            async def _register_step_msg(text: str) -> None:
-                await _set_step(sid, "register_packs", "running", text)
-
-            register_result = await register_mod_employee_packs_async(
-                db,
-                user,
-                mod_dir=mod_dir,
-                workflow_results=workflow_results,
-                status_hook=_register_step_msg,
-                industry=str((industry_card or {}).get("name") or "通用"),
-            )
-            reg_errs = register_result.get("errors") or []
-            patches = graph_patch_result.get("patches") or []
-            patch_updates = sum(1 for p in patches if p.get("action") in ("update", "insert"))
-            reg_done_msg = (
-                f"画布修复 {patch_updates} 处；已登记 {len(register_result.get('registered') or [])} 个员工包"
-                + (f"，{len(reg_errs)} 个失败" if reg_errs else "")
-            )
-            await _set_step(sid, "register_packs", "done", reg_done_msg)
-
-            await _set_step(sid, "api", "running", "正在汇总 OpenAPI 节点")
-            api_summary = {
-                "nodes": wf.get("api_nodes") or [],
-                "warnings": wf.get("api_warnings") or [],
-            }
-            api_msg = (
-                f"发现 {len(api_summary['nodes'])} 个 API 节点"
-                + (f"，{len(api_summary['warnings'])} 个待配置" if api_summary["warnings"] else "")
-            )
-            await _set_step(sid, "api", "done", api_msg)
-
-            await _set_step(sid, "workflow_sandbox", "running", "正在 mock 执行员工工作流")
-            workflow_sandbox = run_mod_suite_workflow_sandboxes(db, user, workflow_results)
-            await _set_step(
-                sid,
-                "workflow_sandbox",
-                "done",
-                "结构沙盒（Mock 员工）通过"
-                if workflow_sandbox.get("ok")
-                else "结构沙盒存在警告，请进入画布检查",
-            )
-
-            employee_readiness = analyze_mod_employee_readiness(db, user, mod_dir)
-            blueprint["employee_impl_result"] = impl_result
-            blueprint["graph_patch_result"] = graph_patch_result
-            blueprint["pack_register_result"] = register_result
-            write_mod_suite_blueprint(
-                mod_dir,
-                blueprint,
-                workflow_results,
-                industry_card=industry_card,
-                ui_shell=ui_shell,
-                api_summary=api_summary,
-                workflow_sandbox=workflow_sandbox,
-                employee_readiness=employee_readiness,
-            )
-
-            await _set_step(sid, "mod_sandbox", "running", "正在校验 Mod manifest、蓝图与路由骨架")
-            mod_sandbox = run_mod_suite_mod_sandbox(mod_dir, workflow_results)
-            validation_summary = {
-                "mod_sandbox": mod_sandbox,
-                "api_warnings": api_summary["warnings"],
-                "workflow_warnings": [
-                    str(item.get("error") or item.get("graph", {}).get("error") or "")
-                    for item in workflow_results
-                    if isinstance(item, dict) and not item.get("ok", True)
-                ],
-                "repair_suggestions": [],
-                "employee_readiness": employee_readiness,
-                "ok": bool(mod_sandbox.get("ok")) and not failed_workflows and bool(employee_readiness.get("ok")),
-            }
-            await _set_step(
-                sid,
-                "mod_sandbox",
-                "done",
-                "Mod 沙箱通过；员工真实执行仍需登记与非 Mock 验证"
-                if mod_sandbox.get("ok") and employee_readiness.get("ok")
-                else "Mod 沙箱或员工可用性存在缺口，已写入报告",
-            )
-
-            await _set_step(sid, "complete", "done")
-            async with _SESSION_LOCK:
-                sess = WORKBENCH_SESSIONS.get(sid)
-                if sess:
-                    sess["status"] = "done"
-                    sess["validate_warnings"] = api_summary["warnings"] + validation_summary["workflow_warnings"]
-                    sess["sandbox_report"] = {"workflow": workflow_sandbox, "mod": mod_sandbox}
-                    sess["artifact"] = {
-                        "mod_id": imported["id"],
-                        "workflow_results": workflow_results,
-                        "blueprint": blueprint,
-                        "industry_card": industry_card,
-                        "ui_shell": ui_shell,
-                        "api_summary": api_summary,
-                        "workflow_sandbox": workflow_sandbox,
-                        "employee_readiness": employee_readiness,
-                        "mod_sandbox": mod_sandbox,
-                        "validation_summary": validation_summary,
-                        "employee_impls": impl_result,
-                        "graph_patch": graph_patch_result,
-                        "pack_register": register_result,
+                register_result = await register_mod_employee_packs_async(
+                    db,
+                    user,
+                    mod_dir=mod_dir,
+                    workflow_results=workflow_results,
+                    status_hook=_register_step_msg,
+                    industry=str((industry_card or {}).get("name") or "通用"),
+                )
+                _pipeline_resources.append(
+                    {
+                        "type": "catalog_by_pkg",
+                        "pkg_id": str(imported.get("id") or manifest.get("id") or mod_dir.name),
                     }
-                    _persist_workbench_session_unlocked(sid)
+                )
+                reg_errs = register_result.get("errors") or []
+                patches = graph_patch_result.get("patches") or []
+                patch_updates = sum(1 for p in patches if p.get("action") in ("update", "insert"))
+                reg_done_msg = (
+                    f"画布修复 {patch_updates} 处；已登记 {len(register_result.get('registered') or [])} 个员工包"
+                    + (f"，{len(reg_errs)} 个失败" if reg_errs else "")
+                )
+                await _set_step(sid, "register_packs", "done", reg_done_msg)
+
+                await _set_step(sid, "api", "running", "正在汇总 OpenAPI 节点")
+                api_summary = {
+                    "nodes": wf.get("api_nodes") or [],
+                    "warnings": wf.get("api_warnings") or [],
+                }
+                api_msg = (
+                    f"发现 {len(api_summary['nodes'])} 个 API 节点"
+                    + (f"，{len(api_summary['warnings'])} 个待配置" if api_summary["warnings"] else "")
+                )
+                await _set_step(sid, "api", "done", api_msg)
+
+                await _set_step(sid, "workflow_sandbox", "running", "正在 mock 执行员工工作流")
+                workflow_sandbox = run_mod_suite_workflow_sandboxes(db, user, workflow_results)
+                await _set_step(
+                    sid,
+                    "workflow_sandbox",
+                    "done",
+                    "结构沙盒（Mock 员工）通过"
+                    if workflow_sandbox.get("ok")
+                    else "结构沙盒存在警告，请进入画布检查",
+                )
+
+                employee_readiness = analyze_mod_employee_readiness(db, user, mod_dir)
+                blueprint["employee_impl_result"] = impl_result
+                blueprint["graph_patch_result"] = graph_patch_result
+                blueprint["pack_register_result"] = register_result
+                write_mod_suite_blueprint(
+                    mod_dir,
+                    blueprint,
+                    workflow_results,
+                    industry_card=industry_card,
+                    ui_shell=ui_shell,
+                    api_summary=api_summary,
+                    workflow_sandbox=workflow_sandbox,
+                    employee_readiness=employee_readiness,
+                )
+
+                await _set_step(sid, "mod_sandbox", "running", "正在校验 Mod manifest、蓝图与路由骨架")
+                mod_sandbox = run_mod_suite_mod_sandbox(mod_dir, workflow_results)
+                validation_summary = {
+                    "mod_sandbox": mod_sandbox,
+                    "api_warnings": api_summary["warnings"],
+                    "workflow_warnings": [
+                        str(item.get("error") or item.get("graph", {}).get("error") or "")
+                        for item in workflow_results
+                        if isinstance(item, dict) and not item.get("ok", True)
+                    ],
+                    "repair_suggestions": [],
+                    "employee_readiness": employee_readiness,
+                    "ok": bool(mod_sandbox.get("ok"))
+                    and not failed_workflows
+                    and bool(employee_readiness.get("ok")),
+                }
+                await _set_step(
+                    sid,
+                    "mod_sandbox",
+                    "done",
+                    "Mod 沙箱通过；员工真实执行仍需登记与非 Mock 验证"
+                    if mod_sandbox.get("ok") and employee_readiness.get("ok")
+                    else "Mod 沙箱或员工可用性存在缺口，已写入报告",
+                )
+
+                await _set_step(sid, "complete", "done")
+                async with _SESSION_LOCK:
+                    sess = WORKBENCH_SESSIONS.get(sid)
+                    if sess:
+                        sess["status"] = "done"
+                        sess["validate_warnings"] = (
+                            api_summary["warnings"] + validation_summary["workflow_warnings"]
+                        )
+                        sess["sandbox_report"] = {"workflow": workflow_sandbox, "mod": mod_sandbox}
+                        sess["artifact"] = {
+                            "mod_id": imported["id"],
+                            "workflow_results": workflow_results,
+                            "blueprint": blueprint,
+                            "industry_card": industry_card,
+                            "ui_shell": ui_shell,
+                            "api_summary": api_summary,
+                            "workflow_sandbox": workflow_sandbox,
+                            "employee_readiness": employee_readiness,
+                            "mod_sandbox": mod_sandbox,
+                            "validation_summary": validation_summary,
+                            "employee_impls": impl_result,
+                            "graph_patch": graph_patch_result,
+                            "pack_register": register_result,
+                        }
+                        _persist_workbench_session_unlocked(sid)
+            except Exception as e:  # noqa: BLE001
+                _LOG.exception("workbench mod full suite failed session=%s", sid)
+                await _abort_mod_pipeline("complete", str(e)[:2000])
+                return
+
             return
 
         if intent == "employee":
@@ -869,20 +1031,57 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 try:
                     import httpx  # type: ignore
 
-                    async with httpx.AsyncClient(timeout=8.0) as client:
-                        r = await client.get(f"{fhd_base.rstrip('/')}/api/mods/")
-                    host_probe = {
-                        "skipped": False,
-                        "ok": r.status_code < 500,
-                        "status_code": r.status_code,
-                        "url": f"{fhd_base.rstrip('/')}/api/mods/",
-                    }
-                    await _set_step(
-                        sid,
-                        "host_check",
-                        "done",
-                        f"HTTP {r.status_code}" if host_probe.get("ok") else f"HTTP {r.status_code}（异常）",
+                    base = fhd_base.rstrip("/")
+                    host_warnings: List[str] = []
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        r = await client.get(f"{base}/api/mods/")
+                        host_probe = {
+                            "skipped": False,
+                            "ok": r.status_code < 500,
+                            "status_code": r.status_code,
+                            "url": f"{base}/api/mods/",
+                        }
+                        try:
+                            lr = await client.get(f"{base}/api/mods/llm-status")
+                            if lr.status_code == 200:
+                                try:
+                                    lj = lr.json()
+                                    if isinstance(lj, dict) and lj.get("api_key_configured") is False:
+                                        host_warnings.append(
+                                            "宿主返回 llm-status：未配置 LLM API Key，员工运行时可能无法调用模型"
+                                        )
+                                except Exception:
+                                    host_warnings.append("llm-status 返回非 JSON，跳过密钥探测")
+                            elif lr.status_code == 404:
+                                host_warnings.append(
+                                    "宿主未提供 /api/mods/llm-status（可选），无法在编排阶段探测 LLM 密钥"
+                                )
+                        except Exception:
+                            host_warnings.append("无法请求宿主 /api/mods/llm-status（可选端点）")
+
+                        try:
+                            vr = await client.get(f"{base}/api/version")
+                            if vr.status_code == 200:
+                                try:
+                                    vj = vr.json()
+                                    if isinstance(vj, dict) and vj.get("min_mod_sdk_version"):
+                                        host_probe["host_min_mod_sdk_version"] = str(
+                                            vj.get("min_mod_sdk_version") or ""
+                                        )
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    msg = (
+                        f"HTTP {r.status_code}"
+                        if host_probe.get("ok")
+                        else f"HTTP {r.status_code}（异常）"
                     )
+                    if host_warnings:
+                        msg += "；" + "；".join(host_warnings[:3])[:400]
+                        host_probe["warnings"] = host_warnings
+                    await _set_step(sid, "host_check", "done", msg[:480])
                 except Exception as e:  # noqa: BLE001
                     host_probe = {"skipped": False, "ok": False, "error": str(e)[:300]}
                     await _set_step(sid, "host_check", "done", f"探测失败: {e!s}"[:300])
@@ -917,10 +1116,10 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                     _persist_workbench_session_unlocked(sid)
             return
 
-        if intent == "workflow":
+        if intent == CANVAS_SKILL_INTENT:
             name = (payload.get("workflow_name") or "").strip()
             if not name:
-                await _fail_session(sid, "generate", "请填写工作流名称")
+                await _fail_session(sid, "generate", "请填写 Skill 组名称")
                 return
             plan = (payload.get("plan_notes") or "").strip()
             full_desc = brief
@@ -933,6 +1132,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 name=name,
                 description=full_desc,
                 is_active=True,
+                kind="skill_group",
             )
             db.add(wf)
             db.commit()
@@ -1065,11 +1265,13 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 sess = WORKBENCH_SESSIONS.get(sid)
                 if sess:
                     sess["status"] = "done"
-                    sess["artifact"] = {
-                        "workflow_id": wid,
-                        "workflow_name": name,
-                        **nl_meta,
-                    }
+                    sess["artifact"] = _enrich_artifact_skill_aliases(
+                        {
+                            "workflow_id": wid,
+                            "workflow_name": name,
+                            **nl_meta,
+                        },
+                    )
                     _persist_workbench_session_unlocked(sid)
             return
 
@@ -1153,7 +1355,7 @@ async def create_workbench_script_session(
 
     sid = uuid.uuid4().hex[:24]
     payload = {
-        "intent": "workflow",
+        "intent": CANVAS_SKILL_INTENT,
         "execution_mode": "script",
         "brief": brief,
         "workflow_name": meta.get("workflow_name"),
@@ -1165,9 +1367,9 @@ async def create_workbench_script_session(
         WORKBENCH_SESSIONS[sid] = {
             "id": sid,
             "user_id": user.id,
-            "intent": "workflow",
+            "intent": CANVAS_SKILL_INTENT,
             "status": "running",
-            "steps": _default_steps("workflow", "script"),
+            "steps": _default_steps(CANVAS_SKILL_INTENT, "script"),
             "planning_record": _planning_record(payload),
             "artifact": None,
             "error": None,
@@ -1194,10 +1396,12 @@ async def get_workbench_session(
         raise HTTPException(403, "无权访问此会话")
     return {
         "id": sess["id"],
-        "intent": sess["intent"],
+        "intent": _canonical_workbench_intent(str(sess.get("intent") or "")),
         "status": sess["status"],
         "steps": sess["steps"],
-        "artifact": sess.get("artifact"),
+        "artifact": _enrich_artifact_skill_aliases(
+            dict(sess["artifact"]) if isinstance(sess.get("artifact"), dict) else None
+        ),
         "planning_record": sess.get("planning_record"),
         "error": sess.get("error"),
         "validate_warnings": sess.get("validate_warnings"),

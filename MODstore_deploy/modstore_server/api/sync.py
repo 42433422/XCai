@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from modman.manifest_util import read_manifest
 from modman.repo_config import resolved_xcagi
@@ -10,7 +12,8 @@ from modman.store import deploy_to_xcagi, iter_mod_dirs, pull_from_xcagi
 from modstore_server.api.auth_deps import assert_user_owns_mod, require_user
 from modstore_server.api.dto import SyncDTO
 from modstore_server.infrastructure import library_paths
-from modstore_server.models import User
+from modstore_server.models import User, get_session_factory
+from modstore_server.quota_middleware import consume_quota, get_quota, require_quota
 
 router = APIRouter(tags=["sync"])
 
@@ -24,11 +27,29 @@ def api_sync_push(body: SyncDTO, user: User = Depends(require_user)):
     if not user.is_admin and body.mod_ids:
         for mod_id in body.mod_ids:
             assert_user_owns_mod(user, mod_id)
+    enforce_sync_quota = (os.environ.get("MODSTORE_ENFORCE_SYNC_QUOTA") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if enforce_sync_quota:
+        sf = get_session_factory()
+        with sf() as qdb:
+            # 未给用户配置 sync_operations 配额时不阻断同步（避免默认环境误开开关）
+            if get_quota(qdb, user.id, "sync_operations") is None:
+                enforce_sync_quota = False
+            else:
+                require_quota(qdb, user.id, "sync_operations", 1)
     lib = library_paths.lib()
     try:
         done = deploy_to_xcagi(body.mod_ids, lib, xc, replace=True)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    if enforce_sync_quota:
+        sf = get_session_factory()
+        with sf() as qdb2:
+            consume_quota(qdb2, user.id, "sync_operations", 1)
     return {"ok": True, "deployed": done}
 
 

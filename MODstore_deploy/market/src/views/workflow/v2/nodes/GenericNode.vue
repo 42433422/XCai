@@ -18,6 +18,8 @@ const summary = computed(() => {
   switch (m.kind) {
     case 'employee':
       return cfg.employee_id ? `员工 ${cfg.employee_id}` : '未选择员工'
+    case 'eskill':
+      return cfg.skill_id ? `ESkill ${cfg.skill_id}` : '未选择 ESkill'
     case 'condition':
       return cfg.expression ? String(cfg.expression).slice(0, 48) : '未配置表达式'
     case 'openapi_operation':

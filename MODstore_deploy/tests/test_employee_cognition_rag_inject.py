@@ -63,7 +63,7 @@ def test_cognition_injects_rag_context_into_system_prompt(tmp_path, monkeypatch)
 
     captured: dict = {}
 
-    async def fake_chat_dispatch(provider, *, api_key, base_url, model, messages, max_tokens=None):
+    async def fake_chat_dispatch(_session, _user_id, provider, model, messages, *, max_tokens=None):
         captured["provider"] = provider
         captured["messages"] = messages
         return {"ok": True, "content": "answered using knowledge", "raw": {}, "usage": {}}
@@ -71,15 +71,16 @@ def test_cognition_injects_rag_context_into_system_prompt(tmp_path, monkeypatch)
     async def fake_embed(texts):
         return [[1.0, 0.0, 0.0] for _ in texts]
 
-    monkeypatch.setattr(ee, "chat_dispatch", fake_chat_dispatch)
+    monkeypatch.setattr(ee, "chat_dispatch_via_session", fake_chat_dispatch)
     import modstore_server.rag_service as rag_module
 
     monkeypatch.setattr(rag_module, "embed_texts", fake_embed)
 
     monkeypatch.setattr(
-        ee, "resolve_api_key", lambda session, uid, prov: ("dummy-key", "test")
+        "modstore_server.llm_key_resolver.resolve_api_key",
+        lambda session, uid, prov: ("dummy-key", "test"),
     )
-    monkeypatch.setattr(ee, "resolve_base_url", lambda session, uid, prov: None)
+    monkeypatch.setattr("modstore_server.llm_key_resolver.resolve_base_url", lambda session, uid, prov: None)
 
     config = {
         "cognition": {
@@ -121,15 +122,16 @@ def test_cognition_disabled_when_knowledge_off(tmp_path, monkeypatch):
 
     captured: dict = {}
 
-    async def fake_chat_dispatch(provider, *, api_key, base_url, model, messages, max_tokens=None):
+    async def fake_chat_dispatch(_session, _user_id, _provider, _model, messages, *, max_tokens=None):
         captured["messages"] = messages
         return {"ok": True, "content": "no knowledge needed", "raw": {}, "usage": {}}
 
-    monkeypatch.setattr(ee, "chat_dispatch", fake_chat_dispatch)
+    monkeypatch.setattr(ee, "chat_dispatch_via_session", fake_chat_dispatch)
     monkeypatch.setattr(
-        ee, "resolve_api_key", lambda session, uid, prov: ("dummy", "test")
+        "modstore_server.llm_key_resolver.resolve_api_key",
+        lambda session, uid, prov: ("dummy", "test"),
     )
-    monkeypatch.setattr(ee, "resolve_base_url", lambda session, uid, prov: None)
+    monkeypatch.setattr("modstore_server.llm_key_resolver.resolve_base_url", lambda session, uid, prov: None)
 
     out = asyncio.run(
         ee._cognition_real(
