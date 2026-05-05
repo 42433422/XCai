@@ -36,6 +36,7 @@ from modstore_server.mod_scaffold_runner import (
     generate_mod_suite_blueprint_async,
     generate_workflow_for_intent,
     import_mod_suite_repository,
+    employee_pack_consistency_warnings,
     mod_compileall_warnings,
     patch_workflow_graph_employee_nodes,
     register_mod_employee_packs_async,
@@ -1188,6 +1189,15 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                             "id": "python_compile",
                             "ok": not py_warns,
                             "message": "；".join(py_warns) if py_warns else "未发现需编译的 Python 或检查通过",
+                        },
+                    )
+                    # 员工包一致性静态校验：max_tokens / handlers / try-call_llm / 返回 schema
+                    cons_warns = employee_pack_consistency_warnings(pack_dir)
+                    mod_checks.append(
+                        {
+                            "id": "employee_pack_consistency",
+                            "ok": not cons_warns,
+                            "message": "；".join(cons_warns)[:1200] if cons_warns else "manifest ↔ employees 一致性检查通过",
                         },
                     )
                 else:

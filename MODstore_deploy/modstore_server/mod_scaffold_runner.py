@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import py_compile
+import re
 import tempfile
 from collections import defaultdict
 from pathlib import Path
@@ -230,6 +231,98 @@ def mod_compileall_warnings(mod_dir: Path) -> List[str]:
             rel = p.relative_to(mod_dir).as_posix()
             out.append(f"{rel}: {e}")
     return out
+
+
+def employee_pack_consistency_warnings(mod_dir: Path) -> List[str]:
+    """员工包静态一致性校验（Phase 1 修复对应的验收规则）：
+
+    1. ``manifest.employee_config_v2.cognition.agent.model.max_tokens`` 与
+       ``backend/employees/*.py`` 中 ``call_llm(...)`` 的 ``max_tokens=...`` 一致。
+    2. ``actions.handlers`` 声明的每个 handler 在员工 .py 里都能找到对应分支
+       （形如 ``'echo'`` / ``'llm_md'`` / ``'webhook'`` 字符串字面量出现）。
+    3. 每个 ``await call_llm(`` 调用都被 ``try:`` 包裹（行级启发式：向上 6 行内出现 ``try:``）。
+    4. 员工 ``run`` 返回结构包含统一字段（出现 ``'ok'``/``'summary'``/``'error'`` 字面量）。
+
+    仅做静态启发式检查，目的是防止再出现「manifest 与代码脱节 / handlers 形同虚设
+    / call_llm 裸 await / 返回字段三套」这类回归。返回的字符串将作为 mod_sandbox
+    的 warnings 显示在「包体与 Python 校验」步骤；非阻塞。
+    """
+    backend = mod_dir / "backend"
+    manifest_path = mod_dir / "manifest.json"
+    if not backend.is_dir() or not manifest_path.is_file():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(manifest, dict) or manifest.get("artifact") != "employee_pack":
+        return []
+
+    v2 = manifest.get("employee_config_v2") if isinstance(manifest.get("employee_config_v2"), dict) else {}
+    cog = v2.get("cognition") if isinstance(v2.get("cognition"), dict) else {}
+    agent = cog.get("agent") if isinstance(cog.get("agent"), dict) else {}
+    model = agent.get("model") if isinstance(agent.get("model"), dict) else {}
+    actions = v2.get("actions") if isinstance(v2.get("actions"), dict) else {}
+    declared_handlers = [
+        str(h).strip()
+        for h in (actions.get("handlers") if isinstance(actions.get("handlers"), list) else [])
+        if isinstance(h, str) and str(h).strip()
+    ]
+    manifest_max_tokens = model.get("max_tokens")
+
+    emp_dir = backend / "employees"
+    if not emp_dir.is_dir():
+        return []
+    emp_files = [p for p in sorted(emp_dir.glob("*.py")) if p.name != "__init__.py"]
+    if not emp_files:
+        return []
+
+    warnings: List[str] = []
+    for emp_py in emp_files:
+        try:
+            src = emp_py.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        rel = emp_py.relative_to(mod_dir).as_posix()
+        lines = src.splitlines()
+
+        # Rule 3: every `await call_llm(` should have `try:` within the previous 6 lines.
+        for idx, ln in enumerate(lines):
+            if "await call_llm(" in ln or "call_llm(messages" in ln and "await" in ln:
+                window = "\n".join(lines[max(0, idx - 6):idx])
+                if "try:" not in window and "asyncio.wait_for" not in ln:
+                    warnings.append(
+                        f"{rel}:L{idx + 1}: call_llm 调用未被 try/except 或 asyncio.wait_for 包裹（建议统一异常返回）",
+                    )
+
+        # Rule 4: unified return schema — file should reference 'ok' / 'summary' / 'error'.
+        missing_keys = [k for k in ("'ok'", "'summary'", "'error'") if k not in src]
+        if missing_keys:
+            warnings.append(
+                f"{rel}: run 返回结构未见统一字段 {missing_keys}，建议返回 {{ok, summary, items, warnings, error, meta}}",
+            )
+
+        # Rule 1: max_tokens consistency — manifest value should appear literally in the file
+        # (Phase 1 模板从 manifest 注入，故应能匹配；若员工被人手改成硬编码不同值则告警)。
+        if isinstance(manifest_max_tokens, int) and manifest_max_tokens > 0:
+            if f"max_tokens={manifest_max_tokens}" not in src and f"max_tokens = {manifest_max_tokens}" not in src:
+                # 仅当文件里出现了 max_tokens=数字 但不是 manifest 值才报；若动态读取（如 cfg['max_tokens']）则放过。
+                if re.search(r"max_tokens\s*=\s*\d+", src):
+                    warnings.append(
+                        f"{rel}: call_llm 的 max_tokens 与 manifest({manifest_max_tokens}) 不一致；"
+                        f"建议从 manifest 动态读取，避免与 employee_config_v2.cognition.agent.model.max_tokens 漂移",
+                    )
+
+        # Rule 2: handlers declared in manifest should each appear as a string literal in the impl.
+        for h in declared_handlers:
+            if h in {"vibe_edit", "vibe_heal", "vibe_code"}:
+                continue
+            if f"'{h}'" not in src and f'"{h}"' not in src:
+                warnings.append(
+                    f"{rel}: manifest.actions.handlers 声明 '{h}'，但员工实现中未见对应分支字面量",
+                )
+
+    return warnings
 
 
 def resolve_llm_provider_model(
