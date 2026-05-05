@@ -52,6 +52,12 @@ $excludes = @(
   "MODstore_deploy/modstore_server/payment_orders"
   "MODstore_deploy/modstore_server/__pycache__"
   "MODstore_deploy/tests/__pycache__"
+  # 运行时数据目录 —— 不随代码同步，避免本地测试数据覆盖服务器生产数据
+  "MODstore_deploy/modstore_server/catalog_data"   # packages.json + 上传的 .xcmod/.zip 文件
+  "MODstore_deploy/modstore_server/library"        # Mod 本地源码库
+  "MODstore_deploy/modstore_server/modstore.db"    # SQLite 数据库
+  "MODstore_deploy/var/runtime"                    # outbox / webhook_events 等运行时落盘
+  "MODstore_deploy/var/vibe_coding"                # vibe-coding 运行时缓存
 )
 # Windows tar：--exclude 无 ** 时更稳
 Push-Location $CompanyRoot

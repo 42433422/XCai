@@ -139,8 +139,18 @@
           </li>
         </ol>
         <div v-if="!loopRunning" class="swc-feedback">
-          <textarea v-model="feedback" rows="2" placeholder="对生成结果不满意？描述一下要改的点，AI 会再来一轮…" />
-          <button type="button" :disabled="!feedback.trim()" @click="submitFeedback">让 AI 再改</button>
+          <textarea
+            v-model="feedback"
+            rows="2"
+            :placeholder="
+              !sessionId && workflowId
+                ? '描述需要改进的方向（AI 会基于现有脚本重新生成）…'
+                : '对生成结果不满意？描述一下要改的点，AI 会再来一轮…'
+            "
+          />
+          <button type="button" :disabled="!feedback.trim()" @click="submitFeedback">
+            {{ !sessionId && workflowId ? '让 AI 改进此脚本' : '让 AI 再改' }}
+          </button>
         </div>
       </aside>
 
@@ -471,12 +481,36 @@ async function startAgentLoop() {
   }
 }
 
-async function submitFeedback() {
-  if (!feedback.value.trim() || !sessionId.value) return
+async function startEditWithAi(hint: string) {
+  if (!workflowId.value) return
   loopRunning.value = true
   outcome.value = null
+  stage.value = 'loop'
+  tab.value = 'code'
+  try {
+    await consumeSseStream(`/api/script-workflows/${workflowId.value}/edit-with-ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hint }),
+    })
+  } catch (e: any) {
+    events.value.push({ type: 'error', iteration: -1, payload: { reason: e.message || String(e) } })
+    loopRunning.value = false
+  }
+}
+
+async function submitFeedback() {
+  if (!feedback.value.trim()) return
   const hint = feedback.value.trim()
   feedback.value = ''
+  // 编辑已有工作流时尚无活跃 session，调用 edit-with-ai 创建新 agent loop
+  if (!sessionId.value && workflowId.value) {
+    await startEditWithAi(hint)
+    return
+  }
+  if (!sessionId.value) return
+  loopRunning.value = true
+  outcome.value = null
   try {
     await consumeSseStream(`/api/script-workflows/sessions/${encodeURIComponent(sessionId.value)}/feedback`, {
       method: 'POST',

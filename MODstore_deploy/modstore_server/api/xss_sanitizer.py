@@ -9,6 +9,25 @@ from starlette.responses import Response
 
 _SCRIPT_RE = re.compile(r"<\s*script[^>]*>.*?<\s*/\s*script\s*>", re.IGNORECASE | re.DOTALL)
 
+# Paths whose bodies must NOT be rewritten: signatures are computed over the
+# raw bytes, and any mutation (even stripping <script>) breaks the HMAC/RSA
+# verification performed by the downstream handler.
+_BYPASS_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/payment/notify",   # Alipay async notify (RSA signature on raw body)
+        "/api/payment/webhook",  # payment webhook delivery
+        "/api/webhook",          # generic webhook inbound
+        "/api/openapi/proxy",    # OpenAPI connector passthrough
+    }
+)
+
+
+def _is_bypass_path(path: str) -> bool:
+    for prefix in _BYPASS_PATHS:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
 
 def _sanitize_value(value):
     if isinstance(value, str):
@@ -34,6 +53,10 @@ class XSSSanitizerMiddleware:
         
         # 仅对需要净化的路由生效，减少 CPU 开销
         path = request.url.path
+        if _is_bypass_path(path):
+            await self.app(scope, receive, send)
+            return
+
         if not (path.startswith("/api/") or path.startswith("/v1/") or path.startswith("/admin/")):
             await self.app(scope, receive, send)
             return

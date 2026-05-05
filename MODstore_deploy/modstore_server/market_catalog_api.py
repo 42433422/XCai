@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -32,6 +33,21 @@ from modstore_server.market_shared import (
 router = APIRouter(tags=["market"])
 
 
+def _market_params_hash(*args: Any) -> str:
+    return hashlib.sha1(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+def _invalidate_market_catalog_caches() -> None:
+    """Invalidate market catalog caches after a write.
+
+    Since list cache keys include a params-hash we cannot enumerate them;
+    rely on their 60 s TTL.  We can reliably delete the facets key.
+    """
+    from modstore_server import cache
+
+    cache.delete("market:facets")
+
+
 class ReviewSubmitDTO(BaseModel):
     rating: int = Field(..., ge=1, le=5)
     content: str = Field(default="", max_length=4000)
@@ -52,6 +68,13 @@ class CatalogComplaintReviewDTO(BaseModel):
 
 @router.get("/market/facets")
 def api_market_facets():
+    from modstore_server import cache
+
+    ck = "market:facets"
+    cached = cache.get_json(ck)
+    if cached is not None:
+        return cached
+
     sf = get_session_factory()
     with sf() as session:
         pub = (CatalogItem.is_public == True) & (CatalogItem.compliance_status != "delisted")
@@ -99,7 +122,7 @@ def api_market_facets():
                 if t[0]
             },
         )
-        return {
+        result = {
             "industries": industries,
             "artifacts": artifacts,
             "material_categories": material_categories,
@@ -109,6 +132,8 @@ def api_market_facets():
             "security_levels": security_levels,
             "compliance_statuses": compliance_statuses,
         }
+    cache.set_json(ck, result, ttl_seconds=600)
+    return result
 
 
 @router.get("/market/catalog")
@@ -123,6 +148,14 @@ def api_market_catalog(
     offset: int = Query(0, ge=0),
     user: Optional[User] = Depends(_optional_current_user),
 ):
+    from modstore_server import cache
+
+    user_key = str(user.id) if user else "anon"
+    ck = f"market:catalog:{_market_params_hash(q, artifact, material_category, industry, license_scope, security_level, limit, offset)}:{user_key}"
+    cached = cache.get_json(ck)
+    if cached is not None:
+        return cached
+
     sf = get_session_factory()
     with sf() as session:
         query = session.query(CatalogItem).filter(
@@ -184,7 +217,7 @@ def api_market_catalog(
             for catalog_id, _ in counts:
                 complaint_counts[int(catalog_id)] = complaint_counts.get(int(catalog_id), 0) + 1
 
-        return {
+        result = {
             "items": [
                 _catalog_item_payload(
                     r,
@@ -195,6 +228,8 @@ def api_market_catalog(
             ],
             "total": total,
         }
+    cache.set_json(ck, result, ttl_seconds=60)
+    return result
 
 
 @router.get("/market/catalog/{item_id}")
@@ -362,6 +397,7 @@ def api_submit_catalog_complaint(
             item.compliance_status = "under_review"
         session.commit()
         session.refresh(row)
+        _invalidate_market_catalog_caches()
         return {
             "ok": True,
             "id": row.id,

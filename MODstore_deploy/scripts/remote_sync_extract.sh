@@ -42,6 +42,36 @@ if test -f "$DP/.env"; then
   echo "[ok] backup $DP/.env"
   cp "$DP/.env" /tmp/modstore.env.sync.bak
 fi
+# 整目录删除前保留 SQLite 与运行时数据（tar 包刻意不含这些，否则本地会覆盖生产）。
+# 漏备份会导致「账号没了」：modstore.db 内为用户与鉴权数据。
+STATE_BAK=/tmp/modstore_deploy_runtime_sync_bak
+rm -rf "$STATE_BAK"
+STATE_HAS=0
+if test -d "$DP"; then
+  echo "[ok] backup runtime state -> $STATE_BAK"
+  mkdir -p "$STATE_BAK"
+  if test -f "$DP/modstore_server/modstore.db"; then
+    mkdir -p "$STATE_BAK/modstore_server"
+    cp -a "$DP/modstore_server/modstore.db" "$STATE_BAK/modstore_server/"
+    STATE_HAS=1
+  fi
+  for rel in \
+    modstore_server/data \
+    modstore_server/catalog_data \
+    modstore_server/library \
+    var/runtime \
+    var/vibe_coding
+  do
+    if test -d "$DP/$rel"; then
+      mkdir -p "$STATE_BAK/$(dirname "$rel")"
+      cp -a "$DP/$rel" "$STATE_BAK/$(dirname "$rel")/"
+      STATE_HAS=1
+    fi
+  done
+  if [ "$STATE_HAS" -eq 0 ]; then
+    rm -rf "$STATE_BAK"
+  fi
+fi
 cd "$BASE" || exit 1
 if ! tar -tzf "$TAR" 2>/dev/null | head -1 | grep -q '^MODstore_deploy/'; then
   echo "[err] tgz top must be MODstore_deploy/" >&2
@@ -60,6 +90,26 @@ if test -f /tmp/modstore.env.sync.bak; then
   echo "[ok] restore .env"
   cp /tmp/modstore.env.sync.bak "$DP/.env"
   rm -f /tmp/modstore.env.sync.bak
+fi
+if test -d "$STATE_BAK"; then
+  echo "[ok] restore runtime state from $STATE_BAK"
+  if test -f "$STATE_BAK/modstore_server/modstore.db"; then
+    mkdir -p "$DP/modstore_server"
+    cp -a "$STATE_BAK/modstore_server/modstore.db" "$DP/modstore_server/"
+  fi
+  for rel in \
+    modstore_server/data \
+    modstore_server/catalog_data \
+    modstore_server/library \
+    var/runtime \
+    var/vibe_coding
+  do
+    if test -d "$STATE_BAK/$rel"; then
+      mkdir -p "$DP/$(dirname "$rel")"
+      cp -a "$STATE_BAK/$rel" "$DP/$(dirname "$rel")/"
+    fi
+  done
+  rm -rf "$STATE_BAK"
 fi
 cd "$DP" || exit 1
 if test -f scripts/ensure_llm_master_key.py; then

@@ -1,6 +1,7 @@
 import { useRouter } from 'vue-router'
 import { usePrivacyManager } from './usePrivacyManager'
 import { useAgentStore } from '../../stores/agent'
+import { useButlerOrchestrator } from './useButlerOrchestrator'
 import { ACTION_RISKS, ROUTE_NAME_MAP } from '../../utils/agent/agentActionTypes'
 import { serializeVisibleDom } from '../../utils/agent/pageSerializer'
 import type { SkillResult } from '../../types/agent'
@@ -156,7 +157,47 @@ export function useActionExecutor() {
     return { success: true, message: content, assistantReply: `当前页面内容摘要：\n${content.slice(0, 500)}` }
   }
 
-  return { navigate, click, fill, select, scroll, read }
+  /**
+   * vibe-coding 改写当前页面对象（高风险）。
+   * 先弹高风险确认，用户同意后启动编排管线。
+   */
+  async function enhanceCurrentPage(args: { brief: string; scope?: string }): Promise<SkillResult> {
+    const orchestrator = useButlerOrchestrator()
+    const tgt = orchestrator.detectTarget()
+    const targetLabel = tgt ? `${tgt.type} ${tgt.id}` : '当前页面'
+    const label = `用 vibe-coding 改写 ${targetLabel}：${args.brief}`
+
+    // High-risk confirmation via existing privacy/confirm flow
+    const ok = await requestAction('enhance_current_page', 'high', label, args as unknown as Record<string, unknown>)
+    if (!ok) {
+      return { success: false, message: '用户已取消', assistantReply: '已取消，未做任何修改。' }
+    }
+
+    if (!tgt) {
+      return {
+        success: false,
+        message: '当前页面无法直接改写',
+        assistantReply: '当前页面无法直接改写，请先打开具体的 Mod / 工作流 / 员工页再试。',
+      }
+    }
+
+    const result = await orchestrator.start(args.brief, args.scope)
+    if (!result.ok) {
+      return {
+        success: false,
+        message: result.error || '启动失败',
+        assistantReply: `改写启动失败：${result.error || '未知错误'}`,
+      }
+    }
+
+    return {
+      success: true,
+      message: '改写管线已启动',
+      assistantReply: 'AI 正在为你改造，请在弹出的进度窗口中查看详情，完成后页面将自动刷新。',
+    }
+  }
+
+  return { navigate, click, fill, select, scroll, read, enhanceCurrentPage }
 }
 
 /** 按 data-butler-id、aria-label、button文本查找元素 */

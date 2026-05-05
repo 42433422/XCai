@@ -35,7 +35,10 @@ function resolveKind(): TargetKind {
 }
 
 function resolveId(): string | null {
-  const id = route.params.id ?? route.query.id ?? null
+  // route.params.id – from /workbench/shell/employee/:id
+  // route.query.id  – explicit ?id= query
+  // route.query.packId – set by wb-home make-scene handoff (fromAi=1)
+  const id = route.params.id ?? route.query.id ?? route.query.packId ?? null
   return id ? String(id) : null
 }
 
@@ -168,6 +171,16 @@ async function saveEmployee() {
   }
 }
 
+// ── Select employee from LeftRail ─────────────────────────────────────────────
+
+async function onSelectEmployee(id: string) {
+  await loadTarget('employee', id)
+  if (!props.embedded) {
+    void router.replace({ name: 'workbench-shell', params: { target: 'employee', id } })
+  }
+  setTimeout(() => canvasRef.value?.fitView(), 200)
+}
+
 // ── Toolbar panel toggles ────────────────────────────────────────────────────
 
 const showPackagePanel = ref(false)
@@ -230,7 +243,7 @@ const showPublishPanel = ref(false)
     <div v-else class="wb-body">
       <!-- Left rail -->
       <div class="wb-col wb-col--left" :style="{ width: leftWidth + 'px' }">
-        <LeftRail />
+        <LeftRail @select-employee="onSelectEmployee" />
       </div>
 
       <!-- Resize handle left -->

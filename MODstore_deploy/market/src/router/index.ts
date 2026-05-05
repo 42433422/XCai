@@ -119,7 +119,7 @@ const routes: RouteRecordRaw[] = [
         name: 'workbench-my-employees',
         redirect: (to: any) => ({
           name: 'workbench-unified',
-          query: { ...to.query, focus: 'employee', employeeView: 'list' },
+          query: { ...to.query, focus: 'employee' },
         }),
       },
     ],

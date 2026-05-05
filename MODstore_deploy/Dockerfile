@@ -61,4 +61,4 @@ COPY --from=builder /app /app
 
 EXPOSE 8765
 
-CMD ["python", "-m", "uvicorn", "modstore_server.app:app", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["python", "-m", "uvicorn", "modstore_server.app:app", "--host", "0.0.0.0", "--port", "8765", "--workers", "4"]

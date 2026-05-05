@@ -1,106 +1,137 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useRoute } from 'vue-router'
 import { useWorkbenchStore } from '../../../stores/workbench'
 import { useAgentLoop } from '../../../composables/useAgentLoop'
-import { getAccessToken } from '../../../infrastructure/storage/tokenStore'
+import { useAuthStore } from '../../../stores/auth'
+import { api } from '../../../api'
 import type { AgentRun } from '../../../stores/workbench'
 
 const store = useWorkbenchStore()
 const agentLoop = useAgentLoop()
+const route = useRoute()
+
+const auth = useAuthStore()
+const { isAdmin } = storeToRefs(auth)
 
 // ── View toggle ────────────────────────────────────────────────────────────
-type RailView = 'chat' | 'agent'
-const view = ref<RailView>('chat')
+type RailView = 'list' | 'agent'
+const view = ref<RailView>('list')
 
-// ── Chat ───────────────────────────────────────────────────────────────────
-const chatInput = ref('')
-const chatScrollRef = ref<HTMLElement | null>(null)
+// ── Employee list ──────────────────────────────────────────────────────────
+const HIDDEN_PKG_IDS_KEY = 'modstore_emp_chat_hidden_pkg_ids'
 
-async function sendChat() {
-  const text = chatInput.value.trim()
-  if (!text || store.chatStreaming) return
-  chatInput.value = ''
-
-  const userId = 'u-' + Date.now()
-  store.pushChatMessage({ id: userId, role: 'user', content: text, ts: Date.now() })
-
-  const assistantId = 'a-' + Date.now()
-  store.pushChatMessage({ id: assistantId, role: 'assistant', content: '', ts: Date.now() })
-  await scrollToBottom()
-
-  const ctrl = new AbortController()
-  store.setChatStreaming(true, ctrl)
-
+function readHiddenPkgIds(): Set<string> {
   try {
-    const token = getAccessToken()
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (token) headers['Authorization'] = `Bearer ${token}`
+    const raw = localStorage.getItem(HIDDEN_PKG_IDS_KEY)
+    const arr = raw ? (JSON.parse(raw) as unknown) : []
+    if (!Array.isArray(arr)) return new Set()
+    return new Set(arr.filter((x): x is string => typeof x === 'string'))
+  } catch {
+    return new Set()
+  }
+}
 
-    const resp = await fetch('/api/llm/chat/stream', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        messages: store.chatMessages
-          .filter((m) => m.role !== 'system')
-          .map((m) => ({ role: m.role, content: m.content })),
-      }),
-      signal: ctrl.signal,
-    })
+type EmployeeRow = { id: string; name?: string; source?: 'catalog' | 'v1_catalog' }
 
-    if (!resp.ok || !resp.body) {
-      store.appendChatChunk(assistantId, '\n\n*[请求失败]*')
-      store.setChatStreaming(false, null)
+const employees = ref<EmployeeRow[]>([])
+const hiddenPkgIds = ref<Set<string>>(readHiddenPkgIds())
+const loadingList = ref(false)
+const listError = ref('')
+const deletingId = ref('')
+const purgeBusy = ref(false)
+
+const visibleEmployees = computed(() => employees.value.filter((e) => !hiddenPkgIds.value.has(e.id)))
+const hasV1OnlyEmployees = computed(() => employees.value.some((e) => e.source === 'v1_catalog'))
+
+function persistHiddenPkgIds() {
+  localStorage.setItem(HIDDEN_PKG_IDS_KEY, JSON.stringify([...hiddenPkgIds.value]))
+}
+
+function hideLocally(pkgId: string) {
+  hiddenPkgIds.value = new Set([...hiddenPkgIds.value, pkgId])
+  persistHiddenPkgIds()
+}
+
+function clearHiddenPkgIds() {
+  hiddenPkgIds.value = new Set()
+  persistHiddenPkgIds()
+}
+
+async function loadEmployees() {
+  listError.value = ''
+  loadingList.value = true
+  try {
+    const rows = await api.listEmployees()
+    if (!Array.isArray(rows)) {
+      employees.value = []
       return
     }
-
-    const reader = resp.body.getReader()
-    const dec = new TextDecoder()
-    let buf = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += dec.decode(value, { stream: true })
-      const lines = buf.split('\n')
-      buf = lines.pop() ?? ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') continue
-        try {
-          const obj = JSON.parse(raw)
-          const delta = obj?.choices?.[0]?.delta?.content
-            ?? obj?.delta?.content
-            ?? obj?.content
-            ?? ''
-          if (delta) {
-            store.appendChatChunk(assistantId, delta)
-            await scrollToBottom()
-          }
-        } catch { /* ignore */ }
-      }
-    }
+    employees.value = (rows as Record<string, unknown>[]).map((e) => {
+      const id = String(e.id ?? '').trim()
+      const rawSrc = e.source
+      const source: EmployeeRow['source'] = rawSrc === 'v1_catalog' ? 'v1_catalog' : 'catalog'
+      return { id, name: typeof e.name === 'string' ? e.name : undefined, source }
+    })
   } catch (e: unknown) {
-    if ((e as Error)?.name !== 'AbortError') {
-      store.appendChatChunk(assistantId, '\n\n*[连接中断]*')
-    }
+    listError.value = e instanceof Error ? e.message : String(e)
+    employees.value = []
   } finally {
-    store.setChatStreaming(false, null)
+    loadingList.value = false
   }
 }
 
-async function scrollToBottom() {
-  await nextTick()
-  if (chatScrollRef.value) {
-    chatScrollRef.value.scrollTop = chatScrollRef.value.scrollHeight
+async function confirmDeleteEmployee(e: EmployeeRow) {
+  if (!isAdmin.value) return
+  const label = e.name || e.id
+  const ok = window.confirm(`确定删除员工包「${label}」（${e.id}）？将从目录与数据库移除，不可恢复。`)
+  if (!ok) return
+  deletingId.value = e.id
+  listError.value = ''
+  try {
+    await api.adminDeleteEmployeePack(e.id)
+    hiddenPkgIds.value.delete(e.id)
+    persistHiddenPkgIds()
+    await loadEmployees()
+  } catch (err: unknown) {
+    listError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    deletingId.value = ''
   }
 }
 
-function onChatKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    sendChat()
+async function purgeAllEmployees() {
+  if (!isAdmin.value || purgeBusy.value) return
+  const ok = window.confirm(
+    '确定一键清空员工仓库？\n将原子地删除 packages.json 与 catalog_items 中所有 employee_pack 行（含磁盘 .xcemp 文件），\n用于解决「老是删不完」（两个数据源 pkg_id 不重合时单条对账会遗漏）。\n不可恢复。',
+  )
+  if (!ok) return
+  purgeBusy.value = true
+  listError.value = ''
+  try {
+    const res: any = await api.adminPurgeAllEmployeePacks()
+    const a = Number(res?.removed_packages_json || 0)
+    const b = Number(res?.removed_db_rows || 0)
+    const c = Number(res?.removed_files || 0)
+    hiddenPkgIds.value = new Set()
+    persistHiddenPkgIds()
+    await loadEmployees()
+    listError.value = `已清空员工仓库：packages.json 删 ${a} 行，DB 删 ${b} 行，磁盘文件删 ${c} 个`
+  } catch (err: unknown) {
+    listError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    purgeBusy.value = false
   }
+}
+
+// ── Emit to parent (WorkbenchShell) ───────────────────────────────────────
+const emit = defineEmits<{
+  (e: 'select-employee', id: string): void
+}>()
+
+function selectEmployee(id: string) {
+  emit('select-employee', id)
 }
 
 // ── Agent triggers ─────────────────────────────────────────────────────────
@@ -136,8 +167,7 @@ function formatTs(ts: number) {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-// ── Suggested prompts ──────────────────────────────────────────────────────
-const SUGGESTED = [
+const AGENT_SUGGESTED = [
   '帮我创建一个电话客服员工，专注售后问题处理',
   '创建一个数据分析员工，能处理 CSV 并生成报表',
   '设计一个全能型 AI 助手，支持图文理解和对话',
@@ -146,14 +176,23 @@ const SUGGESTED = [
 function useSuggestion(s: string) {
   agentInput.value = s
 }
+
+onMounted(async () => {
+  await loadEmployees()
+  // Auto-select employee when coming from wb-home generation handoff (?packId=X&fromAi=1)
+  const packId = String(route.query.packId ?? route.query.id ?? '').trim()
+  if (packId && !store.target.id) {
+    selectEmployee(packId)
+  }
+})
 </script>
 
 <template>
   <div class="left-rail">
     <!-- Tab bar -->
     <div class="lr-tabs">
-      <button class="lr-tab" :class="{ 'lr-tab--active': view === 'chat' }" @click="view = 'chat'">
-        <span class="lr-tab-icon">💬</span> 对话
+      <button class="lr-tab" :class="{ 'lr-tab--active': view === 'list' }" @click="view = 'list'">
+        <span class="lr-tab-icon">🤖</span> 员工列表
       </button>
       <button class="lr-tab" :class="{ 'lr-tab--active': view === 'agent' }" @click="view = 'agent'">
         <span class="lr-tab-icon">⚡</span> Agent
@@ -161,51 +200,75 @@ function useSuggestion(s: string) {
       </button>
     </div>
 
-    <!-- ── Chat panel ─────────────────────────────────────────────────── -->
-    <div v-if="view === 'chat'" class="lr-pane chat-pane">
-      <div ref="chatScrollRef" class="chat-messages">
-        <div v-if="!store.chatMessages.length" class="chat-empty">
-          <p class="chat-empty-title">AI 工作台助手</p>
-          <p class="chat-empty-sub">问我任何关于员工设计、模块配置、发布流程的问题</p>
-          <div class="chat-suggestions">
-            <button
-              v-for="s in SUGGESTED"
-              :key="s"
-              class="chat-suggestion"
-              @click="useSuggestion(s)"
-            >
-              {{ s }}
-            </button>
-          </div>
-        </div>
-
-        <div
-          v-for="msg in store.chatMessages"
-          :key="msg.id"
-          class="chat-msg"
-          :class="`chat-msg--${msg.role}`"
+    <!-- ── Employee list panel ─────────────────────────────────────── -->
+    <div v-if="view === 'list'" class="lr-pane list-pane">
+      <!-- Toolbar -->
+      <div class="list-toolbar">
+        <button type="button" class="list-btn list-btn--ghost" :disabled="loadingList" @click="loadEmployees">
+          {{ loadingList ? '加载中…' : '刷新' }}
+        </button>
+        <button
+          v-if="isAdmin"
+          type="button"
+          class="list-btn list-btn--danger"
+          :disabled="purgeBusy"
+          title="原子地清空 packages.json 与 catalog_items 中所有 employee_pack"
+          @click="purgeAllEmployees"
         >
-          <span class="chat-msg__avatar">{{ msg.role === 'user' ? '你' : 'AI' }}</span>
-          <div class="chat-msg__body">
-            <span class="chat-msg__ts">{{ formatTs(msg.ts) }}</span>
-            <p class="chat-msg__text" v-html="msg.content.replace(/\n/g, '<br>')"></p>
-          </div>
-        </div>
+          {{ purgeBusy ? '清空中…' : '一键清空' }}
+        </button>
       </div>
 
-      <form class="chat-input-row" @submit.prevent="sendChat">
-        <textarea
-          v-model="chatInput"
-          class="chat-input"
-          placeholder="输入问题，Shift+Enter 换行..."
-          rows="2"
-          :disabled="store.chatStreaming"
-          @keydown="onChatKeydown"
-        />
-        <button type="submit" class="chat-send" :disabled="store.chatStreaming || !chatInput.trim()">
-          {{ store.chatStreaming ? '…' : '发送' }}
-        </button>
-      </form>
+      <!-- Hints -->
+      <p v-if="hasV1OnlyEmployees" class="list-hint list-hint--warn">
+        标记「仅目录」的条目尚未写入 catalog_items；若对话失败请管理员重新登记。
+      </p>
+      <p v-if="listError" class="list-error">{{ listError }}</p>
+
+      <!-- Empty states -->
+      <p v-if="!employees.length && !loadingList && !listError" class="list-empty">
+        暂无可用员工包。请先在制作流程中生成员工。
+      </p>
+      <p v-else-if="!visibleEmployees.length && !loadingList" class="list-empty">
+        列表中的员工均已隐藏。
+        <button type="button" class="list-btn--inline" @click="clearHiddenPkgIds">显示全部</button>
+      </p>
+
+      <!-- Employee rows -->
+      <ul v-else class="emp-list">
+        <li v-for="e in visibleEmployees" :key="e.id" class="emp-row">
+          <button
+            type="button"
+            class="emp-row__btn"
+            :class="{ 'emp-row__btn--active': store.target.id === e.id }"
+            @click="selectEmployee(e.id)"
+          >
+            <span class="emp-row__name">{{ e.name || e.id }}</span>
+            <span class="emp-row__id">{{ e.id }}{{ e.source === 'v1_catalog' ? ' · 仅目录' : '' }}</span>
+          </button>
+          <div class="emp-row__actions">
+            <button
+              v-if="isAdmin"
+              type="button"
+              class="emp-action emp-action--danger"
+              :disabled="deletingId === e.id"
+              title="从服务端删除该员工包"
+              @click.stop="confirmDeleteEmployee(e)"
+            >
+              {{ deletingId === e.id ? '…' : '删' }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="emp-action"
+              title="仅从本机列表隐藏"
+              @click.stop="hideLocally(e.id)"
+            >
+              隐
+            </button>
+          </div>
+        </li>
+      </ul>
     </div>
 
     <!-- ── Agent panel ────────────────────────────────────────────────── -->
@@ -233,7 +296,7 @@ function useSuggestion(s: string) {
           </button>
         </div>
         <div class="agent-suggestions">
-          <button v-for="s in SUGGESTED" :key="s" class="agent-suggestion" @click="useSuggestion(s)">
+          <button v-for="s in AGENT_SUGGESTED" :key="s" class="agent-suggestion" @click="useSuggestion(s)">
             {{ s }}
           </button>
         </div>
@@ -345,166 +408,191 @@ function useSuggestion(s: string) {
   overflow: hidden;
 }
 
-/* ── Chat ── */
-.chat-pane { gap: 0; }
-
-.chat-messages {
-  flex: 1;
+/* ── Employee list ── */
+.list-pane {
   overflow-y: auto;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  padding: 8px;
+  gap: 6px;
   scrollbar-width: thin;
   scrollbar-color: rgba(99, 102, 241, 0.3) transparent;
 }
 
-.chat-empty {
-  margin: auto;
-  text-align: center;
-  padding: 16px;
-}
-
-.chat-empty-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #e2e8f0;
-  margin: 0 0 6px;
-}
-
-.chat-empty-sub {
-  font-size: 12px;
-  color: #64748b;
-  margin: 0 0 14px;
-}
-
-.chat-suggestions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.chat-suggestion {
-  background: rgba(99, 102, 241, 0.08);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  color: #94a3b8;
-  font-size: 11px;
-  padding: 7px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  text-align: left;
-  transition: all 0.15s ease;
-  line-height: 1.4;
-}
-
-.chat-suggestion:hover {
-  background: rgba(99, 102, 241, 0.15);
-  color: #c7d2fe;
-  border-color: rgba(99, 102, 241, 0.35);
-}
-
-.chat-msg {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.chat-msg--user { flex-direction: row-reverse; }
-
-.chat-msg__avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: rgba(99, 102, 241, 0.2);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 700;
-  color: #a5b4fc;
-  flex-shrink: 0;
-}
-
-.chat-msg--user .chat-msg__avatar {
-  background: rgba(16, 185, 129, 0.15);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #6ee7b7;
-}
-
-.chat-msg__body {
-  max-width: calc(100% - 36px);
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.chat-msg--user .chat-msg__body { align-items: flex-end; }
-
-.chat-msg__ts {
-  font-size: 9px;
-  color: #475569;
-  font-variant-numeric: tabular-nums;
-}
-
-.chat-msg__text {
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  border-radius: 10px;
-  padding: 8px 11px;
-  font-size: 13px;
-  color: #e2e8f0;
-  line-height: 1.55;
-  margin: 0;
-  word-break: break-word;
-}
-
-.chat-msg--user .chat-msg__text {
-  background: rgba(99, 102, 241, 0.12);
-  border-color: rgba(99, 102, 241, 0.2);
-}
-
-.chat-input-row {
+.list-toolbar {
   display: flex;
   gap: 6px;
-  padding: 10px;
-  border-top: 1px solid rgba(148, 163, 184, 0.08);
   flex-shrink: 0;
+  margin-bottom: 6px;
 }
 
-.chat-input {
-  flex: 1;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  border-radius: 10px;
-  color: #e2e8f0;
-  font-size: 13px;
-  padding: 8px 10px;
-  resize: none;
-  outline: none;
-  font-family: inherit;
-  line-height: 1.5;
-  transition: border-color 0.15s ease;
-}
-
-.chat-input:focus { border-color: rgba(99, 102, 241, 0.4); }
-
-.chat-send {
-  background: #6366f1;
+.list-btn {
+  padding: 4px 10px;
+  border-radius: 7px;
   border: none;
-  border-radius: 10px;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 0 14px;
+  font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
+}
+
+.list-btn--ghost {
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.list-btn--ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.list-btn--ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.list-btn--danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.list-btn--danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.list-btn--danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.list-btn--inline {
+  background: none;
+  border: none;
+  color: #a5b4fc;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.list-hint {
+  font-size: 10px;
+  color: #64748b;
+  line-height: 1.4;
+  margin: 0 0 4px;
+}
+
+.list-hint--warn {
+  color: #f59e0b;
+}
+
+.list-error {
+  font-size: 11px;
+  color: #f87171;
+  margin: 0 0 4px;
+}
+
+.list-empty {
+  font-size: 11px;
+  color: #475569;
+  padding: 16px 8px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.emp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.emp-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+
+.emp-row__btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.emp-row__btn:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.emp-row__btn--active {
+  border-color: rgba(99, 102, 241, 0.6);
+  background: rgba(99, 102, 241, 0.14);
+}
+
+.emp-row__name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emp-row__id {
+  display: block;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  word-break: break-all;
+  margin-top: 1px;
+}
+
+.emp-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
 }
 
-.chat-send:hover:not(:disabled) { background: #818cf8; }
+.emp-action {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  font-size: 10px;
+  line-height: 1.2;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
 
-.chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.emp-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.emp-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.emp-action--danger {
+  border-color: rgba(248, 113, 113, 0.3);
+  color: #fca5a5;
+}
+
+.emp-action--danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.12);
+}
 
 /* ── Agent ── */
 .agent-pane {

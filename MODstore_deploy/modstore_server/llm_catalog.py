@@ -92,11 +92,13 @@ async def _fetch_openai_compatible(
 ) -> Tuple[List[str], Optional[str]]:
     # base 已由调用方规范为以 /v1 或 /v3（火山方舟）结尾的根，此处只拼 /models
     url = f"{base_url.rstrip('/')}/models"
+    from modstore_server.infrastructure.http_clients import get_external_client
+
     try:
-        async with httpx.AsyncClient(timeout=httpx_timeout) as client:
-            r = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
-            r.raise_for_status()
-            data = r.json()
+        client = get_external_client()
+        r = await client.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=httpx_timeout)
+        r.raise_for_status()
+        data = r.json()
         items = data.get("data") or []
         ids = [str(x.get("id", "")).strip() for x in items if isinstance(x, dict)]
         return _filter_openai_style(ids), None
@@ -107,18 +109,21 @@ async def _fetch_openai_compatible(
 
 async def _fetch_anthropic(api_key: str, *, httpx_timeout: float = 30.0) -> Tuple[List[str], Optional[str]]:
     url = "https://api.anthropic.com/v1/models"
+    from modstore_server.infrastructure.http_clients import get_external_client
+
     try:
-        async with httpx.AsyncClient(timeout=httpx_timeout) as client:
-            r = await client.get(
-                url,
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                },
-            )
-            if r.status_code >= 400:
-                return [], f"http {r.status_code}"
-            data = r.json()
+        client = get_external_client()
+        r = await client.get(
+            url,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=httpx_timeout,
+        )
+        if r.status_code >= 400:
+            return [], f"http {r.status_code}"
+        data = r.json()
         items = data.get("data") if isinstance(data, dict) else None
         if not isinstance(items, list):
             return [], "unexpected response"
@@ -137,12 +142,14 @@ async def _fetch_anthropic(api_key: str, *, httpx_timeout: float = 30.0) -> Tupl
 
 async def _fetch_google(api_key: str, *, httpx_timeout: float = 30.0) -> Tuple[List[str], Optional[str]]:
     url = "https://generativelanguage.googleapis.com/v1beta/models"
+    from modstore_server.infrastructure.http_clients import get_external_client
+
     try:
-        async with httpx.AsyncClient(timeout=httpx_timeout) as client:
-            r = await client.get(url, params={"key": api_key})
-            if r.status_code >= 400:
-                return [], f"http {r.status_code}"
-            data = r.json()
+        client = get_external_client()
+        r = await client.get(url, params={"key": api_key}, timeout=httpx_timeout)
+        if r.status_code >= 400:
+            return [], f"http {r.status_code}"
+        data = r.json()
         items = data.get("models") or []
         ids: List[str] = []
         for x in items:

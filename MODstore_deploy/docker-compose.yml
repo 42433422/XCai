@@ -130,6 +130,13 @@ services:
       MODSTORE_BOOTSTRAP_ADMIN_USERNAME: ${MODSTORE_BOOTSTRAP_ADMIN_USERNAME:-admin}
       MODSTORE_BOOTSTRAP_ADMIN_PASSWORD: ${MODSTORE_BOOTSTRAP_ADMIN_PASSWORD:-admin123}
       MODSTORE_BOOTSTRAP_ADMIN_EMAIL: ${MODSTORE_BOOTSTRAP_ADMIN_EMAIL:-admin@localhost}
+      # 数据库连接池（PostgreSQL 时生效；见 modstore_server/models.py:get_engine）
+      MODSTORE_DB_POOL_SIZE: ${MODSTORE_DB_POOL_SIZE:-30}
+      MODSTORE_DB_MAX_OVERFLOW: ${MODSTORE_DB_MAX_OVERFLOW:-40}
+      # 多 worker 安全：事件总线必须用 rabbitmq 以保证跨 worker 可见性
+      MODSTORE_BUS: ${MODSTORE_BUS:-rabbitmq}
+      # 后台任务（outbox/scheduler）由独立 modstore-scheduler 容器负责，API worker 不运行
+      MODSTORE_RUN_BACKGROUND_JOBS: "0"
       # 小米 MiMo / OpenAI 兼容平台密钥（用户 BYOK 仍优先）
       MIMO_API_KEY: ${MIMO_API_KEY:-}
       XIAOMI_API_KEY: ${XIAOMI_API_KEY:-}
@@ -146,6 +153,39 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
+
+  # 后台任务专用 worker：outbox drainer + 订阅续费 APScheduler。
+  # 与 api 共享镜像，但仅运行 1 个 uvicorn worker 且不对外暴露端口。
+  # 确保多 worker 下后台任务只运行一次。
+  scheduler:
+    build:
+      context: .
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-modstore}:${POSTGRES_PASSWORD:-modstore}@postgres:5432/${POSTGRES_DB:-modstore}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-modstore-redis}@redis:6379
+      MODSTORE_BUS: rabbitmq
+      MODSTORE_RUN_BACKGROUND_JOBS: "1"
+      MODSTORE_JWT_SECRET: ${MODSTORE_JWT_SECRET:-modstore-dev-secret-change-in-prod-32bytes}
+      MODSTORE_RUNTIME_DIR: /data
+      MODSTORE_WEBHOOK_EVENTS_DIR: /data/webhook_events
+      MODSTORE_EVENT_OUTBOX_PATH: /data/event_outbox.jsonl
+      MODSTORE_PAYMENT_ORDERS_DIR: /data/payment_orders
+      MODSTORE_DB_POOL_SIZE: ${MODSTORE_DB_POOL_SIZE:-10}
+      MODSTORE_DB_MAX_OVERFLOW: ${MODSTORE_DB_MAX_OVERFLOW:-5}
+    command: ["python", "-m", "uvicorn", "modstore_server.app:app", "--host", "127.0.0.1", "--port", "9990", "--workers", "1"]
+    volumes:
+      - modstore_data:/data
 
   market:
     build:

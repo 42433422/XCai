@@ -124,9 +124,9 @@ async def chat_dispatch_via_session(
 
     uid = int(user_id or 0)
     if uid > 0:
-        from modstore_server.quota_middleware import consume_quota, require_quota
+        from modstore_server.quota_middleware import consume_llm_credit, require_llm_credit
 
-        require_quota(session, uid, "llm_calls", 1)
+        require_llm_credit(session, uid, 1)
 
     result = await chat_dispatch(
         provider,
@@ -138,7 +138,7 @@ async def chat_dispatch_via_session(
     )
     if uid > 0 and result.get("ok"):
         try:
-            consume_quota(session, uid, "llm_calls", 1)
+            consume_llm_credit(session, uid, 1)
         except Exception:
             pass
     return result

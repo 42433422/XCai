@@ -778,6 +778,8 @@
             <span class="wb-step-body">
               <span class="wb-step-label">{{ st.label }}</span>
               <span v-if="st.message" class="wb-step-msg">{{ st.message }}</span>
+              <span v-if="orchStepRunningSec(st) !== null" class="wb-step-since">已运行 {{ formatWallClockSec(orchStepRunningSec(st)) }}</span>
+              <span v-if="orchStepSlowHint(st)" class="wb-step-slow">模型响应较慢，仍在等待…</span>
             </span>
           </li>
         </ol>
@@ -963,6 +965,8 @@
               <span class="wb-step-body">
                 <span class="wb-step-label">{{ st.label }}</span>
                 <span v-if="st.message" class="wb-step-msg">{{ st.message }}</span>
+                <span v-if="orchStepRunningSec(st) !== null" class="wb-step-since">已运行 {{ formatWallClockSec(orchStepRunningSec(st)) }}</span>
+                <span v-if="orchStepSlowHint(st)" class="wb-step-slow">模型响应较慢，仍在等待…</span>
               </span>
             </li>
           </ol>
@@ -1743,6 +1747,14 @@ const knowledgeUploading = ref(false)
 const knowledgeError = ref('')
 const knowledgeFileInputRef = ref(null)
 const knowledgeDragActive = ref(false)
+
+/** 调 /api/knowledge/search 之前的预检：未配置 Embedding Key 时直接跳过 RAG，
+ *  避免一档对话 / 二档制作发送时连带产生 503 与「未配置可用 Embedding Key」横幅，
+ *  这条横幅原本只是提示性的，但放在 catch 里会让用户误以为业务流程失败。 */
+function isEmbeddingConfigured(): boolean {
+  const st = knowledgeStatus.value as any
+  return Boolean(st?.embedding?.configured)
+}
 /** 与下方 starter 同步：仅标记制作类型，不写入输入框（画布 Skill 组 intent 为 `skill`） */
 const CANVAS_SKILL_INTENT = 'skill'
 function isCanvasSkillIntent(k: string | undefined | null): boolean {
@@ -2440,13 +2452,13 @@ async function runDirectChatTurn(opts: {
           })
         }
       } catch {
-        // v2 不可用时回退到 v1（仅当用户有上传附件时检索）
+        // v2 不可用时回退到 v1（仅当用户有上传附件且 Embedding 已配置时检索）
         try {
           const ready = directAttachedFiles.value.some((f) => f.status === 'ready')
           const hasUserUploads = activeConversation.value?.messages?.some(
             (m) => Array.isArray(m.attachments) && m.attachments.some((a) => a.status === 'ready'),
           )
-          if (ready || hasUserUploads) {
+          if ((ready || hasUserUploads) && isEmbeddingConfigured()) {
             const res: any = await api.knowledgeSearch(opts.userText, 6, {
               embeddingProvider: provider,
               embeddingModel: model,
@@ -3573,7 +3585,9 @@ const handoffRunStatusLine = computed(() => {
   if (running) {
     const lab = String(running.label || '编排').trim() || '编排'
     const msg = typeof running.message === 'string' && running.message.trim() ? ` — ${running.message.trim()}` : ''
-    return `进行中：${lab}${msg}`
+    const sec = orchStepRunningSec(running)
+    const elapsed = sec !== null && sec >= 5 ? `（已运行 ${formatWallClockSec(sec)}）` : ''
+    return `进行中：${lab}${msg}${elapsed}`
   }
   if (steps.length) {
     const done = steps.filter((x: { status?: string }) => x.status === 'done').length
@@ -3969,6 +3983,40 @@ function orchStepClass(st) {
     'wb-step--running': st.status === 'running',
     'wb-step--error': st.status === 'error',
     'wb-step--pending': st.status === 'pending',
+  }
+}
+
+/** 返回某步骤已运行的秒数（仅 running 状态 + 有 started_at 时），null 表示不展示。
+ *  orchElapsedTick 作为响应式依赖使其每 0.5 秒刷新一次。*/
+function orchStepRunningSec(st) {
+  orchElapsedTick.value // 依赖订阅，使每次 tick 重新计算
+  if (st.status !== 'running' || !st.started_at) return null
+  const t0 = new Date(st.started_at).getTime()
+  if (!Number.isFinite(t0)) return null
+  return Math.max(0, Math.floor((Date.now() - t0) / 1000))
+}
+
+/** 跟踪各步骤最近一次 message 变化时间，用于「响应较慢」提示（B3）。*/
+const _stepLastMsgChange: Record<string, { msg: string; ts: number }> = {}
+
+function orchStepSlowHint(st) {
+  orchElapsedTick.value // 响应式订阅
+  if (st.status !== 'running') return false
+  const sec = orchStepRunningSec(st)
+  if (sec === null || sec < 60) return false
+  const tracked = _stepLastMsgChange[st.id]
+  if (!tracked) return true // 从未记录过，说明消息一直没来
+  return (Date.now() - tracked.ts) >= 30000
+}
+
+/** 每次轮询后调用，更新 message 变化时间戳。 */
+function _trackStepMessages(steps: Array<{ id: string; message?: string | null }>) {
+  for (const st of steps || []) {
+    const cur = String(st.message || '')
+    const prev = _stepLastMsgChange[st.id]
+    if (!prev || prev.msg !== cur) {
+      _stepLastMsgChange[st.id] = { msg: cur, ts: Date.now() }
+    }
   }
 }
 
@@ -4836,10 +4884,10 @@ function dismissPlanSession() {
   planDiagramError.value = {}
 }
 
-/** 二档制作主输入：清空草稿、附件与需求规划，与一档「新建」一致 */
+/** 二档制作主输入：开启全新任务，清空草稿、附件、规划与执行态。 */
 function resetMakeComposer() {
   if (knowledgeUploading.value) return
-  dismissPlanSession()
+  dismissPendingHandoff()
   draft.value = ''
   knowledgeError.value = ''
   const files = directAttachedFiles.value.slice()
@@ -5076,7 +5124,34 @@ async function pollWorkbenchSession(sessionId) {
     try {
       const s = await api.workbenchGetSession(sessionId)
       orchestrationSession.value = s
-      if (s.status === 'done' || s.status === 'error') return s
+      _trackStepMessages(s.steps)
+      if (s.status === 'done' || s.status === 'error') {
+        // 后端守卫确保 status=done 时所有步骤已是终态；但在极端竞态下
+        // 可能还有 pending/running 步骤——此处额外做最多 3 次补充轮询
+        // 以等待守卫写完，保证前端渲染完整的 N/N 步完成状态。
+        if (s.status === 'done') {
+          const nonTerminal = (s.steps || []).filter(
+            (x: { status?: string }) => x.status !== 'done' && x.status !== 'error',
+          )
+          if (nonTerminal.length > 0) {
+            for (let i = 0; i < 3 && !pollStop.value; i++) {
+              await delay(800)
+              try {
+                const s2 = await api.workbenchGetSession(sessionId)
+                orchestrationSession.value = s2
+                _trackStepMessages(s2.steps)
+                const stillPending = (s2.steps || []).filter(
+                  (x: { status?: string }) => x.status !== 'done' && x.status !== 'error',
+                )
+                if (stillPending.length === 0) break
+              } catch {
+                break
+              }
+            }
+          }
+        }
+        return orchestrationSession.value as typeof s
+      }
       backoffMs = 0
     } catch (e) {
       const status = e && typeof e === 'object' && typeof (e as any).status === 'number' ? (e as any).status : 0
@@ -5089,7 +5164,10 @@ async function pollWorkbenchSession(sessionId) {
       }
     }
     if (Date.now() >= deadline) {
-      throw new Error('编排等待超时（约 10 分钟）。请检查后端日志、网络或 LLM 配置后重试。')
+      const steps = Array.isArray(orchestrationSession.value?.steps) ? orchestrationSession.value.steps : []
+      const stuckStep = steps.find((x) => x.status === 'running') || steps.slice().reverse().find((x) => x.status === 'done')
+      const stuckLabel = stuckStep ? `「${String(stuckStep.label || stuckStep.id)}」` : ''
+      throw new Error(`在${stuckLabel}步骤等待超时（约 10 分钟）。后端已自动标记失败，可立即重试。请检查后端日志、网络或 LLM 配置。`)
     }
     await delay(backoffMs || baseIntervalMs)
   }
@@ -5249,6 +5327,9 @@ async function runOrchestration() {
       pendingHandoff.value = null
       const scriptWorkflowId = Number(art.script_workflow_id || 0)
       if (Number.isFinite(scriptWorkflowId) && scriptWorkflowId > 0) {
+        // 让用户先看到完成状态，再跳转
+        await nextTick()
+        await new Promise((r) => setTimeout(r, 1200))
         orchestrationSession.value = null
         orchestrationSessionId.value = ''
         await router.push({ path: `/script-workflows/${scriptWorkflowId}/edit`, query: { tab: 'sandbox' } })
@@ -5279,15 +5360,20 @@ async function runOrchestration() {
       linkModId.value = ''
       linkError.value = ''
       void loadLinkMods()
+      // 先渲染一次完成状态，再切换到 workflowLinkOffer 面板
+      await nextTick()
       pendingHandoff.value = null
       orchestrationSession.value = null
       orchestrationSessionId.value = ''
       return
     }
-    pendingHandoff.value = null
-    orchestrationSession.value = null
-    orchestrationSessionId.value = ''
     if (finIntent === 'mod' && art.mod_id) {
+      // 让用户先看到完成状态，再跳转
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 1200))
+      pendingHandoff.value = null
+      orchestrationSession.value = null
+      orchestrationSessionId.value = ''
       await router.push({
         name: 'mod-authoring',
         params: { modId: String(art.mod_id) },
@@ -5301,9 +5387,15 @@ async function runOrchestration() {
         name: art.name != null ? String(art.name) : '',
         desc: art.description != null ? String(art.description) : '',
       }
+      // 让用户先看到 8/8 完成状态，再跳转到员工页
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 1200))
       await router.push({ name: 'workbench-employee', query: q })
       return
     }
+    pendingHandoff.value = null
+    orchestrationSession.value = null
+    orchestrationSessionId.value = ''
   } catch (e: any) {
     const m = e?.message || String(e)
     const low = m.toLowerCase()
@@ -5961,7 +6053,7 @@ async function submitDraft() {
     .map((f: any, idx: number) => `### @附件${idx + 1}：${f.name}\n\n${f.extractedText}`)
     .join('\n\n---\n\n')
   let knowledgePack = ''
-  if (text) {
+  if (text && isEmbeddingConfigured()) {
     try {
       const embeddingChoice = await resolveChatProviderModel()
       const res = await api.knowledgeSearch(text, 6, {
@@ -9054,6 +9146,18 @@ function onComposerKeydown(e) {
   line-height: 1.35;
   color: rgba(255, 255, 255, 0.38);
   word-break: break-word;
+}
+
+.wb-step-since {
+  font-size: 0.72rem;
+  color: rgba(251, 191, 36, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-step-slow {
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.3);
+  font-style: italic;
 }
 
 .wb-step--pending .wb-step-dot {

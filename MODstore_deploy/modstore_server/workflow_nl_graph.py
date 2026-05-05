@@ -665,6 +665,8 @@ async def apply_nl_workflow_graph(
     brief: str,
     provider: Optional[str],
     model: Optional[str],
+    target_employee_pack_id: Optional[str] = None,
+    target_employee_label: Optional[str] = None,
     status_hook: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -685,17 +687,38 @@ async def apply_nl_workflow_graph(
     prov, mdl, err = resolve_llm_provider_model(db, user, provider, model)
     if err:
         return {"ok": False, "error": err}
+    employee_pack_id = str(target_employee_pack_id or "").strip()
+    employee_label = str(target_employee_label or "").strip()
+    employee_node_requirements = ""
+    if employee_pack_id:
+        label_hint = f"（显示名：{employee_label}）" if employee_label else ""
+        employee_node_requirements = (
+            "\n\n本次工作流属于新生成的可执行员工包，画布必须打通该员工包：\n"
+            f"- 必须包含至少一个 node_type=\"employee\" 节点，config.employee_id 必须精确填写 {employee_pack_id!r}{label_hint}。\n"
+            "- employee 节点表示真实可执行员工包入口；业务前后处理仍可用 eskill 节点表达。\n"
+            "- 推荐链路：start -> 若干 eskill/condition -> employee -> 若干 eskill/condition -> end。\n"
+        )
     user_msg = (
         f"工作流名称: {wf.name}\n\n"
         f"工作流说明与需求:\n{brief.strip()}\n\n"
         f"{_eskill_catalog_lines(db, user)}\n\n"
         f"{_catalog_lines()}\n\n"
+        f"{employee_node_requirements}"
         "请先生成 skill_blueprints，再生成 workflow.nodes 与 workflow.edges JSON。"
     )
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_msg},
     ]
+
+    if status_hook:
+        try:
+            maybe = status_hook(f"正在调用 {prov}/{mdl} 生成画布节点与边…")
+            if hasattr(maybe, "__await__"):
+                await maybe
+        except Exception:
+            pass
+
     result = await chat_dispatch_via_session(
         db,
         user.id,
@@ -704,6 +727,15 @@ async def apply_nl_workflow_graph(
         msgs,
         max_tokens=4096,
     )
+
+    if status_hook:
+        try:
+            maybe = status_hook("解析模型响应、组装节点与边…")
+            if hasattr(maybe, "__await__"):
+                await maybe
+        except Exception:
+            pass
+
     if not result.get("ok"):
         e = str(result.get("error") or "LLM 调用失败")
         if "missing api key" in e.lower():
@@ -739,6 +771,38 @@ async def apply_nl_workflow_graph(
         seen_tid.add(nn["temp_id"])
         nodes_in.append(nn)
 
+    employee_pack_id = str(target_employee_pack_id or "").strip()
+    if employee_pack_id:
+        employee_nodes = [n for n in nodes_in if n["node_type"] == "employee"]
+        if employee_nodes:
+            first_cfg = dict(employee_nodes[0].get("config") or {})
+            first_cfg["employee_id"] = employee_pack_id
+            if target_employee_label and not str(employee_nodes[0].get("name") or "").strip():
+                employee_nodes[0]["name"] = str(target_employee_label)[:120]
+            if not str(first_cfg.get("task") or "").strip():
+                first_cfg["task"] = str(brief or "根据工作流上下文完成员工任务")[:400]
+            employee_nodes[0]["config"] = first_cfg
+            for extra in employee_nodes[1:]:
+                extra_cfg = dict(extra.get("config") or {})
+                if not str(extra_cfg.get("employee_id") or "").strip():
+                    extra_cfg["employee_id"] = employee_pack_id
+                extra["config"] = extra_cfg
+        else:
+            nodes_in.append(
+                {
+                    "temp_id": "target_employee",
+                    "node_type": "employee",
+                    "name": str(target_employee_label or "执行员工")[:120],
+                    "config": {
+                        "employee_id": employee_pack_id,
+                        "task": str(brief or "根据工作流上下文完成员工任务")[:400],
+                    },
+                    "position_x": 260.0,
+                    "position_y": 120.0,
+                }
+            )
+            warnings.append("模型未生成 employee 节点，已自动插入目标员工包节点")
+
     starts = [n for n in nodes_in if n["node_type"] == "start"]
     ends = [n for n in nodes_in if n["node_type"] == "end"]
     if len(starts) != 1 or len(ends) != 1:
@@ -759,6 +823,20 @@ async def apply_nl_workflow_graph(
             warnings.append(f"跳过无效边: {s!r} -> {t!r}")
             continue
         edges_in.append({"source_temp_id": s, "target_temp_id": t, "condition": cond})
+
+    if employee_pack_id and any(n["temp_id"] == "target_employee" for n in nodes_in):
+        start_tid = next((n["temp_id"] for n in nodes_in if n["node_type"] == "start"), "")
+        end_tid = next((n["temp_id"] for n in nodes_in if n["node_type"] == "end"), "")
+        if start_tid and end_tid:
+            edges_in = [
+                e
+                for e in edges_in
+                if not (e["source_temp_id"] == start_tid and e["target_temp_id"] == end_tid)
+            ]
+            if not any(e["target_temp_id"] == "target_employee" for e in edges_in):
+                edges_in.append({"source_temp_id": start_tid, "target_temp_id": "target_employee", "condition": ""})
+            if not any(e["source_temp_id"] == "target_employee" for e in edges_in):
+                edges_in.append({"source_temp_id": "target_employee", "target_temp_id": end_tid, "condition": ""})
 
     if not edges_in:
         return {"ok": False, "error": "未生成任何有效边"}

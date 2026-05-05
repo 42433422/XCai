@@ -21,6 +21,14 @@
     <Transition name="panel-pop">
       <FloatingAgentPanel v-if="isOpen" />
     </Transition>
+
+    <!-- vibe-coding 改写进度全屏遮罩 -->
+    <ButlerProgressOverlay
+      v-if="orchestrationSession"
+      @done="onOrchestratesDone"
+      @rollback="onOrchestrationRollback"
+      @close="agentStore.clearOrchestration()"
+    />
   </div>
 </template>
 
@@ -31,17 +39,20 @@ import { useRouter } from 'vue-router'
 import { useAgentStore } from '../../stores/agent'
 import { useAgentSuggestions } from '../../composables/agent/useAgentSuggestions'
 import { useESkillRuntime } from '../../composables/agent/useESkillRuntime'
+import { useButlerOrchestrator } from '../../composables/agent/useButlerOrchestrator'
 import { registerBuiltinSkills } from '../../composables/agent/skills/index'
 import AgentPermissionDialog from './AgentPermissionDialog.vue'
 import AgentSuggestionToast from './AgentSuggestionToast.vue'
 import FloatingAgentBall from './FloatingAgentBall.vue'
 import FloatingAgentPanel from './FloatingAgentPanel.vue'
+import ButlerProgressOverlay from './ButlerProgressOverlay.vue'
 
 const agentStore = useAgentStore()
-const { isOpen, showPermissionDialog } = storeToRefs(agentStore)
+const { isOpen, showPermissionDialog, orchestrationSession } = storeToRefs(agentStore)
 const isSpeaking = ref(false)
 
 const router = useRouter()
+const orchestrator = useButlerOrchestrator()
 
 // 注册内置技能
 onMounted(() => {
@@ -53,6 +64,15 @@ useESkillRuntime()
 
 // 主动建议
 const { currentSuggestion, dismiss } = useAgentSuggestions()
+
+function onOrchestratesDone() {
+  agentStore.clearOrchestration()
+  orchestrator.refreshAfterDone()
+}
+
+function onOrchestrationRollback() {
+  agentStore.clearOrchestration()
+}
 </script>
 
 <style>

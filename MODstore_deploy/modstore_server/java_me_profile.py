@@ -39,9 +39,10 @@ def fetch_java_user_overlay(
     base = gw.target_base_url().rstrip("/")
     url = f"{base}/api/auth/me"
     try:
+        from modstore_server.infrastructure.http_clients import get_java_sync_client
+
         timeout = min(30.0, float(gw.connect_timeout_seconds) + float(gw.read_timeout_seconds))
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.get(url, headers={"Authorization": raw})
+        resp = get_java_sync_client().get(url, headers={"Authorization": raw}, timeout=timeout)
     except Exception as exc:
         logger.warning("Java /api/auth/me 不可达，经验字段保留 Python 库: %s", exc)
         return None

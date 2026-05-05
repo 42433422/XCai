@@ -230,6 +230,13 @@ export const api = {
   adminDeleteCatalog: (id: string | number) => req(`/api/admin/catalog/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
   adminDeleteEmployeePack: (pkgId: string) =>
     req(`/api/admin/employee-packs/${encodeURIComponent(pkgId)}`, { method: 'DELETE' }),
+  /** 管理员一键清空：原子地把 packages.json + catalog_items 中所有 employee_pack 行清掉，
+   * 替代前端循环逐条删；用于解决「员工仓库老是删不完」（两边数据源 pkg_id 不重合时单条对账会遗漏）。 */
+  adminPurgeAllEmployeePacks: () =>
+    req('/api/admin/employee-packs/purge-all', { method: 'POST' }),
+  /** 管理员一键清空 mod 源码库：删 library/ 下所有 mod 目录 + 截断 user_mods 关联表，
+   * 作为「重置仓库」的原子操作，避免前端循环单条 DELETE 因 list 缓存/关联残留导致「删不完」。 */
+  adminPurgeAllMods: () => req('/api/admin/mods/purge-all', { method: 'POST' }),
   adminListCatalogComplaints: (status = '', limit = 50, offset = 0) => {
     const p = new URLSearchParams({ limit: String(limit), offset: String(offset) })
     if (status) p.set('status', status)
@@ -642,6 +649,14 @@ export const api = {
   },
   workbenchResearchContext: (body: unknown) => req('/api/workbench/research-context', { method: 'POST', body: JSON.stringify(body) }),
   workbenchStartSession: (body: unknown) => req('/api/workbench/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  /**
+   * 工作台三档对话中的即席文件处理（Canvas Skill 模式）。
+   * 轮询方式，结果通过 workbenchGetSession 查询，不持久化到数据库。
+   *
+   * ⚠️ 与 /api/script-workflows/sessions（SSE）是两条独立产品线：
+   *   - workbenchStartScriptSession → 即席、一次性、在工作台内完成
+   *   - /api/script-workflows/sessions → ScriptWorkflowComposerView 中创建可复用的命名工作流，结果持久化到 script_workflows 表
+   */
   workbenchStartScriptSession: (metadata: unknown, files: File[]) => {
     const fd = new FormData()
     fd.append('metadata', JSON.stringify(metadata || {}))
@@ -903,6 +918,25 @@ export const api = {
     req(`/api/agent/butler/skills/${encodeURIComponent(String(id))}`, {
       method: 'PATCH',
       body: JSON.stringify({ is_active: isActive }),
+    }),
+
+  /**
+   * POST /api/agent/butler/orchestrate — 启动 vibe-coding 改写管线。
+   * 返回 { session_id, status }，进度通过 workbenchGetSession 轮询。
+   */
+  butlerOrchestrateStart: (payload: {
+    target_type: 'mod' | 'workflow' | 'employee'
+    target_id: string
+    brief: string
+    scope?: string
+    focus_paths?: string[]
+    with_snapshot?: boolean
+    provider?: string
+    model?: string
+  }) =>
+    req('/api/agent/butler/orchestrate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 }
 

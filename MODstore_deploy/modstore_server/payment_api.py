@@ -486,9 +486,11 @@ async def _forward_checkout_to_java(request: Request, body: CheckoutDTO) -> Resp
     ua = request.headers.get("user-agent")
     if ua:
         headers["User-Agent"] = ua
+    from modstore_server.infrastructure.http_clients import get_java_client
+
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
-            r = await client.post(url, json=payload, headers=headers)
+        client = get_java_client()
+        r = await client.post(url, json=payload, headers=headers, timeout=30.0, follow_redirects=False)
     except httpx.HTTPError as e:
         raise HTTPException(502, java_payment_unreachable_message(e)) from e
     hop = {

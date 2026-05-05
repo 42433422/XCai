@@ -167,6 +167,11 @@ export function useAgentEngine() {
       case 'read':
         result = await executor.read()
         break
+      case 'enhance_current_page':
+        result = await executor.enhanceCurrentPage(
+          args as Parameters<typeof executor.enhanceCurrentPage>[0],
+        )
+        break
       default: {
         // 尝试 E-Skill
         const skill = skillRegistry.getById(name)
@@ -212,7 +217,7 @@ ${context.pageSummary}
 4. 回复简短、友好，不要过多解释
 5. 如需执行页面操作，使用 function calling 工具
 
-可用工具：navigate（跳转）、click（点击）、fill（填写）、select（选择）、scroll（滚动）、read（读取页面）`
+可用工具：navigate（跳转）、click（点击）、fill（填写）、select（选择）、scroll（滚动）、read（读取页面）、enhance_current_page（vibe-coding 改写 Mod/工作流/员工，高风险，需确认）`
   }
 
   return { handleInput }

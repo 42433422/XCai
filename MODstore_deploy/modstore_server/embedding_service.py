@@ -152,19 +152,21 @@ async def embed_texts(
         return []
     body = {"model": cfg["model"], "input": clean}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            res = await client.post(_embeddings_url(str(cfg["base_url"])), json=body, headers=headers)
-            res.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            detail = (e.response.text or "").strip()
-            raise EmbeddingConfigError(
-                f"Embedding API 调用失败：HTTP {e.response.status_code}"
-                + (f"；{detail[:240]}" if detail else "")
-            ) from e
-        except httpx.HTTPError as e:
-            raise EmbeddingConfigError(f"Embedding API 调用失败：{e}") from e
-        data = res.json()
+    from modstore_server.infrastructure.http_clients import get_external_client
+
+    client = get_external_client()
+    try:
+        res = await client.post(_embeddings_url(str(cfg["base_url"])), json=body, headers=headers, timeout=60.0)
+        res.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        detail = (e.response.text or "").strip()
+        raise EmbeddingConfigError(
+            f"Embedding API 调用失败：HTTP {e.response.status_code}"
+            + (f"；{detail[:240]}" if detail else "")
+        ) from e
+    except httpx.HTTPError as e:
+        raise EmbeddingConfigError(f"Embedding API 调用失败：{e}") from e
+    data = res.json()
 
     rows = data.get("data")
     if not isinstance(rows, list):

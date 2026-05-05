@@ -662,142 +662,13 @@ def api_wallet_transactions(
         }
 
 
-# ── Market catalog ───────────────────────────────────────────
-
-
-@router.get("/market/facets")
-def api_market_facets():
-    """公开：返回市场中出现的行业、类型（artifact）、保密级取值，供商店页筛选。"""
-    sf = get_session_factory()
-    with sf() as session:
-        pub = CatalogItem.is_public == True
-        industries = sorted(
-            {
-                t[0]
-                for t in session.query(CatalogItem.industry).filter(pub).distinct().all()
-                if t[0]
-            },
-        )
-        artifacts = sorted(
-            {
-                t[0]
-                for t in session.query(CatalogItem.artifact).filter(pub).distinct().all()
-                if t[0]
-            },
-        )
-        security_levels = sorted(
-            {
-                t[0]
-                for t in session.query(CatalogItem.security_level).filter(pub).distinct().all()
-                if t[0]
-            },
-        )
-        return {"industries": industries, "artifacts": artifacts, "security_levels": security_levels}
-
-
-@router.get("/market/catalog")
-def api_market_catalog(
-    q: Optional[str] = Query(None),
-    artifact: Optional[str] = Query(None),
-    industry: Optional[str] = Query(None),
-    security_level: Optional[str] = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    user: Optional[User] = Depends(_get_optional_user),
-):
-    sf = get_session_factory()
-    with sf() as session:
-        query = session.query(CatalogItem).filter(CatalogItem.is_public == True)
-        if q:
-            ql = q.lower()
-            query = query.filter(
-                (CatalogItem.name.ilike(f"%{ql}%"))
-                | (CatalogItem.pkg_id.ilike(f"%{ql}%"))
-                | (CatalogItem.description.ilike(f"%{ql}%"))
-            )
-        if artifact:
-            query = query.filter(CatalogItem.artifact == artifact)
-        if industry:
-            query = query.filter(CatalogItem.industry == industry)
-        if security_level:
-            query = query.filter(CatalogItem.security_level == security_level)
-        total = query.count()
-        rows = query.order_by(CatalogItem.created_at.desc()).offset(offset).limit(limit).all()
-
-        purchased_ids = set()
-        if user:
-            purchased_rows = session.query(Purchase.catalog_id).filter(Purchase.user_id == user.id).all()
-            purchased_ids = {r[0] for r in purchased_rows}
-
-        return {
-            "items": [
-                {
-                    "id": r.id,
-                    "pkg_id": r.pkg_id,
-                    "version": r.version,
-                    "name": r.name,
-                    "description": r.description,
-                    "price": r.price,
-                    "artifact": r.artifact,
-                    "industry": getattr(r, "industry", None) or "通用",
-                    "security_level": getattr(r, "security_level", None) or "personal",
-                    "author_id": r.author_id,
-                    "purchased": r.id in purchased_ids,
-                    "created_at": r.created_at.isoformat() if r.created_at else "",
-                }
-                for r in rows
-            ],
-            "total": total,
-        }
-
-
-@router.get("/market/catalog/{item_id}")
-def api_market_catalog_detail(
-    item_id: int,
-    user: Optional[User] = Depends(_get_optional_user),
-):
-    sf = get_session_factory()
-    with sf() as session:
-        item = session.query(CatalogItem).filter(CatalogItem.id == item_id).first()
-        if not item:
-            raise HTTPException(404, "商品不存在")
-        purchased = False
-        favorited = False
-        user_has_review = False
-        if user:
-            purchased = (
-                session.query(Purchase)
-                .filter(Purchase.user_id == user.id, Purchase.catalog_id == item.id)
-                .first()
-                is not None
-            )
-            favorited = (
-                session.query(Favorite)
-                .filter(Favorite.user_id == user.id, Favorite.catalog_id == item.id)
-                .first()
-                is not None
-            )
-            user_has_review = (
-                session.query(Review)
-                .filter(Review.user_id == user.id, Review.catalog_id == item.id)
-                .first()
-                is not None
-            )
-        return {
-            "id": item.id,
-            "pkg_id": item.pkg_id,
-            "version": item.version,
-            "name": item.name,
-            "description": item.description,
-            "price": item.price,
-            "artifact": item.artifact,
-            "industry": getattr(item, "industry", None) or "通用",
-            "author_id": item.author_id,
-            "purchased": purchased,
-            "favorited": favorited,
-            "user_has_review": user_has_review,
-            "created_at": item.created_at.isoformat() if item.created_at else "",
-        }
+# ── Market catalog GET routes ─────────────────────────────────
+# NOTE: GET /market/facets, GET /market/catalog, GET /market/catalog/{item_id},
+# and GET /market/catalog/{item_id}/reviews are served by market_catalog_api.py,
+# which is registered after this router in app_factory.py.
+# They were removed here to eliminate the route-shadow bug where this router's
+# older/simpler handlers were silently taking priority over the richer ones.
+# See: docs/ADR-routes-registry-retirement.md
 
 
 class ReviewSubmitDTO(BaseModel):
@@ -843,32 +714,6 @@ def api_submit_review(
         )
         session.commit()
     return {"ok": True}
-
-
-@router.get("/market/catalog/{item_id}/reviews")
-def api_catalog_reviews(item_id: int):
-    sf = get_session_factory()
-    with sf() as session:
-        rows = (
-            session.query(Review, User)
-            .join(User, Review.user_id == User.id)
-            .filter(Review.catalog_id == item_id)
-            .order_by(Review.created_at.desc())
-            .limit(50)
-            .all()
-        )
-        revs = [
-            {
-                "id": r.id,
-                "user_name": u.username,
-                "rating": r.rating,
-                "content": r.content or "",
-                "created_at": r.created_at.isoformat() if r.created_at else "",
-            }
-            for r, u in rows
-        ]
-        avg = sum(x[0].rating for x in rows) / len(rows) if rows else 0.0
-        return {"reviews": revs, "average_rating": round(avg, 2), "total": len(revs)}
 
 
 @router.post("/market/catalog/{item_id}/favorite")
@@ -1348,25 +1193,60 @@ def api_complete_upload(
 
 @router.delete("/admin/catalog/{item_id}")
 def api_admin_delete_catalog(item_id: int, user: User = Depends(_require_admin)):
+    """管理员下架商品（幂等 soft-delete）。
+
+    - 不再 hard delete 行：``Purchase`` / ``Review`` / ``Favorite`` / ``Entitlement``
+      均通过 ``ForeignKey(catalog_items.id)`` 引用本表（部分 ``nullable=False``），
+      硬删会破坏对账与历史，且重复点击会立即触发 404。
+    - 改为打 ``compliance_status='delisted'`` + ``is_public=False``：公开目录
+      （``CatalogItem.compliance_status != 'delisted'``）即不再展示，
+      与前端按钮文案 “下架后 AI 市场将不再展示该商品” 语义一致。
+    - 同步从 ``packages.json``（``/v1/packages`` 数据源）移除条目，删除其下
+      ``catalog_data/files/`` 中的二进制；``market_files/`` 中的副本保留以便
+      管理员后续 ``restore``。
+    - 幂等：行不存在或已下架时返回 ``ok: True`` 且不报 404，避免前端列表因
+      60s 缓存或多实例 (``upstream modstore_api``) 视图差异在重复点击时失败。
+    """
     from modstore_server import catalog_store
 
     sf = get_session_factory()
     with sf() as session:
         item = session.query(CatalogItem).filter(CatalogItem.id == item_id).first()
         if not item:
-            raise HTTPException(404, "商品不存在")
+            return {
+                "ok": True,
+                "deleted_id": item_id,
+                "already_missing": True,
+                "already_delisted": False,
+                "removed_catalog_store": 0,
+            }
 
+        already_delisted = (item.compliance_status or "") == "delisted"
         pkg_id = item.pkg_id or ""
-        if item.stored_filename:
-            file_path = _catalog_files_dir() / item.stored_filename
-            if file_path.is_file():
-                file_path.unlink()
 
-        session.delete(item)
-        session.commit()
+        if not already_delisted:
+            item.is_public = False
+            item.compliance_status = "delisted"
+            item.delist_reason = "管理员手动下架"
+            item.rank_score = 0.0
+            session.commit()
 
     n_json = catalog_store.remove_package(pkg_id, version=None) if pkg_id else 0
-    return {"ok": True, "deleted_id": item_id, "removed_catalog_store": n_json}
+
+    try:
+        from modstore_server.market_catalog_api import _invalidate_market_catalog_caches
+
+        _invalidate_market_catalog_caches()
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "deleted_id": item_id,
+        "already_missing": False,
+        "already_delisted": already_delisted,
+        "removed_catalog_store": n_json,
+    }
 
 
 @router.delete("/admin/employee-packs/{pkg_id:path}")
@@ -1403,6 +1283,103 @@ def api_admin_delete_employee_pack(pkg_id: str, user: User = Depends(_require_ad
         "removed_catalog_store": n_json,
         "removed_db": removed_db,
         "already_absent": n_json == 0 and not removed_db,
+    }
+
+
+@router.post("/admin/employee-packs/purge-all")
+def api_admin_purge_all_employee_packs(user: User = Depends(_require_admin)):
+    """一键清空所有员工包：``packages.json`` 中 ``artifact=employee_pack`` 全部行 +
+    ``files/`` 下对应文件 + ``catalog_items`` 中 ``artifact=employee_pack`` 全部行。
+
+    比前端循环逐条删更彻底——之前出现的「老是删不完」是因为 packages.json 与
+    数据库登记两边的 pkg_id 不重合（以及 norm_pkg_id 归一化差异），逐条对账时
+    会遗漏一边，这里统一在后端原子清空。"""
+    from modstore_server import catalog_store
+
+    removed_packages = 0
+    removed_files = 0
+    with catalog_store._lock:  # type: ignore[attr-defined]
+        data = catalog_store.load_store()
+        kept = []
+        for r in data.get("packages") or []:
+            if str((r or {}).get("artifact") or "") == "employee_pack":
+                fn = str((r or {}).get("stored_filename") or "").strip()
+                if fn:
+                    p = catalog_store.files_dir() / fn
+                    if p.is_file():
+                        try:
+                            p.unlink()
+                            removed_files += 1
+                        except OSError:
+                            pass
+                removed_packages += 1
+                continue
+            kept.append(r)
+        data["packages"] = kept
+        catalog_store.save_store(data)
+
+    removed_db = 0
+    sf = get_session_factory()
+    with sf() as session:
+        rows = (
+            session.query(CatalogItem)
+            .filter(CatalogItem.artifact == "employee_pack")
+            .all()
+        )
+        for item in rows:
+            stored = (item.stored_filename or "").strip()
+            if stored:
+                p = _catalog_files_dir() / stored
+                if p.is_file():
+                    try:
+                        p.unlink()
+                        removed_files += 1
+                    except OSError:
+                        pass
+            session.delete(item)
+        if rows:
+            session.commit()
+            removed_db = len(rows)
+
+    return {
+        "ok": True,
+        "removed_packages_json": removed_packages,
+        "removed_db_rows": removed_db,
+        "removed_files": removed_files,
+    }
+
+
+@router.post("/admin/mods/purge-all")
+def api_admin_purge_all_mods(user: User = Depends(_require_admin)):
+    """一键清空 mod 源码库：删除 ``library/`` 下所有 mod 目录（仅限带 manifest.json
+    的子目录），并截断 ``user_mods`` 关联表。
+
+    用于「重置仓库」语义——前端列表合并了多个数据源，逐条删除容易因 list 缓存、
+    norm 不一致、user_mods 关联残留导致「老是删不完」。这里一次性原子清空。"""
+    from modman.repo_config import load_config, resolved_library
+    from modman.store import iter_mod_dirs
+    from modstore_server.models import UserMod
+
+    lib = resolved_library(load_config())
+    removed_dirs: List[str] = []
+    if lib.is_dir():
+        for d in list(iter_mod_dirs(lib)):
+            try:
+                shutil.rmtree(d, ignore_errors=False)
+                removed_dirs.append(d.name)
+            except OSError:
+                pass
+
+    sf = get_session_factory()
+    with sf() as session:
+        removed_user_mod_rows = session.query(UserMod).delete()
+        session.commit()
+
+    return {
+        "ok": True,
+        "removed_dirs": removed_dirs,
+        "removed_dir_count": len(removed_dirs),
+        "removed_user_mod_rows": int(removed_user_mod_rows or 0),
     }
 
 

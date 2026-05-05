@@ -331,9 +331,14 @@ async def _set_step(
             return
         for s in sess["steps"]:
             if s["id"] == step_id:
+                prev_status = s.get("status")
                 s["status"] = status
                 if message is not None:
                     s["message"] = message
+                if status == "running" and prev_status != "running":
+                    s["started_at"] = datetime.utcnow().isoformat() + "Z"
+                elif status in ("done", "error"):
+                    s.pop("started_at", None)
                 break
         _persist_workbench_session_unlocked(sid)
 
@@ -359,6 +364,36 @@ async def _fail_session(sid: str, step_id: str, err: str) -> None:
                     s["status"] = "error"
                     s["message"] = err
                     break
+        _persist_workbench_session_unlocked(sid)
+
+
+async def _finalize_session_done(sid: str, artifact: Dict[str, Any]) -> None:
+    """Atomically write artifact + status=done.
+
+    Guards against the case where a pipeline branch returns early without
+    explicitly completing every step: any step still in pending/running is
+    force-promoted to done so the frontend never sees status=done alongside
+    non-terminal steps (which would cause premature navigation).
+    """
+    async with _SESSION_LOCK:
+        _hydrate_workbench_session_unlocked(sid)
+        sess = WORKBENCH_SESSIONS.get(sid)
+        if not sess:
+            return
+        for s in sess.get("steps") or []:
+            if s.get("status") not in ("done", "error"):
+                _LOG.warning(
+                    "workbench session=%s step=%s was still in state=%s at finalize; forcing done",
+                    sid,
+                    s.get("id"),
+                    s.get("status"),
+                )
+                s["status"] = "done"
+                if not s.get("message"):
+                    s["message"] = "管线收尾时补全"
+                s.pop("started_at", None)
+        sess["status"] = "done"
+        sess["artifact"] = artifact
         _persist_workbench_session_unlocked(sid)
 
 
@@ -493,6 +528,50 @@ def _commit_script_workflow_from_result(
     return {"id": wf.id, "name": wf.name}
 
 
+def _pipeline_task_failsafe(sid: str) -> Any:
+    """Return a done-callback for asyncio tasks created from _run_pipeline.
+
+    If the task raises an unhandled exception (any branch that forgot try/except),
+    this callback marks the session as error and sets the first running step to error,
+    preventing the zombie-session where status stays 'running' forever.
+    """
+
+    def _cb(task: "asyncio.Task[None]") -> None:  # type: ignore[type-arg]
+        try:
+            exc = task.exception()
+        except (asyncio.CancelledError, Exception):
+            exc = None
+        if exc is None:
+            return
+        _LOG.exception(
+            "workbench pipeline task failed unhandled session=%s err=%s",
+            sid,
+            exc,
+            exc_info=exc,
+        )
+        err_msg = f"[内部错误] {type(exc).__name__}: {exc!s}"[:2000]
+        # Synchronous fast-path: update in-memory dict without acquiring the async lock
+        # (we are in a sync callback fired from the event loop).
+        sess = WORKBENCH_SESSIONS.get(sid)
+        if not sess:
+            return
+        if sess.get("status") == "running":
+            sess["status"] = "error"
+            sess["error"] = err_msg
+        for s in sess.get("steps") or []:
+            if s.get("status") == "running":
+                s["status"] = "error"
+                s["message"] = err_msg[:480]
+                s.pop("started_at", None)
+                break
+        try:
+            _persist_workbench_session_unlocked(sid)
+        except Exception:  # noqa: BLE001
+            pass
+
+    return _cb
+
+
 async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None:
     intent = _canonical_workbench_intent(str(payload.get("intent") or ""))
     payload["intent"] = intent
@@ -623,15 +702,17 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 async with _SESSION_LOCK:
                     sess = WORKBENCH_SESSIONS.get(sid)
                     if sess:
-                        sess["status"] = "done"
                         sess["validate_warnings"] = warns
-                        sess["artifact"] = {
-                            "mod_id": res["id"],
-                            "workflow_results": [],
-                            "blueprint": None,
-                            "validation_summary": {"ok": not warns, "python_warnings": warns},
-                        }
                         _persist_workbench_session_unlocked(sid)
+                await _finalize_session_done(
+                    sid,
+                    {
+                        "mod_id": res["id"],
+                        "workflow_results": [],
+                        "blueprint": None,
+                        "validation_summary": {"ok": not warns, "python_warnings": warns},
+                    },
+                )
                 return
 
             await _set_step(sid, "manifest", "running", "正在生成结构化 Mod 蓝图 JSON")
@@ -899,27 +980,29 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 async with _SESSION_LOCK:
                     sess = WORKBENCH_SESSIONS.get(sid)
                     if sess:
-                        sess["status"] = "done"
                         sess["validate_warnings"] = (
                             api_summary["warnings"] + validation_summary["workflow_warnings"]
                         )
                         sess["sandbox_report"] = {"workflow": workflow_sandbox, "mod": mod_sandbox}
-                        sess["artifact"] = {
-                            "mod_id": imported["id"],
-                            "workflow_results": workflow_results,
-                            "blueprint": blueprint,
-                            "industry_card": industry_card,
-                            "ui_shell": ui_shell,
-                            "api_summary": api_summary,
-                            "workflow_sandbox": workflow_sandbox,
-                            "employee_readiness": employee_readiness,
-                            "mod_sandbox": mod_sandbox,
-                            "validation_summary": validation_summary,
-                            "employee_impls": impl_result,
-                            "graph_patch": graph_patch_result,
-                            "pack_register": register_result,
-                        }
                         _persist_workbench_session_unlocked(sid)
+                await _finalize_session_done(
+                    sid,
+                    {
+                        "mod_id": imported["id"],
+                        "workflow_results": workflow_results,
+                        "blueprint": blueprint,
+                        "industry_card": industry_card,
+                        "ui_shell": ui_shell,
+                        "api_summary": api_summary,
+                        "workflow_sandbox": workflow_sandbox,
+                        "employee_readiness": employee_readiness,
+                        "mod_sandbox": mod_sandbox,
+                        "validation_summary": validation_summary,
+                        "employee_impls": impl_result,
+                        "graph_patch": graph_patch_result,
+                        "pack_register": register_result,
+                    },
+                )
             except Exception as e:  # noqa: BLE001
                 _LOG.exception("workbench mod full suite failed session=%s", sid)
                 await _abort_mod_pipeline("complete", str(e)[:2000])
@@ -931,129 +1014,140 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
             et = str(payload.get("employee_target") or "pack_only").strip().lower()
             wf_name = (payload.get("employee_workflow_name") or "").strip() or None
             fhd_base = (payload.get("fhd_base_url") or "").strip() or None
-
-            await _set_step(sid, "generate", "running")
-            res = await run_employee_ai_scaffold_async(
-                db,
-                user,
-                brief=brief,
-                replace=replace,
-                provider=prov,
-                model=mdl,
-            )
-            if not res.get("ok"):
-                await _fail_session(sid, "generate", res.get("error") or "生成失败")
-                return
-            await _set_step(sid, "generate", "done")
-
-            await _set_step(sid, "validate", "running")
-            async with _SESSION_LOCK:
-                sess = WORKBENCH_SESSIONS.get(sid)
-                if sess:
-                    sess["validate_warnings"] = []
-                    _persist_workbench_session_unlocked(sid)
-            await _set_step(sid, "validate", "done", "manifest 已在导入时校验")
-
-            pack_dir = Path(str(res.get("path") or ""))
-            wf_attach: Dict[str, Any] = {}
-            await _set_step(sid, "workflow", "running")
-            if et == "pack_plus_workflow":
-                wf_attach = await attach_nl_workflow_to_employee_pack_dir(
+            _emp_current_step = "generate"
+            try:
+                await _set_step(sid, "generate", "running")
+                res = await run_employee_ai_scaffold_async(
                     db,
                     user,
-                    pack_dir=pack_dir,
                     brief=brief,
-                    workflow_name=wf_name,
+                    replace=replace,
                     provider=prov,
                     model=mdl,
                 )
-                wmsg = (
-                    f"已创建工作流 id={wf_attach.get('workflow_id')}；NL 生图"
-                    f"{'成功' if (wf_attach.get('nl') or {}).get('ok') else '有提示'}"
-                )
-                await _set_step(sid, "workflow", "done", wmsg[:480])
-            else:
-                await _set_step(
-                    sid,
-                    "workflow",
-                    "done",
-                    "已跳过：当前为「仅员工包」模式；若需画布请选 pack_plus_workflow 并重新编排",
-                )
+                if not res.get("ok"):
+                    await _fail_session(sid, "generate", res.get("error") or "生成失败")
+                    return
+                await _set_step(sid, "generate", "done")
 
-            await _set_step(sid, "workflow_sandbox", "running", "工作流 Mock 沙箱")
-            workflow_sandbox: Dict[str, Any]
-            wid = wf_attach.get("workflow_id") if isinstance(wf_attach, dict) else None
-            if et == "pack_plus_workflow" and wid:
-                report = run_workflow_sandbox(
-                    int(wid),
-                    {},
-                    mock_employees=True,
-                    validate_only=True,
-                    user_id=user.id,
-                )
-                record_workflow_sandbox_run(
-                    db,
-                    workflow_id=int(wid),
-                    user_id=user.id,
-                    report=report,
-                    validate_only=True,
-                    mock_employees=True,
-                )
-                workflow_sandbox = {
-                    "ok": bool(report.get("ok")),
-                    "skipped": False,
-                    "workflow_id": int(wid),
-                    "reports": [report],
+                _emp_current_step = "validate"
+                await _set_step(sid, "validate", "running")
+                async with _SESSION_LOCK:
+                    sess = WORKBENCH_SESSIONS.get(sid)
+                    if sess:
+                        sess["validate_warnings"] = []
+                        _persist_workbench_session_unlocked(sid)
+                await _set_step(sid, "validate", "done", "manifest 已在导入时校验")
+
+                pack_dir = Path(str(res.get("path") or ""))
+                wf_attach: Dict[str, Any] = {}
+                _emp_current_step = "workflow"
+                await _set_step(sid, "workflow", "running", "正在创建画布工作流…")
+
+                async def _emp_wf_msg(text: str) -> None:
+                    await _set_step(sid, "workflow", "running", text)
+
+                if et == "pack_plus_workflow":
+                    wf_attach = await attach_nl_workflow_to_employee_pack_dir(
+                        db,
+                        user,
+                        pack_dir=pack_dir,
+                        brief=brief,
+                        workflow_name=wf_name,
+                        provider=prov,
+                        model=mdl,
+                        status_hook=_emp_wf_msg,
+                    )
+                    wmsg = (
+                        f"已创建工作流 id={wf_attach.get('workflow_id')}；NL 生图"
+                        f"{'成功' if (wf_attach.get('nl') or {}).get('ok') else '有提示'}"
+                    )
+                    await _set_step(sid, "workflow", "done", wmsg[:480])
+                else:
+                    await _set_step(
+                        sid,
+                        "workflow",
+                        "done",
+                        "已跳过：当前为「仅员工包」模式；若需画布请选 pack_plus_workflow 并重新编排",
+                    )
+
+                _emp_current_step = "workflow_sandbox"
+                await _set_step(sid, "workflow_sandbox", "running", "工作流 Mock 沙箱")
+                workflow_sandbox: Dict[str, Any]
+                wid = wf_attach.get("workflow_id") if isinstance(wf_attach, dict) else None
+                if et == "pack_plus_workflow" and wid:
+                    report = run_workflow_sandbox(
+                        int(wid),
+                        {},
+                        mock_employees=True,
+                        validate_only=True,
+                        user_id=user.id,
+                    )
+                    record_workflow_sandbox_run(
+                        db,
+                        workflow_id=int(wid),
+                        user_id=user.id,
+                        report=report,
+                        validate_only=True,
+                        mock_employees=True,
+                    )
+                    workflow_sandbox = {
+                        "ok": bool(report.get("ok")),
+                        "skipped": False,
+                        "workflow_id": int(wid),
+                        "reports": [report],
+                    }
+                    await _set_step(
+                        sid,
+                        "workflow_sandbox",
+                        "done",
+                        "结构沙盒（validate_only）完成" if report.get("ok") else "沙箱有提示，请进画布查看",
+                    )
+                else:
+                    wf_skip_msg = (
+                        "已跳过 Mock：未创建画布工作流或模式为仅员工包。"
+                        "完整双沙箱见「做 Mod」或 pack_plus_workflow 模式。"
+                    )
+                    workflow_sandbox = {"ok": True, "skipped": True, "reason": wf_skip_msg, "reports": []}
+                    await _set_step(sid, "workflow_sandbox", "done", wf_skip_msg[:520])
+
+                _emp_current_step = "mod_sandbox"
+                await _set_step(sid, "mod_sandbox", "running", "正在校验包体（manifest / Python）")
+                mod_checks: List[Dict[str, Any]] = []
+                if pack_dir.is_dir():
+                    _mf, mf_err = read_manifest(pack_dir)
+                    mod_checks.append(
+                        {"id": "manifest", "ok": mf_err is None, "message": mf_err or "manifest 可读取"},
+                    )
+                    py_warns = mod_compileall_warnings(pack_dir)
+                    mod_checks.append(
+                        {
+                            "id": "python_compile",
+                            "ok": not py_warns,
+                            "message": "；".join(py_warns) if py_warns else "未发现需编译的 Python 或检查通过",
+                        },
+                    )
+                else:
+                    mod_checks.append({"id": "manifest", "ok": False, "message": f"包目录无效: {pack_dir}"})
+                emp_mod_sandbox = {
+                    "ok": all(c.get("ok") for c in mod_checks) if mod_checks else False,
+                    "checks": mod_checks,
+                    "note": "员工包轻量校验（含 backend/blueprints 运行时）",
                 }
-                await _set_step(
-                    sid,
-                    "workflow_sandbox",
-                    "done",
-                    "结构沙盒（validate_only）完成" if report.get("ok") else "沙箱有提示，请进画布查看",
-                )
-            else:
-                wf_skip_msg = (
-                    "已跳过 Mock：未创建画布工作流或模式为仅员工包。"
-                    "完整双沙箱见「做 Mod」或 pack_plus_workflow 模式。"
-                )
-                workflow_sandbox = {"ok": True, "skipped": True, "reason": wf_skip_msg, "reports": []}
-                await _set_step(sid, "workflow_sandbox", "done", wf_skip_msg[:520])
+                mod_sb_msg = "包体轻量校验通过" if emp_mod_sandbox["ok"] else "包体校验有提示，见会话 artifact.mod_sandbox"
+                await _set_step(sid, "mod_sandbox", "done", mod_sb_msg[:480])
 
-            await _set_step(sid, "mod_sandbox", "running", "正在校验包体（manifest / Python）")
-            mod_checks: List[Dict[str, Any]] = []
-            if pack_dir.is_dir():
-                _mf, mf_err = read_manifest(pack_dir)
-                mod_checks.append(
-                    {"id": "manifest", "ok": mf_err is None, "message": mf_err or "manifest 可读取"},
-                )
-                py_warns = mod_compileall_warnings(pack_dir)
-                mod_checks.append(
-                    {
-                        "id": "python_compile",
-                        "ok": not py_warns,
-                        "message": "；".join(py_warns) if py_warns else "未发现需编译的 Python 或检查通过",
-                    },
-                )
-            else:
-                mod_checks.append({"id": "manifest", "ok": False, "message": f"包目录无效: {pack_dir}"})
-            emp_mod_sandbox = {
-                "ok": all(c.get("ok") for c in mod_checks) if mod_checks else False,
-                "checks": mod_checks,
-                "note": "员工包轻量校验（含 backend/blueprints 运行时）",
-            }
-            mod_sb_msg = "包体轻量校验通过" if emp_mod_sandbox["ok"] else "包体校验有提示，见会话 artifact.mod_sandbox"
-            await _set_step(sid, "mod_sandbox", "done", mod_sb_msg[:480])
+                _emp_current_step = "host_check"
+                host_probe: Dict[str, Any] = {"skipped": True}
+                await _set_step(sid, "host_check", "running", "探测宿主 /api/mods/")
+                if fhd_base:
+                    try:
+                        from modstore_server.infrastructure.http_clients import get_external_client
 
-            host_probe: Dict[str, Any] = {"skipped": True}
-            await _set_step(sid, "host_check", "running", "探测宿主 /api/mods/")
-            if fhd_base:
-                try:
-                    import httpx  # type: ignore
-
-                    base = fhd_base.rstrip("/")
-                    host_warnings: List[str] = []
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        r = await client.get(f"{base}/api/mods/")
+                        base = fhd_base.rstrip("/")
+                        host_warnings: List[str] = []
+                        client = get_external_client()
+                        r = await client.get(f"{base}/api/mods/", timeout=10.0)
                         host_probe = {
                             "skipped": False,
                             "ok": r.status_code < 500,
@@ -1092,29 +1186,32 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         except Exception:
                             pass
 
-                    msg = (
-                        f"HTTP {r.status_code}"
-                        if host_probe.get("ok")
-                        else f"HTTP {r.status_code}（异常）"
-                    )
-                    if host_warnings:
-                        msg += "；" + "；".join(host_warnings[:3])[:400]
-                        host_probe["warnings"] = host_warnings
-                    await _set_step(sid, "host_check", "done", msg[:480])
-                except Exception as e:  # noqa: BLE001
-                    host_probe = {"skipped": False, "ok": False, "error": str(e)[:300]}
-                    await _set_step(sid, "host_check", "done", f"探测失败: {e!s}"[:300])
-            else:
-                await _set_step(sid, "host_check", "done", "未配置 fhd_base_url，已跳过")
+                        msg = (
+                            f"HTTP {r.status_code}"
+                            if host_probe.get("ok")
+                            else f"HTTP {r.status_code}（异常）"
+                        )
+                        if host_warnings:
+                            msg += "；" + "；".join(host_warnings[:3])[:400]
+                            host_probe["warnings"] = host_warnings
+                        await _set_step(sid, "host_check", "done", msg[:480])
+                    except Exception as e:  # noqa: BLE001
+                        host_probe = {"skipped": False, "ok": False, "error": str(e)[:300]}
+                        await _set_step(sid, "host_check", "done", f"探测失败: {e!s}"[:300])
+                else:
+                    await _set_step(sid, "host_check", "done", "未配置 fhd_base_url，已跳过")
 
-            await _set_step(sid, "complete", "done")
-            async with _SESSION_LOCK:
-                sess = WORKBENCH_SESSIONS.get(sid)
-                if sess:
-                    sess["status"] = "done"
-                    emp = (res.get("manifest") or {}).get("employee") or {}
-                    sess["sandbox_report"] = {"workflow": workflow_sandbox, "mod": emp_mod_sandbox}
-                    sess["artifact"] = {
+                _emp_current_step = "complete"
+                await _set_step(sid, "complete", "done")
+                async with _SESSION_LOCK:
+                    sess = WORKBENCH_SESSIONS.get(sid)
+                    if sess:
+                        sess["sandbox_report"] = {"workflow": workflow_sandbox, "mod": emp_mod_sandbox}
+                        _persist_workbench_session_unlocked(sid)
+                emp = (res.get("manifest") or {}).get("employee") or {}
+                await _finalize_session_done(
+                    sid,
+                    {
                         "pack_id": res["id"],
                         "employee_id": res["id"],
                         "manifest_employee_id": emp.get("id") or res["id"],
@@ -1131,8 +1228,11 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                             "mod_sandbox": emp_mod_sandbox,
                             "workflow_skipped": not bool(wid),
                         },
-                    }
-                    _persist_workbench_session_unlocked(sid)
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                _LOG.exception("workbench employee pipeline failed session=%s step=%s", sid, _emp_current_step)
+                await _fail_session(sid, _emp_current_step, str(e)[:2000])
             return
 
         if intent == CANVAS_SKILL_INTENT:
@@ -1144,154 +1244,158 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
             full_desc = brief
             if plan:
                 full_desc = f"{brief}\n\n—— 框架与排期 ——\n{plan}"
-
-            await _set_step(sid, "generate", "running")
-            wf = Workflow(
-                user_id=user.id,
-                name=name,
-                description=full_desc,
-                is_active=True,
-                kind="skill_group",
-            )
-            db.add(wf)
-            db.commit()
-            db.refresh(wf)
-            wid = wf.id
-
-            nl_meta: Dict[str, Any] = {
-                "generate_workflow_graph": gen_wf_graph,
-                "nodes_created": 0,
-                "edges_created": 0,
-                "sandbox_ok": True,
-                "validation_errors": [],
-                "llm_warnings": [],
-            }
-            if gen_wf_graph:
-
-                async def _workflow_graph_msg(text: str) -> None:
-                    await _set_step(sid, "generate", "running", text)
-
-                nl = await apply_nl_workflow_graph(
-                    db,
-                    user,
-                    workflow_id=wid,
-                    brief=full_desc,
-                    provider=prov,
-                    model=mdl,
-                    status_hook=_workflow_graph_msg,
+            _skill_current_step = "generate"
+            try:
+                await _set_step(sid, "generate", "running")
+                wf = Workflow(
+                    user_id=user.id,
+                    name=name,
+                    description=full_desc,
+                    is_active=True,
+                    kind="skill_group",
                 )
-                if not nl.get("ok"):
-                    try:
-                        db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wid).delete(
-                            synchronize_session=False
-                        )
-                        db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wid).delete(
-                            synchronize_session=False
-                        )
-                        db.query(Workflow).filter(Workflow.id == wid).delete(
-                            synchronize_session=False
-                        )
-                        db.commit()
-                    except Exception:
-                        db.rollback()
-                    await _fail_session(
-                        sid, "generate", nl.get("error") or "工作流图生成失败"
+                db.add(wf)
+                db.commit()
+                db.refresh(wf)
+                wid = wf.id
+
+                nl_meta: Dict[str, Any] = {
+                    "generate_workflow_graph": gen_wf_graph,
+                    "nodes_created": 0,
+                    "edges_created": 0,
+                    "sandbox_ok": True,
+                    "validation_errors": [],
+                    "llm_warnings": [],
+                }
+                if gen_wf_graph:
+
+                    async def _workflow_graph_msg(text: str) -> None:
+                        await _set_step(sid, "generate", "running", text)
+
+                    nl = await apply_nl_workflow_graph(
+                        db,
+                        user,
+                        workflow_id=wid,
+                        brief=full_desc,
+                        provider=prov,
+                        model=mdl,
+                        status_hook=_workflow_graph_msg,
                     )
+                    if not nl.get("ok"):
+                        try:
+                            db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wid).delete(
+                                synchronize_session=False
+                            )
+                            db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wid).delete(
+                                synchronize_session=False
+                            )
+                            db.query(Workflow).filter(Workflow.id == wid).delete(
+                                synchronize_session=False
+                            )
+                            db.commit()
+                        except Exception:
+                            db.rollback()
+                        await _fail_session(
+                            sid, "generate", nl.get("error") or "工作流图生成失败"
+                        )
+                        async with _SESSION_LOCK:
+                            sess = WORKBENCH_SESSIONS.get(sid)
+                            if sess:
+                                sess["artifact"] = None
+                                _persist_workbench_session_unlocked(sid)
+                        return
+                    nl_meta.update(
+                        {
+                            "nodes_created": int(nl.get("nodes_created") or 0),
+                            "edges_created": int(nl.get("edges_created") or 0),
+                            "sandbox_ok": bool(nl.get("sandbox_ok")),
+                            "validation_errors": nl.get("validation_errors") or [],
+                            "llm_warnings": nl.get("llm_warnings") or [],
+                        }
+                    )
+
+                await _set_step(sid, "generate", "done")
+
+                _skill_current_step = "validate"
+                await _set_step(sid, "validate", "running")
+                node_count = (
+                    db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wid).count()
+                )
+                if node_count == 0:
+                    detail = "新建工作流暂无节点，进入画布后再添加节点并运行沙盒校验"
                     async with _SESSION_LOCK:
                         sess = WORKBENCH_SESSIONS.get(sid)
                         if sess:
-                            sess["artifact"] = None
+                            sess["sandbox_report"] = None
+                            sess["validate_warnings"] = []
                             _persist_workbench_session_unlocked(sid)
-                    return
-                nl_meta.update(
-                    {
-                        "nodes_created": int(nl.get("nodes_created") or 0),
-                        "edges_created": int(nl.get("edges_created") or 0),
-                        "sandbox_ok": bool(nl.get("sandbox_ok")),
-                        "validation_errors": nl.get("validation_errors") or [],
-                        "llm_warnings": nl.get("llm_warnings") or [],
-                    }
-                )
-
-            await _set_step(sid, "generate", "done")
-
-            await _set_step(sid, "validate", "running")
-            node_count = (
-                db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wid).count()
-            )
-            if node_count == 0:
-                detail = "新建工作流暂无节点，进入画布后再添加节点并运行沙盒校验"
-                async with _SESSION_LOCK:
-                    sess = WORKBENCH_SESSIONS.get(sid)
-                    if sess:
-                        sess["sandbox_report"] = None
-                        sess["validate_warnings"] = []
-                        _persist_workbench_session_unlocked(sid)
-                await _set_step(sid, "validate", "done", detail)
-            else:
-                report = run_workflow_sandbox(
-                    wid,
-                    {},
-                    mock_employees=True,
-                    validate_only=True,
-                    user_id=user.id,
-                )
-                record_workflow_sandbox_run(
-                    db,
-                    workflow_id=wid,
-                    user_id=user.id,
-                    report=report,
-                    validate_only=True,
-                    mock_employees=True,
-                )
-                errs = report.get("errors") or []
-                warns = report.get("warnings") or []
-                detail = None
-                if errs:
-                    detail = "校验提示（可进画布修改）：" + "；".join(
-                        str(e) for e in errs[:8]
-                    )
-                elif warns:
-                    detail = "提示：" + "；".join(str(w) for w in warns[:6])
-                async with _SESSION_LOCK:
-                    sess = WORKBENCH_SESSIONS.get(sid)
-                    if sess:
-                        sess["sandbox_report"] = report
-                        sess["validate_warnings"] = warns
-                        _persist_workbench_session_unlocked(sid)
-                if not errs:
-                    run_report = run_workflow_sandbox(
+                    await _set_step(sid, "validate", "done", detail)
+                else:
+                    report = run_workflow_sandbox(
                         wid,
                         {},
                         mock_employees=True,
-                        validate_only=False,
+                        validate_only=True,
                         user_id=user.id,
                     )
                     record_workflow_sandbox_run(
                         db,
                         workflow_id=wid,
                         user_id=user.id,
-                        report=run_report,
-                        validate_only=False,
+                        report=report,
+                        validate_only=True,
                         mock_employees=True,
                     )
-                    nl_meta["sandbox_ok"] = bool(run_report.get("ok"))
-                # MVP：保留已生成图，不因 validate_only 错误而整体失败
-                await _set_step(sid, "validate", "done", detail)
+                    errs = report.get("errors") or []
+                    warns = report.get("warnings") or []
+                    detail = None
+                    if errs:
+                        detail = "校验提示（可进画布修改）：" + "；".join(
+                            str(e) for e in errs[:8]
+                        )
+                    elif warns:
+                        detail = "提示：" + "；".join(str(w) for w in warns[:6])
+                    async with _SESSION_LOCK:
+                        sess = WORKBENCH_SESSIONS.get(sid)
+                        if sess:
+                            sess["sandbox_report"] = report
+                            sess["validate_warnings"] = warns
+                            _persist_workbench_session_unlocked(sid)
+                    if not errs:
+                        run_report = run_workflow_sandbox(
+                            wid,
+                            {},
+                            mock_employees=True,
+                            validate_only=False,
+                            user_id=user.id,
+                        )
+                        record_workflow_sandbox_run(
+                            db,
+                            workflow_id=wid,
+                            user_id=user.id,
+                            report=run_report,
+                            validate_only=False,
+                            mock_employees=True,
+                        )
+                        nl_meta["sandbox_ok"] = bool(run_report.get("ok"))
+                    # MVP：保留已生成图，不因 validate_only 错误而整体失败
+                    await _set_step(sid, "validate", "done", detail)
 
-            await _set_step(sid, "complete", "done")
-            async with _SESSION_LOCK:
-                sess = WORKBENCH_SESSIONS.get(sid)
-                if sess:
-                    sess["status"] = "done"
-                    sess["artifact"] = _enrich_artifact_skill_aliases(
+                _skill_current_step = "complete"
+                await _set_step(sid, "complete", "done")
+                await _finalize_session_done(
+                    sid,
+                    _enrich_artifact_skill_aliases(
                         {
                             "workflow_id": wid,
                             "workflow_name": name,
                             **nl_meta,
                         },
-                    )
-                    _persist_workbench_session_unlocked(sid)
+                    ),
+                )
+            except Exception as e:  # noqa: BLE001
+                _LOG.exception("workbench skill pipeline failed session=%s step=%s", sid, _skill_current_step)
+                await _fail_session(sid, _skill_current_step, str(e)[:2000])
             return
 
         await _fail_session(sid, "spec", f"未知 intent: {intent}")
@@ -1346,7 +1450,8 @@ async def create_workbench_session(
             "script_result": None,
         }
         _persist_workbench_session_unlocked(sid)
-    asyncio.create_task(_run_pipeline(sid, user.id, payload))
+    _task = asyncio.create_task(_run_pipeline(sid, user.id, payload))
+    _task.add_done_callback(_pipeline_task_failsafe(sid))
     return {"session_id": sid, "status": "running"}
 
 
@@ -1397,7 +1502,8 @@ async def create_workbench_script_session(
             "script_result": None,
         }
         _persist_workbench_session_unlocked(sid)
-    asyncio.create_task(_run_pipeline(sid, user.id, payload))
+    _script_task = asyncio.create_task(_run_pipeline(sid, user.id, payload))
+    _script_task.add_done_callback(_pipeline_task_failsafe(sid))
     return {"session_id": sid, "status": "running"}
 
 

@@ -37,7 +37,7 @@
             脚本工作流
           </router-link>
           <router-link
-            :to="{ name: 'workbench-unified', query: { focus: 'employee', employeeView: 'list' } }"
+            :to="{ name: 'workbench-unified', query: { focus: 'employee' } }"
             class="workbench-tab"
             :class="{ 'workbench-tab--active': myEmployeesNavActive }"
           >
@@ -75,8 +75,7 @@ const scriptWorkflowsNavActive = computed(() => String(route.path || '').startsW
 const myEmployeesNavActive = computed(() => {
   if (String(route.name || '') !== 'workbench-unified') return false
   const f = String(route.query.focus || '').trim().toLowerCase()
-  const v = String(route.query.employeeView || '').trim().toLowerCase()
-  return f === 'employee' && v === 'list'
+  return f === 'employee'
 })
 </script>
 

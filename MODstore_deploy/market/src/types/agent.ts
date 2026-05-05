@@ -19,7 +19,24 @@ export type ButlerMode =
   | 'operating'
   | 'awaiting_confirm'
   | 'speaking'
+  | 'orchestrating'
   | 'error'
+
+// ─── Orchestration ────────────────────────────────────────────────────
+export interface OrchestrationStep {
+  id: string
+  label: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  message: string | null
+}
+
+export interface OrchestrationSession {
+  sessionId: string
+  steps: OrchestrationStep[]
+  status: 'running' | 'done' | 'error'
+  error?: string | null
+  artifact?: Record<string, unknown> | null
+}
 
 // ─── 消息 ─────────────────────────────────────────────────────────────
 export type AgentMessageRole = 'user' | 'assistant' | 'tool_call' | 'action_preview' | 'system'

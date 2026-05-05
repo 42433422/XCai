@@ -97,6 +97,15 @@ class CatalogItem(Base):
     template_difficulty = Column(String(16), default="")
     install_count = Column(Integer, default=0)
     graph_snapshot = Column(Text, default="")
+    # 合规与素材分类（在 models_db.py 中以 ALTER TABLE 兜底写入；这里同步声明，
+    # 否则 ORM 表达式如 ``CatalogItem.compliance_status`` 会抛 AttributeError）
+    material_category = Column(String(64), default="")
+    license_scope = Column(String(32), default="personal")
+    origin_type = Column(String(32), default="original")
+    ip_risk_level = Column(String(16), default="low")
+    compliance_status = Column(String(32), default="approved", index=True)
+    rank_score = Column(Float, default=100.0)
+    delist_reason = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -1079,9 +1088,53 @@ def _sqlite_add_column_if_missing(engine, table: str, column: str, ddl_type: str
         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
 
 
+def _add_column_if_missing(engine, table: str, column: str, ddl_type: str) -> None:
+    """通用表结构演进：同时支持 SQLite 与 PostgreSQL，缺列时 ALTER ADD（幂等）。"""
+    if engine.dialect.name == "sqlite":
+        _sqlite_add_column_if_missing(engine, table, column, ddl_type)
+        return
+    with engine.begin() as conn:
+        exists = conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = :table AND column_name = :column"
+            ),
+            {"table": table, "column": column},
+        ).first()
+        if exists:
+            return
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+
+
 def init_db(db_path: Optional[Path] = None):
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
+
+    # ── 知识库集合：新增向量化配置列（SQLite + Postgres 通用）──────────────
+    for _col, _ddl in (
+        ("embedding_provider", "VARCHAR(64) DEFAULT ''"),
+        ("embedding_source", "VARCHAR(64) DEFAULT ''"),
+    ):
+        try:
+            _add_column_if_missing(engine, "knowledge_collections", _col, _ddl)
+        except Exception:
+            pass
+
+    # ── 目录条目：合规/素材/排名增强列（SQLite + Postgres 通用）─────────────
+    for _col, _ddl in (
+        ("material_category", "VARCHAR(64) DEFAULT ''"),
+        ("license_scope", "VARCHAR(32) DEFAULT 'personal'"),
+        ("origin_type", "VARCHAR(32) DEFAULT 'original'"),
+        ("ip_risk_level", "VARCHAR(16) DEFAULT 'low'"),
+        ("compliance_status", "VARCHAR(32) DEFAULT 'approved'"),
+        ("rank_score", "FLOAT DEFAULT 100.0"),
+        ("delist_reason", "TEXT DEFAULT ''"),
+    ):
+        try:
+            _add_column_if_missing(engine, "catalog_items", _col, _ddl)
+        except Exception:
+            pass
+
     if engine.dialect.name != "sqlite":
         init_default_plan_templates()
         return

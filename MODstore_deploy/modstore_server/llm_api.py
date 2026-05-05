@@ -117,15 +117,24 @@ def _provider_labels() -> Dict[str, str]:
 
 @router.get("/status")
 async def llm_status(
-    db: Session = Depends(get_db),
     user: User = Depends(_get_current_user),
 ):
-    out = []
-    for p in KNOWN_PROVIDERS:
-        st = credential_status(db, user.id, p)
-        st["label"] = _provider_labels().get(p, p)
-        out.append(st)
-    return {"providers": out, "fernet_configured": fernet_configured()}
+    import asyncio
+    from modstore_server.models import get_session_factory
+
+    user_id = int(user.id)
+
+    def _sync_status() -> dict:
+        sf = get_session_factory()
+        with sf() as db:
+            out = []
+            for p in KNOWN_PROVIDERS:
+                st = credential_status(db, user_id, p)
+                st["label"] = _provider_labels().get(p, p)
+                out.append(st)
+        return {"providers": out, "fernet_configured": fernet_configured()}
+
+    return await asyncio.to_thread(_sync_status)
 
 
 @router.get("/resolve-chat-default")
@@ -139,45 +148,66 @@ async def resolve_chat_default(
 
     顺序：①账户默认且该厂商有密钥且已填 model；②默认厂商有密钥则取其目录首模；
     ③按 KNOWN_PROVIDERS 顺序第一个「有密钥且能拉到模型 id」的厂商。
+
+    NOTE (async-engine migration): This handler mixes sync ORM calls
+    (resolve_api_key) with async calls (get_models_for_provider).  The sync
+    parts are tolerable because this endpoint is rarely on the hot path.
+    When the full AsyncEngine migration (asyncpg) lands, convert
+    resolve_api_key to async and remove the sync Session dependency here.
     """
-    urow = db.query(User).filter(User.id == user.id).first()
-    prefs: Dict[str, Any] = {}
-    raw = ((urow.default_llm_json if urow else None) or "").strip()
-    if raw:
-        try:
-            loaded = json.loads(raw)
-            if isinstance(loaded, dict):
-                prefs = loaded
-        except json.JSONDecodeError:
-            prefs = {}
-    pref_p = str(prefs.get("provider") or "").strip()
-    pref_m = str(prefs.get("model") or "").strip()
+    import asyncio
+    from modstore_server.models import User as UserModel, get_session_factory
+
+    user_id = int(user.id)
+
+    def _load_prefs_and_keys() -> tuple[str, str, dict[str, str]]:
+        """Load user prefs + all provider API keys in one thread."""
+        sf = get_session_factory()
+        with sf() as _db:
+            urow = _db.query(UserModel).filter(UserModel.id == user_id).first()
+            prefs: Dict[str, Any] = {}
+            raw = ((urow.default_llm_json if urow else None) or "").strip()
+            if raw:
+                try:
+                    loaded = json.loads(raw)
+                    if isinstance(loaded, dict):
+                        prefs = loaded
+                except json.JSONDecodeError:
+                    prefs = {}
+            pref_p = str(prefs.get("provider") or "").strip()
+            pref_m = str(prefs.get("model") or "").strip()
+            keys: dict[str, str] = {}
+            for p in KNOWN_PROVIDERS:
+                k, _ = resolve_api_key(_db, user_id, p)
+                if k:
+                    keys[p] = k
+        return pref_p, pref_m, keys
+
+    pref_p, pref_m, keys = await asyncio.to_thread(_load_prefs_and_keys)
 
     async def first_model_id(provider: str) -> str:
-        block = await get_models_for_provider(db, user.id, provider, force_refresh=False)
+        # get_models_for_provider needs a session only for resolve_api_key; since
+        # we already have the key we pass the existing session (sync I/O is one
+        # quick SELECT) — acceptable until full async engine lands.
+        block = await get_models_for_provider(db, user_id, provider, force_refresh=False)
         mids = list(block.get("models") or [])
         return str(mids[0]).strip() if mids else ""
 
-    if pref_p in KNOWN_PROVIDERS and pref_m:
-        api_key, _ = resolve_api_key(db, user.id, pref_p)
-        if api_key:
-            return {"ok": True, "provider": pref_p, "model": pref_m, "source": "preference"}
+    if pref_p in KNOWN_PROVIDERS and pref_m and pref_p in keys:
+        return {"ok": True, "provider": pref_p, "model": pref_m, "source": "preference"}
 
-    if pref_p in KNOWN_PROVIDERS:
-        api_key, _ = resolve_api_key(db, user.id, pref_p)
-        if api_key:
-            m0 = await first_model_id(pref_p)
-            if m0:
-                return {
-                    "ok": True,
-                    "provider": pref_p,
-                    "model": m0,
-                    "source": "preference_first_model",
-                }
+    if pref_p in KNOWN_PROVIDERS and pref_p in keys:
+        m0 = await first_model_id(pref_p)
+        if m0:
+            return {
+                "ok": True,
+                "provider": pref_p,
+                "model": m0,
+                "source": "preference_first_model",
+            }
 
     for p in KNOWN_PROVIDERS:
-        api_key, _ = resolve_api_key(db, user.id, p)
-        if not api_key:
+        if p not in keys:
             continue
         m0 = await first_model_id(p)
         if m0:

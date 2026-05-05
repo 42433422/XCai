@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -16,6 +18,7 @@ from modstore_server.catalog_store import (
     list_packages,
     list_versions,
     load_store,
+    packages_path,
     promote_draft_to_stable,
 )
 from modstore_server.catalog_sync import upsert_catalog_item_from_xc_package_dict
@@ -25,6 +28,19 @@ from modstore_server.models import get_session_factory
 from modstore_server.vector_store import insert_embedding, query_similar
 
 router = APIRouter(prefix="/v1", tags=["catalog"])
+
+
+def _invalidate_catalog_list_caches(pkg_id: Any = None, version: Any = None) -> None:
+    """Best-effort cache invalidation after a write.
+
+    List/index caches use parameter-hashed keys that cannot be enumerated, so
+    we rely on their short TTL (300 s / 60 s) to expire naturally.  The only
+    key we can reliably delete is the per-package detail key.
+    """
+    from modstore_server import cache
+
+    if pkg_id and version:
+        cache.delete(f"catalog:v1:pkg:{pkg_id}:{version}")
 
 
 def _upload_token() -> str:
@@ -39,6 +55,11 @@ def _require_upload(authorization: Optional[str]) -> None:
         raise HTTPException(401, "无效的上传凭证")
 
 
+def _params_hash(*args: Any) -> str:
+    """Stable short hash of query parameter values for use in cache keys."""
+    return hashlib.sha1(json.dumps(args, sort_keys=True).encode()).hexdigest()[:12]
+
+
 @router.get("/packages", summary="分页列出包")
 def api_list_packages(
     artifact: Optional[str] = Query(None),
@@ -46,15 +67,30 @@ def api_list_packages(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
+    from modstore_server import cache
+
+    ck = f"catalog:v1:packages:list:{_params_hash(artifact, q, limit, offset)}"
+    cached = cache.get_json(ck)
+    if cached is not None:
+        return cached
     rows, total = list_packages(artifact=artifact, q=q, limit=limit, offset=offset)
-    return {"packages": rows, "total": total, "limit": limit, "offset": offset}
+    result = {"packages": rows, "total": total, "limit": limit, "offset": offset}
+    cache.set_json(ck, result, ttl_seconds=300)
+    return result
 
 
 @router.get("/packages/{pkg_id}/{version}", summary="包详情")
 def api_get_package(pkg_id: str, version: str):
+    from modstore_server import cache
+
+    ck = f"catalog:v1:pkg:{pkg_id}:{version}"
+    cached = cache.get_json(ck)
+    if cached is not None:
+        return cached
     r = get_package(pkg_id, version)
     if not r:
         raise HTTPException(404, "未找到该版本")
+    cache.set_json(ck, r, ttl_seconds=600)
     return r
 
 
@@ -89,11 +125,22 @@ def api_promote_package(
         with sf() as db:
             upsert_catalog_item_from_xc_package_dict(db, saved, author_id=None)
             db.commit()
+    _invalidate_catalog_list_caches(saved.get("id"), saved.get("version"))
     return {"ok": True, "package": saved}
 
 
 @router.get("/index.json", summary="轻量全量索引")
 def api_index_json():
+    from modstore_server import cache
+
+    p = packages_path()
+    # Key includes file mtime so a new upload naturally produces a new cache key;
+    # old key expires in 60 s, effectively rate-limiting filesystem reads.
+    mtime = int(p.stat().st_mtime) if p.is_file() else 0
+    ck = f"catalog:v1:index:{mtime}"
+    cached = cache.get_json(ck)
+    if cached is not None:
+        return cached
     data = load_store()
     out = []
     for r in data.get("packages") or []:
@@ -112,7 +159,9 @@ def api_index_json():
                 "license": r.get("license"),
             }
         )
-    return {"packages": out}
+    result = {"packages": out}
+    cache.set_json(ck, result, ttl_seconds=60)
+    return result
 
 
 @router.get("/packages/{pkg_id}/{version}/download", summary="下载已上传包文件")
@@ -202,6 +251,9 @@ async def api_upload_package(
         with sf2() as db:
             upsert_catalog_item_from_xc_package_dict(db, saved, author_id=None)
             db.commit()
+
+    # Invalidate all list/index caches; individual detail keys expire on their own TTL.
+    _invalidate_catalog_list_caches(saved.get("id"), saved.get("version"))
 
     embedding_text = f"{saved.get('name', '')} {saved.get('description', '')}"
     if embedding_text.strip():

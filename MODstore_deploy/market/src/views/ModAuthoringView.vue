@@ -942,7 +942,7 @@ async function loadEmpPickList() {
 
 function goMyEmployees() {
   closeEmployeePickModal()
-  router.push({ name: 'workbench-unified', query: { focus: 'employee', employeeView: 'list' } })
+  router.push({ name: 'workbench-unified', query: { focus: 'employee' } })
 }
 
 async function confirmPickEmployee(row: {

@@ -110,10 +110,12 @@ async def _tavily_search(query: str, max_results: int = 10) -> List[Dict[str, An
         "include_answer": False,
         "max_results": max(1, min(max_results, 15)),
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post("https://api.tavily.com/search", json=body)
-        r.raise_for_status()
-        data = r.json()
+    from modstore_server.infrastructure.http_clients import get_external_client
+
+    client = get_external_client()
+    r = await client.post("https://api.tavily.com/search", json=body, timeout=30.0)
+    r.raise_for_status()
+    data = r.json()
     results = data.get("results")
     return results if isinstance(results, list) else []
 
@@ -146,10 +148,12 @@ async def _duckduckgo_html_search(query: str, max_results: int = 10) -> List[Dic
         "User-Agent": "Mozilla/5.0 (compatible; MODstore-Workbench/1.0)",
         "Accept": "text/html,application/xhtml+xml",
     }
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-        r = await client.get(url, headers=headers)
-        r.raise_for_status()
-        html = r.text or ""
+    from modstore_server.infrastructure.http_clients import get_external_client
+
+    client = get_external_client()
+    r = await client.get(url, headers=headers, timeout=20.0, follow_redirects=True)
+    r.raise_for_status()
+    html = r.text or ""
 
     blocks = re.findall(
         r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>[\s\S]*?(?:<a[^>]+class="result__snippet"[^>]*>(.*?)</a>|<div[^>]+class="result__snippet"[^>]*>(.*?)</div>)',
@@ -182,15 +186,17 @@ async def _github_repo_meta(owner: str, repo: str, token: str) -> Dict[str, Any]
     if token:
         headers["Authorization"] = f"Bearer {token}"
     url = f"https://api.github.com/repos/{owner}/{repo}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get(url, headers=headers)
-        if r.status_code != 200:
-            return {}
-        try:
-            data = r.json()
-        except Exception:
-            return {}
-        return data if isinstance(data, dict) else {}
+    from modstore_server.infrastructure.http_clients import get_external_client
+
+    client = get_external_client()
+    r = await client.get(url, headers=headers, timeout=20.0)
+    if r.status_code != 200:
+        return {}
+    try:
+        data = r.json()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 async def _github_readme_raw(owner: str, repo: str, token: str) -> str:
@@ -202,14 +208,16 @@ async def _github_readme_raw(owner: str, repo: str, token: str) -> str:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     url = f"https://api.github.com/repos/{owner}/{repo}/readme"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get(url, headers=headers)
-        if r.status_code in (404, 409):
-            return ""
-        if r.status_code != 200:
-            return ""
-        raw = r.text or ""
-        return raw.strip()
+    from modstore_server.infrastructure.http_clients import get_external_client
+
+    client = get_external_client()
+    r = await client.get(url, headers=headers, timeout=20.0)
+    if r.status_code in (404, 409):
+        return ""
+    if r.status_code != 200:
+        return ""
+    raw = r.text or ""
+    return raw.strip()
 
 
 def _truncate(s: str, max_len: int) -> str:

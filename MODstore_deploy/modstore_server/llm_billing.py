@@ -204,8 +204,10 @@ class JavaWalletClient:
         if not authorization:
             raise HTTPException(401, "缺少登录令牌，无法完成钱包扣费")
         url = f"{self.gateway.target_base_url()}{path}"
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(url, headers={"Authorization": authorization, "Content-Type": "application/json"}, json=body)
+        from modstore_server.infrastructure.http_clients import get_java_client
+
+        client = get_java_client()
+        resp = await client.post(url, headers={"Authorization": authorization, "Content-Type": "application/json"}, json=body, timeout=20.0)
         if resp.status_code >= 400:
             raise HTTPException(resp.status_code, resp.text[:500])
         data = resp.json()

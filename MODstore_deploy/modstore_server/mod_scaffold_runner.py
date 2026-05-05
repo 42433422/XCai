@@ -27,6 +27,7 @@ from modstore_server.employee_ai_scaffold import (
     build_employee_pack_zip,
     parse_employee_pack_llm_json,
 )
+from modstore_server.employee_pack_export import build_employee_pack_manifest_from_workflow
 from modstore_server.mod_ai_scaffold import (
     SYSTEM_PROMPT,
     SYSTEM_PROMPT_SUITE,
@@ -844,6 +845,9 @@ async def create_mod_suite_workflows_async(
 
     workflow_results: List[Dict[str, Any]] = []
     api_nodes: List[Dict[str, Any]] = []
+    mod_manifest, mod_manifest_err = read_manifest(mod_dir)
+    if mod_manifest_err or not isinstance(mod_manifest, dict):
+        mod_manifest = {"id": mod_dir.name}
     n_employees = sum(1 for e in employees if isinstance(e, dict))
     emp_ord = 0
     for idx, emp in enumerate(employees):
@@ -876,6 +880,15 @@ async def create_mod_suite_workflows_async(
                     snippet = (wlab[:28] + "…") if len(wlab) > 28 else wlab
                     await step_message_hook(f"第 {cur}/{max(tot, 1)} 名「{snippet}」：{msg}")
 
+            pack_manifest, _pack_manifest_err = build_employee_pack_manifest_from_workflow(
+                mod_dir.name,
+                mod_manifest,
+                emp,
+                workflow_index=idx,
+            )
+            target_pack_id = str((pack_manifest or {}).get("id") or "").strip()
+            target_label = str(emp.get("label") or emp.get("panel_title") or emp.get("id") or "").strip()
+
             nl = await apply_nl_workflow_graph(
                 db,
                 user,
@@ -883,6 +896,8 @@ async def create_mod_suite_workflows_async(
                 brief=wf_desc or brief,
                 provider=provider,
                 model=model,
+                target_employee_pack_id=target_pack_id or None,
+                target_employee_label=target_label or None,
                 status_hook=_nl_status if step_message_hook else None,
             )
             link_result = merge_workflow_id_into_existing_entry(
@@ -1220,6 +1235,7 @@ async def attach_nl_workflow_to_employee_pack_dir(
     workflow_name: Optional[str],
     provider: Optional[str],
     model: Optional[str],
+    status_hook: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
     """在已落盘的员工包目录上创建画布工作流、NL 生图，并把 ``workflow_id`` 写回 manifest。"""
     from modstore_server.workflow_nl_graph import apply_nl_workflow_graph
@@ -1241,7 +1257,7 @@ async def attach_nl_workflow_to_employee_pack_dir(
         brief=(brief or "单员工任务流").strip(),
         provider=provider,
         model=model,
-        status_hook=None,
+        status_hook=status_hook,
     )
     mf = pack_dir / "manifest.json"
     if not mf.is_file():

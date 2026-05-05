@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { AgentMessage, ButlerMode, PendingAction } from '../types/agent'
+import type { AgentMessage, ButlerMode, OrchestrationSession, PendingAction } from '../types/agent'
 
 const STORAGE_KEYS = {
   consent: 'xc_butler_consent',
@@ -51,6 +51,7 @@ export const useAgentStore = defineStore('agent', () => {
   const pendingAction = ref<PendingAction | null>(null)
   const isLoading = ref(false)
   const currentConversationId = ref<number | null>(null)
+  const orchestrationSession = ref<OrchestrationSession | null>(null)
 
   /** 未读消息（面板关闭时积累）*/
   const unreadCount = ref(0)
@@ -144,6 +145,13 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
+  function clearOrchestration() {
+    orchestrationSession.value = null
+    if (mode.value === 'orchestrating') {
+      mode.value = 'idle'
+    }
+  }
+
   return {
     isOpen,
     mode,
@@ -155,6 +163,7 @@ export const useAgentStore = defineStore('agent', () => {
     pendingAction,
     isLoading,
     currentConversationId,
+    orchestrationSession,
     unreadCount,
     isIdle,
     openPanel,
@@ -169,5 +178,6 @@ export const useAgentStore = defineStore('agent', () => {
     updateLastMessage,
     clearMessages,
     setPendingAction,
+    clearOrchestration,
   }
 })

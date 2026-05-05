@@ -107,19 +107,30 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     except Exception:
         logger.exception("domain event subscribers failed to install")
 
-    try:
-        from modstore_server.eventing.db_outbox import start_default_worker
+    # Background jobs (outbox drainer + subscription scheduler) must only run in ONE
+    # process when multiple uvicorn workers or instances are active. Set
+    # MODSTORE_RUN_BACKGROUND_JOBS=1 only on the dedicated scheduler unit
+    # (modstore-scheduler.service) or on a single-worker development process.
+    if os.environ.get("MODSTORE_RUN_BACKGROUND_JOBS", "0") == "1":
+        try:
+            from modstore_server.eventing.db_outbox import start_default_worker
 
-        start_default_worker()
-    except Exception:
-        logger.exception("outbox dispatcher worker failed to start")
+            start_default_worker()
+        except Exception:
+            logger.exception("outbox dispatcher worker failed to start")
 
-    try:
-        from modstore_server.subscription_renewer import start_subscription_scheduler
+        try:
+            from modstore_server.subscription_renewer import start_subscription_scheduler
 
-        start_subscription_scheduler()
-    except Exception:
-        logger.exception("subscription auto-renew scheduler failed to start")
+            start_subscription_scheduler()
+        except Exception:
+            logger.exception("subscription auto-renew scheduler failed to start")
+    else:
+        logger.info(
+            "Background jobs (outbox/scheduler) SKIPPED "
+            "(MODSTORE_RUN_BACKGROUND_JOBS != 1). "
+            "Ensure modstore-scheduler.service is running separately."
+        )
 
     from modstore_server.middleware_registry import register_all_middleware
 
@@ -143,7 +154,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         except Exception:
             logger.exception("market_auth_api 加载失败，跳过")
 
-        # 投诉、合规、material_category/license_scope 增强目录路由
+        # 投诉、合规、material_category/license_scope 增强目录路由。
+        # 注意：此 router 注册在 market_router 之后，但 market_api.py 已删除同名
+        # GET /market/catalog* 路由，不再存在 shadow 问题。
+        # 若 market_api.py 未来重新添加同名路由，须将此 include_router 提前。
         try:
             from modstore_server.market_catalog_api import router as market_catalog_router
             app.include_router(market_catalog_router, prefix="/api")
@@ -207,10 +221,30 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     for _m in _optional:
         _include_optional(app, _m)
 
+    # workflow_api 暴露两个路由器：主 router（已由 _include_optional 挂载）
+    # 和 workflow_hooks_router（公开 Webhook 触发端点）。
+    # _include_optional 只挂载名为 "router" 的属性，因此需单独挂载 hooks 路由器。
+    try:
+        from modstore_server.workflow_api import workflow_hooks_router
+
+        app.include_router(workflow_hooks_router)
+        logger.info("已挂载 workflow_hooks_router (/api/workflow-hooks/*)")
+    except Exception:
+        logger.exception("workflow_hooks_router 挂载失败，跳过")
+
     _maybe_mount_vibe_subapp(app)
 
     ui_mount.maybe_mount_dev_docs(app)
     ui_mount.maybe_mount_ui(app)
+
+    @app.on_event("shutdown")
+    async def _close_shared_http_clients() -> None:
+        try:
+            from modstore_server.infrastructure.http_clients import close_all
+
+            await close_all()
+        except Exception:
+            logger.exception("error closing shared http clients on shutdown")
 
     return app
 

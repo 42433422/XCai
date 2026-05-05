@@ -24,7 +24,11 @@ def _get_shared_client() -> httpx.AsyncClient:
     global _shared_client
     if _shared_client is None:
         limits = httpx.Limits(max_connections=1000, max_keepalive_connections=200)
-        _shared_client = httpx.AsyncClient(timeout=120.0, limits=limits)
+        # Read timeout raised to 300s to accommodate slow reasoning models (e.g. deepseek-r1,
+        # mimo-v2.5-pro); still well below the frontend's 10-minute wall-clock deadline so
+        # genuine hangs surface quickly as an exception rather than a zombie session.
+        timeout = httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=30.0)
+        _shared_client = httpx.AsyncClient(timeout=timeout, limits=limits)
     return _shared_client
 
 def _get_shared_stream_client() -> httpx.AsyncClient:

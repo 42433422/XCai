@@ -142,6 +142,17 @@ echo ""
 read -p "是否立即启动服务? (y/N): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "正在启动..."
-    python -m uvicorn modstore_server.app:app --host 0.0.0.0 --port 8765
+    # 多 worker 安全校验
+    WORKERS=${MODSTORE_UVICORN_WORKERS:-1}
+    if [ "$WORKERS" -gt 1 ]; then
+        BACKEND=${PAYMENT_BACKEND:-python}
+        if [ "$BACKEND" != "java" ]; then
+            echo -e "${RED}[错误] MODSTORE_UVICORN_WORKERS=$WORKERS > 1 时必须设置 PAYMENT_BACKEND=java${NC}"
+            echo "  原因：Python 侧防重放 nonce (_ReplayGuard) 是进程内存，多 worker 下无法共享。"
+            echo "  解决：在 .env 或环境变量中设置 PAYMENT_BACKEND=java，由 Java 服务以 Redis 实现 nonce。"
+            exit 1
+        fi
+    fi
+    echo "正在启动 (workers=$WORKERS)..."
+    python -m uvicorn modstore_server.app:app --host 0.0.0.0 --port 8765 --workers "$WORKERS"
 fi

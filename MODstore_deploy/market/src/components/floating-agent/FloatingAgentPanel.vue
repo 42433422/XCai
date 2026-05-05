@@ -21,7 +21,7 @@
           <span class="panel-head__sub">当前页面助手</span>
         </div>
       </div>
-      <div class="panel-head__actions">
+      <div class="panel-head__actions" @pointerdown.stop>
         <button
           type="button"
           class="panel-icon-btn"

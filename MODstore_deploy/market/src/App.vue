@@ -211,18 +211,18 @@ import { useWalletStore } from './stores/wallet'
 import { connectRealtime, disconnectRealtime } from './realtimeClient'
 import { api } from './api'
 import FloatingAgentRoot from './components/floating-agent/FloatingAgentRoot.vue'
+import { resolveTopLevelRouterCacheKey } from './router/topLevelCacheKey'
 
 const router = useRouter()
 const route = useRoute()
 
-/** 同一工作台壳共用一条缓存，避免 /workbench/* 与外链来回时反复卸载丢状态 */
-const topLevelRouterCacheKey = computed(() => {
-  const p = route.path || ''
-  const n = String(route.name || '')
-  if (p.startsWith('/workbench')) return 'cache-workbench-shell'
-  if (n === 'home' || p === '/') return 'cache-workbench-home-root'
-  return route.fullPath
-})
+const topLevelRouterCacheKey = computed(() =>
+  resolveTopLevelRouterCacheKey({
+    path: route.path,
+    name: route.name,
+    fullPath: route.fullPath,
+  }),
+)
 
 const isAccountPage = computed(() => route.name === 'account')
 /** 顶栏「工作台」链到 workbench-home；首页 / 与 workbench 根路径同属该入口 */

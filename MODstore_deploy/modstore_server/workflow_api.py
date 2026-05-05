@@ -29,7 +29,7 @@ from modstore_server.models import (
 )
 from modstore_server.api.deps import _get_current_user
 from modstore_server.infrastructure.db import get_db
-from modstore_server.quota_middleware import consume_quota, require_quota
+from modstore_server.quota_middleware import consume_llm_credit, require_llm_credit
 from modstore_server.workflow_event_runner import run_workflow_for_trigger
 from modstore_server.workflow_sandbox_state import (
     record_workflow_sandbox_run,
@@ -790,7 +790,7 @@ async def execute_workflow(
 
     sf = get_session_factory()
     with sf() as qdb:
-        require_quota(qdb, user.id, "llm_calls", 1)
+        require_llm_credit(qdb, user.id, 1)
     failure_message: Optional[str] = None
     try:
         output_data = engine_execute(workflow_id, body.input_data or {}, user_id=user.id)
@@ -799,7 +799,7 @@ async def execute_workflow(
         execution.completed_at = datetime.utcnow()
         try:
             with sf() as qdb2:
-                consume_quota(qdb2, user.id, "llm_calls", 1)
+                consume_llm_credit(qdb2, user.id, 1)
         except Exception:
             pass
     except Exception as e:

@@ -242,7 +242,8 @@ function clearRepoPageLocalOnly() {
   scaffoldIdHint.value = ''
 }
 
-/** 清空源码库：删账号下全部 Mod 包 + 清本页本地状态（与「repo-page 全删」语义一致） */
+/** 清空源码库：管理员一键调用后端原子接口，避免前端循环单条 DELETE 因 list 缓存 /
+ *  user_mods 关联残留导致「老是删不完」。 */
 async function purgeRepoLibraryAndLocalState() {
   if (purgeLibraryBusy.value) return
   if (!localStorage.getItem('modstore_token')) {
@@ -251,30 +252,18 @@ async function purgeRepoLibraryAndLocalState() {
   }
 
   const list = Array.isArray(mods.value) ? mods.value : []
-  const folderKeys = [...new Set(list.map((m) => modIdForDeleteApi(m)).filter(Boolean))]
+  const visibleCount = list.length
   const primaryCount = list.filter((m) => m && m.primary).length
   const primaryHint =
     primaryCount > 0
       ? `\n\n其中有 ${primaryCount} 个包在 manifest 中标记为主扩展（primary），删除后请确认 XCAGI / 宿主侧不再依赖对应 id。`
       : ''
 
-  if (folderKeys.length === 0) {
-    if (
-      !window.confirm(
-        '库中当前没有 Mod。将仅清除：本页提示、新建/脚手架弹窗未提交内容、以及「带入员工制作」预填缓存。是否继续？',
-      )
-    ) {
-      return
-    }
-    clearRepoPageLocalOnly()
-    flash('已清理本页本地状态', true)
-    void load()
-    return
-  }
-
   if (
     !window.confirm(
-      `确定删除当前账号 Mod 源码库中的全部 ${folderKeys.length} 个包？\n本地库目录将整包删除且从账号关联中移除，不可恢复。${primaryHint}\n\n同时将清除本页提示与员工制作预填缓存。`,
+      `确定一键重置 Mod 源码库？\n` +
+        `将原子地：删除 library/ 下全部 mod 目录（不只你账号下的）+ 截断 user_mods 关联表。当前可见 ${visibleCount} 个；若有「鬼仓」目录或历史用户残留也会一并清掉。${primaryHint}\n\n` +
+        `同时清除本页提示与员工制作预填缓存。不可恢复。`,
     )
   ) {
     return
@@ -282,32 +271,16 @@ async function purgeRepoLibraryAndLocalState() {
 
   purgeLibraryBusy.value = true
   clearRepoPageLocalOnly()
-  const failed = []
   try {
-    for (const folder of folderKeys) {
-      try {
-        await api.deleteMod(folder)
-      } catch (e) {
-        failed.push({ id: folder, err: e?.message || String(e) })
-      }
-    }
-    if (failed.length) {
-      flash(
-        `已删除 ${folderKeys.length - failed.length} 个，失败 ${failed.length} 个：${failed.map((f) => f.id).join(', ')}`,
-        false,
-      )
-    } else {
-      flash(`已清空源码库（共删除 ${folderKeys.length} 个包）`, true)
-    }
+    const res: any = await api.adminPurgeAllMods()
+    const removed = Number(res?.removed_dir_count || 0)
+    const removedRows = Number(res?.removed_user_mod_rows || 0)
+    flash(`已清空源码库：删除 ${removed} 个目录，截断 user_mods ${removedRows} 行`, true)
+  } catch (e: any) {
+    flash(`一键清空失败：${e?.message || String(e)}`, false)
   } finally {
     purgeLibraryBusy.value = false
     await load({ cacheBust: true })
-    if (failed.length === 0 && Array.isArray(mods.value) && mods.value.length > 0) {
-      flash(
-        `删除请求已返回成功，但列表仍显示 ${mods.value.length} 个包；请强制刷新页面或检查网关/浏览器是否缓存了「GET /api/mods」。`,
-        false,
-      )
-    }
   }
 }
 

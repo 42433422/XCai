@@ -111,4 +111,37 @@ describe('useAgentStore', () => {
     store.setPendingAction(null)
     expect(store.mode).toBe('idle')
   })
+
+  it('orchestrationSession 初始为 null', () => {
+    const store = useAgentStore()
+    expect(store.orchestrationSession).toBeNull()
+  })
+
+  it('可写入 orchestrationSession 并通过 clearOrchestration 清除', () => {
+    const store = useAgentStore()
+    store.orchestrationSession = {
+      sessionId: 'abc123',
+      steps: [{ id: 'snapshot', label: '备份快照', status: 'done', message: null }],
+      status: 'running',
+    }
+    expect(store.orchestrationSession?.sessionId).toBe('abc123')
+    expect(store.orchestrationSession?.steps).toHaveLength(1)
+
+    // Simulate orchestrating mode
+    store.setMode('orchestrating')
+    expect(store.mode).toBe('orchestrating')
+
+    store.clearOrchestration()
+    expect(store.orchestrationSession).toBeNull()
+    expect(store.mode).toBe('idle')
+  })
+
+  it('clearOrchestration 仅在 orchestrating 模式下重置 mode', () => {
+    const store = useAgentStore()
+    store.orchestrationSession = { sessionId: 's1', steps: [], status: 'done' }
+    store.setMode('thinking')          // not orchestrating
+    store.clearOrchestration()
+    expect(store.mode).toBe('thinking') // unchanged
+    expect(store.orchestrationSession).toBeNull()
+  })
 })
