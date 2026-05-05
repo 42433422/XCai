@@ -2,7 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { installAuthGuards } from './guards'
 
 const routes: RouteRecordRaw[] = [
-  { path: '/', redirect: { name: 'workbench-shell', params: { target: 'employee' } } },
+  { path: '/', name: 'home', component: () => import('../views/WorkbenchHomeView.vue') },
   { path: '/about', name: 'about', component: () => import('../views/HomeView.vue') },
   { path: '/ai-store', name: 'ai-store', component: () => import('../views/AiStoreView.vue') },
   { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
@@ -76,13 +76,13 @@ const routes: RouteRecordRaw[] = [
     path: '/workbench',
     meta: { auth: true },
     children: [
-      // Default → AI-native Shell (employee target)
-      { path: '', redirect: { name: 'workbench-shell', params: { target: 'employee' } } },
-      // Legacy /workbench/home → Shell
+      // Default /workbench → 原主界面（三档对话）
+      { path: '', redirect: { name: 'workbench-home' } },
+      // /workbench/home → 原主界面（三档对话）
       {
         path: 'home',
         name: 'workbench-home',
-        redirect: { name: 'workbench-shell', params: { target: 'employee' } },
+        component: () => import('../views/WorkbenchHomeView.vue'),
       },
       // Legacy /workbench/unified → Shell
       {

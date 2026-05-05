@@ -146,9 +146,9 @@ test('workbench shell target tabs switch between employee, workflow, mod and ski
   await page.goto('/workbench/unified')
   await expect(page).toHaveURL(/\/workbench\/shell/)
 
-  // Legacy home redirect still works
+  // /workbench/home 仍渲染原主界面
   await page.goto('/workbench/home')
-  await expect(page).toHaveURL(/\/workbench\/shell/)
+  await expect(page).toHaveURL(/\/workbench\/home/)
 })
 
 test('unknown routes render the not found page', async ({ page }) => {
