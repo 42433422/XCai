@@ -26,6 +26,15 @@ export default defineConfig(({ command }) => {
     base,
     build: {
       emptyOutDir: false,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vue-vendor': ['vue', 'vue-router', 'pinia'],
+            'vue-flow': ['@vue-flow/core', '@vue-flow/background', '@vue-flow/controls', '@vue-flow/minimap'],
+            'mermaid': ['mermaid', '@dagrejs/dagre']
+          }
+        }
+      }
     },
     server: {
       port: 5176,

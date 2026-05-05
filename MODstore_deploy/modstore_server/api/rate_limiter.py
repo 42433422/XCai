@@ -42,18 +42,26 @@ class _RedisBucket:
         import redis
 
         self._client = redis.from_url(redis_url, decode_responses=True)
+        self._lua_is_allowed = self._client.register_script("""
+            local key = KEYS[1]
+            local now = tonumber(ARGV[1])
+            local window = tonumber(ARGV[2])
+            local limit = tonumber(ARGV[3])
+            
+            redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
+            local count = redis.call('ZCARD', key)
+            if count < limit then
+                redis.call('ZADD', key, now, now)
+                redis.call('EXPIRE', key, window)
+                return 1
+            end
+            return 0
+        """)
 
     def is_allowed(self, key: str, limit: int, window: int) -> bool:
         now = time.time()
-        pipe = self._client.pipeline()
-        member = f"{key}:{now}"
-        pipe.zremrangebyscore(key, 0, now - window)
-        pipe.zadd(key, {member: now})
-        pipe.zcard(key)
-        pipe.expire(key, window)
-        results = pipe.execute()
-        count = int(results[2])
-        return count <= limit
+        res = self._lua_is_allowed(keys=[key], args=[now, window, limit])
+        return bool(res)
 
     def retry_after(self, key: str, window: int) -> int:
         now = time.time()

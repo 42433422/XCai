@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from fastapi import Request, Response
@@ -65,6 +66,15 @@ _HOP_BY_HOP_HEADERS = frozenset(
 
 _PROXY_RESPONSE_DROP_HEADERS = _HOP_BY_HOP_HEADERS | frozenset({"content-encoding"})
 
+_payment_proxy_client: Optional[httpx.AsyncClient] = None
+
+def _get_payment_proxy_client() -> httpx.AsyncClient:
+    global _payment_proxy_client
+    if _payment_proxy_client is None:
+        limits = httpx.Limits(max_connections=1000, max_keepalive_connections=200)
+        _payment_proxy_client = httpx.AsyncClient(limits=limits)
+    return _payment_proxy_client
+
 
 async def payment_backend_proxy_middleware(request: Request, call_next):
     from modstore_server.application.payment_gateway import (
@@ -93,13 +103,14 @@ async def payment_backend_proxy_middleware(request: Request, call_next):
             gateway.read_timeout_seconds,
             connect=gateway.connect_timeout_seconds,
         )
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            up = await client.request(
-                method,
-                target_url,
-                content=body_bytes if body_bytes else None,
-                headers=fwd_headers,
-            )
+        client = _get_payment_proxy_client()
+        up = await client.request(
+            method,
+            target_url,
+            content=body_bytes if body_bytes else None,
+            headers=fwd_headers,
+            timeout=timeout,
+        )
     except httpx.HTTPError as exc:
         observe_payment_proxy(method, request.url.path, 502, time.perf_counter() - started)
         return JSONResponse(

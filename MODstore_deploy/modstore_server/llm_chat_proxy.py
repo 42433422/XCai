@@ -17,6 +17,22 @@ _MODEL_ALIASES: dict[tuple[str, str], str] = {
     ("xiaomi", "mimo-v2-base"): "mimo-v2.5-pro",
 }
 
+_shared_client: Optional[httpx.AsyncClient] = None
+_shared_stream_client: Optional[httpx.AsyncClient] = None
+
+def _get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None:
+        limits = httpx.Limits(max_connections=1000, max_keepalive_connections=200)
+        _shared_client = httpx.AsyncClient(timeout=120.0, limits=limits)
+    return _shared_client
+
+def _get_shared_stream_client() -> httpx.AsyncClient:
+    global _shared_stream_client
+    if _shared_stream_client is None:
+        limits = httpx.Limits(max_connections=1000, max_keepalive_connections=200)
+        _shared_stream_client = httpx.AsyncClient(timeout=None, limits=limits)
+    return _shared_stream_client
 
 def _normalize_openai_base(provider: str, base_url: Optional[str]) -> str:
     b = (base_url or openai_compat_default_root(provider)).rstrip("/")
@@ -41,16 +57,16 @@ async def chat_openai_compatible(
     body: Dict[str, Any] = {"model": model, "messages": messages}
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-        )
-        text = r.text
-        if r.status_code >= 400:
-            return {"ok": False, "status": r.status_code, "error": text[:2000]}
-        data = r.json()
+    client = _get_shared_client()
+    r = await client.post(
+        url,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+    )
+    text = r.text
+    if r.status_code >= 400:
+        return {"ok": False, "status": r.status_code, "error": text[:2000]}
+    data = r.json()
     choice0 = (data.get("choices") or [{}])[0]
     msg = choice0.get("message") or {}
     content = msg.get("content") or ""
@@ -80,38 +96,38 @@ async def stream_openai_compatible(
     }
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-        ) as r:
-            if r.status_code >= 400:
-                text = await r.aread()
-                yield {"type": "error", "status": r.status_code, "error": text.decode("utf-8", errors="ignore")[:2000]}
-                return
-            async for line in r.aiter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                raw = line[5:].strip()
-                if not raw:
-                    continue
-                if raw == "[DONE]":
-                    break
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if data.get("usage"):
-                    yield {"type": "usage", "usage": data.get("usage") or {}}
-                choice0 = (data.get("choices") or [{}])[0] or {}
-                delta = choice0.get("delta") or {}
-                content = delta.get("content")
-                if content:
-                    yield {"type": "delta", "delta": str(content)}
+    client = _get_shared_stream_client()
+    async with client.stream(
+        "POST",
+        url,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+    ) as r:
+        if r.status_code >= 400:
+            text = await r.aread()
+            yield {"type": "error", "status": r.status_code, "error": text.decode("utf-8", errors="ignore")[:2000]}
+            return
+        async for line in r.aiter_lines():
+            if not line:
+                continue
+            if not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw:
+                continue
+            if raw == "[DONE]":
+                break
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if data.get("usage"):
+                yield {"type": "usage", "usage": data.get("usage") or {}}
+            choice0 = (data.get("choices") or [{}])[0] or {}
+            delta = choice0.get("delta") or {}
+            content = delta.get("content")
+            if content:
+                yield {"type": "delta", "delta": str(content)}
 
 
 def _oai_to_anthropic(messages: List[Dict[str, str]]) -> tuple[str, List[Dict[str, Any]]]:
@@ -146,20 +162,20 @@ async def chat_anthropic(
     }
     if system:
         body["system"] = system
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(
-            url,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=body,
-        )
-        text = r.text
-        if r.status_code >= 400:
-            return {"ok": False, "status": r.status_code, "error": text[:2000]}
-        data = r.json()
+    client = _get_shared_client()
+    r = await client.post(
+        url,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=body,
+    )
+    text = r.text
+    if r.status_code >= 400:
+        return {"ok": False, "status": r.status_code, "error": text[:2000]}
+    data = r.json()
     blocks = data.get("content") or []
     parts: List[str] = []
     for b in blocks:
@@ -193,16 +209,16 @@ async def chat_google(
 ) -> Dict[str, Any]:
     contents = _oai_to_gemini(messages)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(
-            url,
-            params={"key": api_key},
-            json={"contents": contents},
-        )
-        text = r.text
-        if r.status_code >= 400:
-            return {"ok": False, "status": r.status_code, "error": text[:2000]}
-        data = r.json()
+    client = _get_shared_client()
+    r = await client.post(
+        url,
+        params={"key": api_key},
+        json={"contents": contents},
+    )
+    text = r.text
+    if r.status_code >= 400:
+        return {"ok": False, "status": r.status_code, "error": text[:2000]}
+    data = r.json()
     cands = data.get("candidates") or []
     if not cands:
         return {"ok": False, "error": "no candidates", "raw": data}
@@ -282,16 +298,16 @@ async def image_openai_compatible(
         "size": size,
         "n": max(1, min(int(n or 1), 4)),
     }
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        r = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-        )
-        text = r.text
-        if r.status_code >= 400:
-            return {"ok": False, "status": r.status_code, "error": text[:2000]}
-        data = r.json()
+    client = _get_shared_client()
+    r = await client.post(
+        url,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+    )
+    text = r.text
+    if r.status_code >= 400:
+        return {"ok": False, "status": r.status_code, "error": text[:2000]}
+    data = r.json()
     images: List[str] = []
     for item in data.get("data") or []:
         if not isinstance(item, dict):

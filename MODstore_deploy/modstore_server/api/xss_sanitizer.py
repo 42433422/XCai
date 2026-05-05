@@ -31,6 +31,13 @@ class XSSSanitizerMiddleware:
             return
 
         request = Request(scope, receive, send)
+        
+        # 仅对需要净化的路由生效，减少 CPU 开销
+        path = request.url.path
+        if not (path.startswith("/api/") or path.startswith("/v1/") or path.startswith("/admin/")):
+            await self.app(scope, receive, send)
+            return
+
         content_type = request.headers.get("content-type", "")
 
         if "application/json" not in content_type:
