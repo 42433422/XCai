@@ -30,6 +30,7 @@
     "@vue-flow/core": "^1.48.2",
     "@vue-flow/minimap": "^1.5.4",
     "fflate": "^0.8.2",
+    "html2canvas": "^1.4.1",
     "mermaid": "^11.4.1",
     "pinia": "^3.0.4",
     "vue": "^3.4.21",

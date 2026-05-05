@@ -29,6 +29,7 @@ import '@vue-flow/minimap/dist/style.css'
 const store = useWorkbenchStore()
 
 const isWorkflowTarget = computed(() => store.target.kind === 'workflow')
+const isEmployeeTarget = computed(() => store.target.kind === 'employee')
 const workflowId = computed(() => {
   const id = store.target.id
   const n = Number(id ?? 0)
@@ -158,6 +159,18 @@ defineExpose({ fitView, autoLayout, syncManifestToCanvas })
       <p>请先选择或创建一个工作流</p>
     </div>
 
+    <div v-else-if="!isEmployeeTarget" class="canvas-empty">
+      <div class="canvas-empty-card">
+        <p class="canvas-empty-title">{{ store.target.kind === 'mod' ? 'Mod 库仍在原统一工作台' : '技能工作台仍在原统一工作台' }}</p>
+        <p class="canvas-empty-copy">
+          新三栏 Shell 当前只承载员工制作画布；Mod 库、技能、连接器继续使用原统一工作台入口。
+        </p>
+        <RouterLink class="canvas-empty-link" :to="{ name: 'workbench-unified', query: { focus: store.target.kind === 'mod' ? 'repository' : 'code_skill' } }">
+          返回原统一工作台
+        </RouterLink>
+      </div>
+    </div>
+
     <!-- Employee / Mod / Skill target: custom module canvas -->
     <VueFlow v-else
       :nodes="store.canvasNodes"
@@ -207,6 +220,41 @@ defineExpose({ fitView, autoLayout, syncManifestToCanvas })
   justify-content: center;
   color: #475569;
   font-size: 13px;
+  padding: 24px;
+}
+
+.canvas-empty-card {
+  max-width: 480px;
+  padding: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.62);
+  text-align: center;
+}
+
+.canvas-empty-title {
+  margin: 0 0 8px;
+  color: #e2e8f0;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.canvas-empty-copy {
+  margin: 0;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.canvas-empty-link {
+  display: inline-flex;
+  margin-top: 16px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  color: #c7d2fe;
+  background: rgba(99, 102, 241, 0.16);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  text-decoration: none;
+  font-weight: 800;
 }
 
 .canvas-flow {

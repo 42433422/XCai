@@ -74,6 +74,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/workbench',
+    component: () => import('../views/WorkbenchView.vue'),
     meta: { auth: true },
     children: [
       // Default /workbench → 原主界面（三档对话）
@@ -84,25 +85,22 @@ const routes: RouteRecordRaw[] = [
         name: 'workbench-home',
         component: () => import('../views/WorkbenchHomeView.vue'),
       },
-      // Legacy /workbench/unified → Shell
+      // /workbench/unified → 原统一工作台；员工制作子页再进入新 Shell
       {
         path: 'unified',
         name: 'workbench-unified',
-        redirect: (to: any) => ({
-          name: 'workbench-shell',
-          params: { target: to.query?.focus || 'employee' },
-        }),
+        component: () => import('../views/UnifiedWorkbenchView.vue'),
       },
-      // Legacy sub-paths → Shell with appropriate target
+      // Legacy sub-paths → 原统一工作台不同 focus
       {
         path: 'repository',
         name: 'workbench-repository',
-        redirect: { name: 'workbench-shell', params: { target: 'mod' } },
+        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'repository' } }),
       },
       {
         path: 'workflow',
         name: 'workbench-workflow',
-        redirect: { name: 'workbench-shell', params: { target: 'workflow' } },
+        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'skill' } }),
       },
       {
         path: 'employee',
@@ -112,18 +110,19 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'integrations',
         name: 'workbench-integrations',
-        redirect: { name: 'workbench-shell', params: { target: 'skill' } },
+        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'integrations' } }),
       },
       // Mod authoring still uses its own view for now
       { path: 'mod/:modId', name: 'mod-authoring', component: () => import('../views/ModAuthoringView.vue') },
       {
         path: 'my-employees',
         name: 'workbench-my-employees',
-        redirect: { name: 'workbench-shell', params: { target: 'employee' } },
+        redirect: (to: any) => ({
+          name: 'workbench-unified',
+          query: { ...to.query, focus: 'employee', employeeView: 'list' },
+        }),
       },
     ],
-    // Use WorkbenchShell as layout for non-child routes; children with their own components override
-    component: () => import('../views/workbench/WorkbenchShell.vue'),
   },
   // ===== AI-Native WorkbenchShell (三栏 shell) =====
   {
@@ -140,6 +139,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/admin', redirect: '/admin/database', meta: { auth: true, admin: true } },
   { path: '/admin/database', name: 'admin-database', component: () => import('../views/AdminDatabaseView.vue'), meta: { auth: true, admin: true } },
   { path: '/admin/customer-service', name: 'admin-customer-service', component: () => import('../views/AdminCustomerServiceView.vue'), meta: { auth: true, admin: true } },
+  { path: '/admin/butler-skills', name: 'admin-butler-skills', component: () => import('../components/floating-agent/AdminAgentSkillMarket.vue'), meta: { auth: true, admin: true } },
   { path: '/checkout/:orderId', name: 'checkout', component: () => import('../views/PaymentCheckoutView.vue'), meta: { auth: true } },
   { path: '/order/:orderId', name: 'order-detail', component: () => import('../views/OrderDetailView.vue'), meta: { auth: true } },
   { path: '/orders', name: 'orders', component: () => import('../views/OrderListView.vue'), meta: { auth: true } },
