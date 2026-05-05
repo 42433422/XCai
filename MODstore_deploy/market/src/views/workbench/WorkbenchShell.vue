@@ -76,10 +76,15 @@ async function loadTarget(kind: TargetKind, id: string | null) {
         } catch { /* malformed prefill – fall through to API load */ }
       }
 
-      // Load existing employee pack from API
-      const res = await api.listEmployees() as Record<string, unknown>
-      const packs = Array.isArray(res?.packages) ? res.packages : (Array.isArray(res) ? res : [])
-      const pack = packs.find((p: Record<string, unknown>) => String(p.pack_id ?? p.id ?? '') === id)
+      // Load existing employee pack manifest from dedicated endpoint.
+      // listEmployees() only returns lightweight catalog rows (id/name/version/source) — no manifest.
+      let pack: Record<string, unknown> | null = null
+      try {
+        pack = await api.getEmployeeManifest(id) as Record<string, unknown>
+      } catch (err) {
+        loadError.value = `加载员工包失败：${(err as Error)?.message || String(err)}`
+        pack = null
+      }
       if (pack) {
         const rawManifest = (pack as Record<string, unknown>).manifest ?? pack
         const raw = rawManifest && typeof rawManifest === 'object' ? rawManifest as Record<string, unknown> : {}

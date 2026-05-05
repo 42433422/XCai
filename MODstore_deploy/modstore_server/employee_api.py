@@ -14,6 +14,7 @@ from modstore_server.infrastructure.db import get_db
 from modstore_server.models import CatalogItem, Entitlement, User, UserPlan
 from modstore_server.services.employee import get_default_employee_client
 from modstore_server.employee_executor import get_employee_status, list_employees as list_employees_exec
+from modstore_server.employee_runtime import load_employee_pack
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -89,6 +90,29 @@ async def get_employee_status_endpoint(
         return status
     except Exception as e:
         raise HTTPException(500, f"获取员工状态失败: {e}")
+
+
+@router.get("/{employee_id}/manifest", summary="获取员工包完整 manifest")
+async def get_employee_manifest_endpoint(
+    employee_id: str,
+    response: Response,
+    db: Session = Depends(get_db),
+    user: User = Depends(_get_current_user),
+):
+    """读取员工包磁盘 ``.xcemp/.zip`` 的 ``manifest.json`` 全文。
+
+    用于工作台编辑器（``WorkbenchShell.loadTarget``）回填 ``employee_config_v2``、
+    ``workflow_employees[0].workflow_id/panel_summary`` 等字段；``list_employees``
+    返回的轻量列表里没有这些。
+    """
+    try:
+        pack = load_employee_pack(db, employee_id.strip())
+        response.headers["Cache-Control"] = "private, no-store"
+        return pack
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"获取员工包 manifest 失败: {e}")
 
 
 @router.post("/{employee_id}/execute", summary="执行员工任务")

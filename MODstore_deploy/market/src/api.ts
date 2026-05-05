@@ -563,6 +563,7 @@ export const api = {
 
   listEmployees: () => req('/api/employees/'),
   getEmployeeStatus: (employeeId: string) => req(`/api/employees/${encodeURIComponent(employeeId)}/status`),
+  getEmployeeManifest: (employeeId: string) => req(`/api/employees/${encodeURIComponent(employeeId)}/manifest`),
   executeEmployeeTask: (employeeId: string, task: string, inputData: unknown) =>
     req(`/api/employees/${employeeId}/execute`, { method: 'POST', body: JSON.stringify({ task, input_data: inputData }) }),
 
