@@ -5063,18 +5063,35 @@ async function persistManualLlmIfNeeded() {
 
 async function pollWorkbenchSession(sessionId) {
   const delay = (ms) => new Promise((r) => setTimeout(r, ms))
-  /** 约 10 分钟：避免后端任务挂死时界面永远「执行中」 */
-  const maxRounds = 1350
-  let rounds = 0
+  /**
+   * 轮询策略：基础 1500ms（约 40 次/分钟），落在后端 RateLimiterMiddleware
+   * 默认 60 次/60 秒的限额内，避免「开始生成员工包」长时间运行被 429 截断。
+   * 后端同时为 GET /api/workbench/sessions/{id} 单独抬高了上限作为兜底。
+   */
+  const baseIntervalMs = 1500
+  /** 总等待预算约 10 分钟，使用墙钟时间而非轮询次数（应对动态退避）。 */
+  const deadline = Date.now() + 10 * 60 * 1000
+  let backoffMs = 0
   while (!pollStop.value) {
-    const s = await api.workbenchGetSession(sessionId)
-    orchestrationSession.value = s
-    if (s.status === 'done' || s.status === 'error') return s
-    rounds += 1
-    if (rounds >= maxRounds) {
+    try {
+      const s = await api.workbenchGetSession(sessionId)
+      orchestrationSession.value = s
+      if (s.status === 'done' || s.status === 'error') return s
+      backoffMs = 0
+    } catch (e) {
+      const status = e && typeof e === 'object' && typeof (e as any).status === 'number' ? (e as any).status : 0
+      // 429（限流）/ 503（短暂不可用）属于可恢复抖动：指数退避后继续轮询，
+      // 而非把整个编排会话标记为失败。其余错误按原行为向上抛出。
+      if (status === 429 || status === 503) {
+        backoffMs = backoffMs ? Math.min(backoffMs * 2, 30000) : 5000
+      } else {
+        throw e
+      }
+    }
+    if (Date.now() >= deadline) {
       throw new Error('编排等待超时（约 10 分钟）。请检查后端日志、网络或 LLM 配置后重试。')
     }
-    await delay(450)
+    await delay(backoffMs || baseIntervalMs)
   }
   return null
 }
