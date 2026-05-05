@@ -1267,9 +1267,24 @@ async def attach_nl_workflow_to_employee_pack_dir(
     except (OSError, json.JSONDecodeError) as e:
         return {"ok": False, "error": str(e), "workflow_id": wf.id}
     rows = raw.get("workflow_employees")
+    panel_summary = ""
     if isinstance(rows, list) and rows and isinstance(rows[0], dict):
         rows[0] = {**rows[0], "workflow_id": wf.id}
+        panel_summary = str(rows[0].get("panel_summary") or "").strip()
         raw["workflow_employees"] = rows
+    v2 = raw.get("employee_config_v2")
+    if isinstance(v2, dict):
+        collab = v2.get("collaboration") if isinstance(v2.get("collaboration"), dict) else {}
+        workflow = collab.get("workflow") if isinstance(collab.get("workflow"), dict) else {}
+        workflow = {**workflow, "workflow_id": wf.id}
+        v2["collaboration"] = {**collab, "workflow": workflow}
+        cognition = v2.get("cognition") if isinstance(v2.get("cognition"), dict) else {}
+        agent = cognition.get("agent") if isinstance(cognition.get("agent"), dict) else {}
+        if panel_summary and not str(agent.get("system_prompt") or "").strip():
+            agent = {**agent, "system_prompt": panel_summary}
+            cognition = {**cognition, "agent": agent}
+            v2["cognition"] = cognition
+        raw["employee_config_v2"] = v2
     raw["workflow_attachment"] = {
         "workflow_id": wf.id,
         "nl_graph_ok": bool(nl.get("ok")),

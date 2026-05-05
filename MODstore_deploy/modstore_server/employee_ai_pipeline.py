@@ -258,6 +258,16 @@ async def stage_design_v2(
         agent_raw = {}
     if not agent_raw.get("system_prompt"):
         agent_raw["system_prompt"] = default_prompt
+    role_raw = agent_raw.get("role") or {}
+    if not isinstance(role_raw, dict):
+        role_raw = {}
+    role_raw.setdefault("name", intent.name)
+    role_raw.setdefault("persona", intent.scenario)
+    role_raw.setdefault("tone", "professional")
+    role_raw.setdefault("expertise", [intent.role, intent.industry])
+    agent_raw["role"] = role_raw
+    agent_raw.setdefault("behavior_rules", [])
+    agent_raw.setdefault("few_shot_examples", [])
     if not agent_raw.get("model"):
         agent_raw["model"] = {"provider": "deepseek", "model_name": "deepseek-chat", "temperature": 0.2, "max_tokens": 4000}
     cog_raw["agent"] = agent_raw
@@ -374,6 +384,19 @@ def stage_assemble(
         "name": intent.name,
         "description": intent.scenario,
     })
+    cognition = v2_dict.get("cognition") if isinstance(v2_dict.get("cognition"), dict) else {}
+    if skills:
+        cognition["skills"] = [asdict(s) for s in skills]
+    else:
+        cognition.setdefault("skills", [])
+    v2_dict["cognition"] = cognition
+    collab = v2_dict.get("collaboration") if isinstance(v2_dict.get("collaboration"), dict) else {}
+    workflow = collab.get("workflow") if isinstance(collab.get("workflow"), dict) else {}
+    workflow["workflow_id"] = workflow_choice.workflow_id if workflow_choice and workflow_choice.workflow_id else 0
+    if workflow_choice and workflow_choice.workflow_name:
+        workflow["name"] = workflow_choice.workflow_name
+    collab["workflow"] = workflow
+    v2_dict["collaboration"] = collab
     v2_dict["metadata"] = metadata
 
     manifest: Dict[str, Any] = {

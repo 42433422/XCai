@@ -104,7 +104,15 @@ def parse_employee_pack_llm_json(content: str) -> Tuple[Optional[Dict[str, Any]]
     }
     v2_in = data.get("employee_config_v2")
     if isinstance(v2_in, dict):
-        manifest["employee_config_v2"] = v2_in
+        manifest["employee_config_v2"] = _normalize_employee_config_v2_for_canvas(
+            v2_in,
+            pid=pid,
+            name=name,
+            description=desc,
+            employee_id=eid,
+            label=label,
+            capabilities=caps,
+        )
     else:
         manifest["employee_config_v2"] = _default_employee_config_v2(
             pid=pid,
@@ -132,6 +140,88 @@ def parse_employee_pack_llm_json(content: str) -> Tuple[Optional[Dict[str, Any]]
     if ve:
         return None, "manifest 校验: " + "; ".join(ve)
     return manifest, ""
+
+
+def _normalize_employee_config_v2_for_canvas(
+    v2: Dict[str, Any],
+    *,
+    pid: str,
+    name: str,
+    description: str,
+    employee_id: str,
+    label: str,
+    capabilities: List[str],
+) -> Dict[str, Any]:
+    """Guarantee the employee canvas modules have concrete editable fields.
+
+    The LLM may return a sparse ``employee_config_v2``.  The workbench canvas,
+    however, edits fixed module slices (identity, cognition.agent,
+    cognition.skills, collaboration.workflow).  Fill those slices at generation
+    time so the generated package itself is complete instead of relying on
+    frontend recovery heuristics.
+    """
+    out = dict(v2 or {})
+    identity = dict(out.get("identity") if isinstance(out.get("identity"), dict) else {})
+    identity.update(
+        {
+            "id": str(identity.get("id") or pid).strip() or pid,
+            "version": str(identity.get("version") or "1.0.0").strip() or "1.0.0",
+            "artifact": str(identity.get("artifact") or "employee_pack").strip() or "employee_pack",
+            "name": str(identity.get("name") or name or label or employee_id).strip() or pid,
+            "description": str(identity.get("description") or description).strip(),
+        }
+    )
+    out["identity"] = identity
+
+    cognition = dict(out.get("cognition") if isinstance(out.get("cognition"), dict) else {})
+    agent = dict(cognition.get("agent") if isinstance(cognition.get("agent"), dict) else {})
+    role = dict(agent.get("role") if isinstance(agent.get("role"), dict) else {})
+    role.update(
+        {
+            "name": str(role.get("name") or label or name).strip() or pid,
+            "persona": str(role.get("persona") or description or "专业、高效、亲切").strip(),
+            "tone": str(role.get("tone") or "professional").strip() or "professional",
+            "expertise": role.get("expertise") if isinstance(role.get("expertise"), list) else capabilities,
+        }
+    )
+    model = dict(agent.get("model") if isinstance(agent.get("model"), dict) else {})
+    model.update(
+        {
+            "provider": str(model.get("provider") or "deepseek").strip() or "deepseek",
+            "model_name": str(model.get("model_name") or "deepseek-chat").strip() or "deepseek-chat",
+            "temperature": model.get("temperature", 0.7),
+            "max_tokens": model.get("max_tokens", 4000),
+            "top_p": model.get("top_p", 0.9),
+        }
+    )
+    agent.update(
+        {
+            "system_prompt": str(
+                agent.get("system_prompt")
+                or description
+                or f"你是员工助手：{label or name}。请根据用户输入完成任务，并输出结构化结果。"
+            ).strip(),
+            "role": role,
+            "behavior_rules": agent.get("behavior_rules") if isinstance(agent.get("behavior_rules"), list) else [],
+            "few_shot_examples": agent.get("few_shot_examples") if isinstance(agent.get("few_shot_examples"), list) else [],
+            "model": model,
+        }
+    )
+    cognition["agent"] = agent
+    if not isinstance(cognition.get("skills"), list):
+        cognition["skills"] = [
+            {"name": cap, "brief": cap}
+            for cap in capabilities
+        ]
+    out["cognition"] = cognition
+
+    collaboration = dict(out.get("collaboration") if isinstance(out.get("collaboration"), dict) else {})
+    workflow = dict(collaboration.get("workflow") if isinstance(collaboration.get("workflow"), dict) else {})
+    workflow.setdefault("workflow_id", 0)
+    collaboration["workflow"] = workflow
+    out["collaboration"] = collaboration
+    out.setdefault("metadata", {"framework_version": "2.0.0", "created_by": "employee_ai_scaffold"})
+    return out
 
 
 def _default_employee_config_v2(
@@ -168,6 +258,14 @@ def _default_employee_config_v2(
         "cognition": {
             "agent": {
                 "system_prompt": prompt,
+                "role": {
+                    "name": label or name,
+                    "persona": description or "专业、高效、亲切",
+                    "tone": "professional",
+                    "expertise": capabilities,
+                },
+                "behavior_rules": [],
+                "few_shot_examples": [],
                 "model": {
                     "provider": "deepseek",
                     "model_name": "deepseek-chat",
@@ -175,8 +273,10 @@ def _default_employee_config_v2(
                     "max_tokens": 4000,
                     "top_p": 0.9,
                 },
-            }
+            },
+            "skills": [{"name": cap, "brief": cap} for cap in capabilities],
         },
+        "collaboration": {"workflow": {"workflow_id": 0}},
         "actions": {"handlers": ["echo"]},
         "metadata": {"framework_version": "2.0.0", "created_by": "employee_ai_scaffold"},
     }

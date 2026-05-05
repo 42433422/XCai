@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
 import uuid
 from io import BytesIO
 from datetime import datetime
@@ -57,6 +58,7 @@ from modstore_server.workflow_nl_graph import apply_nl_workflow_graph
 from modstore_server.workflow_sandbox_state import record_workflow_sandbox_run
 from modstore_server.workbench_script_runner import run_script_job
 from modstore_server.workbench_research import build_research_context
+from modstore_server.employee_ai_scaffold import build_employee_pack_zip
 from modman.manifest_util import read_manifest
 
 try:
@@ -395,6 +397,54 @@ async def _finalize_session_done(sid: str, artifact: Dict[str, Any]) -> None:
         sess["status"] = "done"
         sess["artifact"] = artifact
         _persist_workbench_session_unlocked(sid)
+
+
+def _refresh_employee_pack_catalog_zip(db: Session, user: User, pack_dir: Path) -> Dict[str, Any]:
+    """Rebuild stored .xcemp after in-place manifest edits.
+
+    ``run_employee_ai_scaffold_async`` first imports/saves the package, then the
+    employee pipeline may mutate ``library/<pack>/manifest.json`` (for example
+    writing workflow_id into employee_config_v2).  The catalog runtime reads the
+    stored .xcemp, not the library folder, so rebuild and re-register that file.
+    """
+    from modstore_server.catalog_store import append_package
+
+    mf = pack_dir / "manifest.json"
+    raw = json.loads(mf.read_text(encoding="utf-8"))
+    pack_id = str(raw.get("id") or pack_dir.name).strip() or pack_dir.name
+    raw_zip = build_employee_pack_zip(pack_id, raw)
+    with tempfile.NamedTemporaryFile(suffix=".xcemp", delete=False) as tmp:
+        tmp.write(raw_zip)
+        tmp_path = Path(tmp.name)
+    try:
+        rec = {
+            "id": pack_id,
+            "name": str(raw.get("name") or pack_id),
+            "version": str(raw.get("version") or "1.0.0"),
+            "description": str(raw.get("description") or ""),
+            "artifact": "employee_pack",
+            "industry": str(raw.get("industry") or "通用"),
+            "release_channel": "stable",
+            "commerce": raw.get("commerce") or {"mode": "free", "price": 0},
+            "license": {"type": "personal", "verify_url": None},
+        }
+        saved = append_package(rec, tmp_path)
+        row = db.query(CatalogItem).filter(CatalogItem.pkg_id == pack_id).first()
+        if not row:
+            row = CatalogItem(pkg_id=pack_id, author_id=user.id)
+            db.add(row)
+        row.version = saved.get("version") or rec["version"]
+        row.name = saved.get("name") or rec["name"]
+        row.description = saved.get("description") or rec["description"]
+        row.price = 0.0
+        row.artifact = "employee_pack"
+        row.industry = saved.get("industry") or rec["industry"]
+        row.stored_filename = saved.get("stored_filename") or ""
+        row.sha256 = saved.get("sha256") or ""
+        db.commit()
+        return saved
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _cleanup_mod_pipeline_resources(db: Session, resources: List[Dict[str, Any]]) -> None:
@@ -1041,6 +1091,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
 
                 pack_dir = Path(str(res.get("path") or ""))
                 wf_attach: Dict[str, Any] = {}
+                saved_package: Dict[str, Any] = res.get("package") or {}
                 _emp_current_step = "workflow"
                 await _set_step(sid, "workflow", "running", "正在创建画布工作流…")
 
@@ -1058,6 +1109,10 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         model=mdl,
                         status_hook=_emp_wf_msg,
                     )
+                    # attach_nl_workflow_to_employee_pack_dir mutates library/<pack>/manifest.json.
+                    # Persist those new employee_config_v2/workflow fields back into the stored
+                    # .xcemp so /api/employees/{id}/manifest and runtime execution see them.
+                    saved_package = _refresh_employee_pack_catalog_zip(db, user, pack_dir)
                     wmsg = (
                         f"已创建工作流 id={wf_attach.get('workflow_id')}；NL 生图"
                         f"{'成功' if (wf_attach.get('nl') or {}).get('ok') else '有提示'}"
@@ -1218,7 +1273,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         "name": (res.get("manifest") or {}).get("name"),
                         "description": (res.get("manifest") or {}).get("description"),
                         "workflow_id": wid,
-                        "package": res.get("package") or {},
+                        "package": saved_package,
                         "workflow_sandbox": workflow_sandbox,
                         "mod_sandbox": emp_mod_sandbox,
                         "employee_target": et,
