@@ -15,8 +15,11 @@
       @pointerup="onHeaderPointerUp"
     >
       <div class="panel-head__left">
-        <span class="panel-head__avatar">🤖</span>
-        <span class="panel-head__title">AI 数字管家</span>
+        <span class="panel-head__mark">AI</span>
+        <div class="panel-head__titles">
+          <span class="panel-head__title">数字管家</span>
+          <span class="panel-head__sub">当前页面助手</span>
+        </div>
       </div>
       <div class="panel-head__actions">
         <button
@@ -44,7 +47,7 @@
           title="关闭"
           @click.stop="agentStore.closePanel()"
         >
-          ×
+          <span aria-hidden="true">×</span>
         </button>
       </div>
     </header>
@@ -135,8 +138,8 @@ const actionLog = computed(() => getActionLog().slice().reverse())
 const panelStyle = computed(() => {
   const bx = position.value.x
   const by = position.value.y
-  const panelW = 360
-  const panelH = 520
+  const panelW = 340
+  const panelH = 460
   const margin = 12
 
   let left = bx + 32 - panelW / 2
@@ -229,24 +232,24 @@ function autoResize() {
 .butler-panel {
   position: fixed;
   z-index: 11010;
-  background: rgba(12, 12, 20, 0.97);
-  border: 1px solid rgba(0, 220, 255, 0.2);
-  border-radius: 18px;
+  background: rgba(10, 11, 15, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
   box-shadow:
-    0 0 0 1px rgba(0, 220, 255, 0.08),
-    0 24px 60px rgba(0, 0, 0, 0.6),
-    0 0 40px rgba(0, 180, 255, 0.06);
+    0 18px 54px rgba(0, 0, 0, 0.58),
+    0 0 0 1px rgba(255, 255, 255, 0.03);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(14px);
 }
 
 .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  min-height: 46px;
+  padding: 8px 10px 8px 12px;
   cursor: grab;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   user-select: none;
@@ -260,13 +263,37 @@ function autoResize() {
   gap: 8px;
 }
 
-.panel-head__avatar { font-size: 1.1rem; }
+.panel-head__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.panel-head__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
 
 .panel-head__title {
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.88);
+  color: rgba(255, 255, 255, 0.9);
   letter-spacing: 0.02em;
+}
+
+.panel-head__sub {
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.36);
 }
 
 .panel-head__actions {
@@ -284,7 +311,7 @@ function autoResize() {
   border-radius: 6px;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.36);
   cursor: pointer;
   font-size: 1.1rem;
   transition: all 0.15s;
@@ -293,7 +320,7 @@ function autoResize() {
 .panel-icon-btn svg { width: 15px; height: 15px; }
 
 .panel-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.85);
 }
 
@@ -363,9 +390,9 @@ function autoResize() {
 
 .panel-input {
   flex: 1;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  border-radius: 9px;
   padding: 8px 10px;
   font-size: 0.875rem;
   color: rgba(255, 255, 255, 0.88);
@@ -379,16 +406,17 @@ function autoResize() {
 }
 
 .panel-input::placeholder { color: rgba(255, 255, 255, 0.25); }
-.panel-input:focus { border-color: rgba(0, 220, 255, 0.4); }
+.panel-input:focus { border-color: rgba(148, 163, 184, 0.38); }
 
 .panel-send {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #0080ff, #00dcff);
+  background: rgba(59, 130, 246, 0.26);
+  border: 1px solid rgba(96, 165, 250, 0.28);
   border: none;
   cursor: pointer;
   flex-shrink: 0;
@@ -396,7 +424,7 @@ function autoResize() {
 }
 
 .panel-send svg { width: 16px; height: 16px; color: #fff; }
-.panel-send:hover:not(:disabled) { filter: brightness(1.1); }
+.panel-send:hover:not(:disabled) { background: rgba(59, 130, 246, 0.38); }
 .panel-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .panel-screenshot-toggle {
@@ -404,12 +432,12 @@ function autoResize() {
   align-items: center;
   gap: 5px;
   font-size: 0.72rem;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.34);
   cursor: pointer;
   user-select: none;
   align-self: flex-end;
 }
 
-.panel-screenshot-toggle input { accent-color: #00dcff; cursor: pointer; }
+.panel-screenshot-toggle input { accent-color: #64748b; cursor: pointer; }
 .panel-screenshot-toggle:hover { color: rgba(255, 255, 255, 0.55); }
 </style>

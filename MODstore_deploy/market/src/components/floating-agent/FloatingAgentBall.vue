@@ -12,12 +12,7 @@
     @click.stop="handleClick"
     @pointerdown="onPointerDown"
   >
-    <JarvisCore
-      :is-speaking="isSpeaking"
-      :is-work-mode="mode === 'operating'"
-      :is-monitor-mode="mode === 'thinking' || mode === 'listening'"
-      :reduce-effects="mode === 'idle'"
-    />
+    <span class="butler-ball__mark">AI</span>
     <!-- 未读红点 -->
     <span v-if="unreadCount > 0 && !isOpen" class="butler-ball__badge">
       {{ unreadCount > 9 ? '9+' : unreadCount }}
@@ -31,12 +26,11 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAgentStore } from '../../stores/agent'
-import JarvisCore from '../workbench/JarvisCore.vue'
 
 const agentStore = useAgentStore()
 const { isOpen, mode, consentGiven, unreadCount } = storeToRefs(agentStore)
 
-const props = defineProps<{ isSpeaking?: boolean }>()
+defineProps<{ isSpeaking?: boolean }>()
 
 const ballRef = ref<HTMLButtonElement | null>(null)
 
@@ -101,32 +95,25 @@ onBeforeUnmount(() => {
   /* position is controlled by transform */
   top: 0;
   left: 0;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  border: none;
-  background: transparent;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 11, 15, 0.92);
   cursor: pointer;
   z-index: 11000;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: visible;
-  transition: filter 0.2s;
-  /* ensure JarvisCore fits */
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
   padding: 0;
-}
-
-/* Scale down JarvisCore (160×160) to fit 64px ball */
-.butler-ball :deep(.jarvis-core) {
-  width: 64px;
-  height: 64px;
-  transform: scale(0.4) !important;
-  transform-origin: center center;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
 }
 
 .butler-ball:hover {
-  filter: brightness(1.1);
+  background: rgba(20, 24, 32, 0.96);
+  border-color: rgba(148, 163, 184, 0.28);
 }
 
 .butler-ball--consent-pending {
@@ -134,13 +121,21 @@ onBeforeUnmount(() => {
 }
 
 .butler-ball--open {
-  filter: drop-shadow(0 0 12px rgba(0, 220, 255, 0.6));
+  border-color: rgba(96, 165, 250, 0.38);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.46), 0 0 0 1px rgba(96, 165, 250, 0.12);
+}
+
+.butler-ball__mark {
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 0.8rem;
+  font-weight: 850;
+  letter-spacing: 0.05em;
 }
 
 .butler-ball__badge {
   position: absolute;
-  top: 0px;
-  right: 0px;
+  top: -5px;
+  right: -5px;
   min-width: 18px;
   height: 18px;
   padding: 0 4px;
@@ -159,14 +154,14 @@ onBeforeUnmount(() => {
 
 .butler-ball__hint {
   position: absolute;
-  bottom: -22px;
+  bottom: -20px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 0.65rem;
   color: rgba(255, 255, 255, 0.5);
   white-space: nowrap;
   pointer-events: none;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.62);
   padding: 2px 6px;
   border-radius: 4px;
 }

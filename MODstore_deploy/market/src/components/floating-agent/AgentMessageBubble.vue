@@ -84,30 +84,31 @@ function formatTime(ts: number): string {
 
 .bubble {
   max-width: 88%;
-  padding: 9px 13px;
-  border-radius: 14px;
+  padding: 8px 11px;
+  border-radius: 11px;
   font-size: 0.875rem;
   line-height: 1.5;
   word-break: break-word;
 }
 
 .bubble--user {
-  background: linear-gradient(135deg, #0080ff, #00dcff);
+  background: rgba(59, 130, 246, 0.28);
+  border: 1px solid rgba(96, 165, 250, 0.22);
   color: #fff;
   border-bottom-right-radius: 4px;
 }
 
 .bubble--assistant {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.075);
   color: rgba(255, 255, 255, 0.88);
   border-bottom-left-radius: 4px;
 }
 
 .bubble--tool {
-  background: rgba(96, 165, 250, 0.08);
-  border: 1px solid rgba(96, 165, 250, 0.2);
-  color: #93c5fd;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
   font-size: 0.78rem;
   display: flex;
   align-items: center;
