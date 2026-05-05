@@ -22,7 +22,13 @@ const canvasRef = ref<InstanceType<typeof CanvasStage> | null>(null)
 const VALID_KINDS: TargetKind[] = ['employee', 'workflow', 'mod', 'skill']
 
 function resolveKind(): TargetKind {
-  const k = String(route.params.target ?? route.query.focus ?? 'employee')
+  const raw = String(route.params.target ?? route.query.focus ?? 'employee').trim().toLowerCase()
+  const focusMap: Record<string, TargetKind> = {
+    repository: 'mod',
+    integrations: 'skill',
+    code_skill: 'skill',
+  }
+  const k = focusMap[raw] ?? raw
   return (VALID_KINDS.includes(k as TargetKind) ? k : 'employee') as TargetKind
 }
 
@@ -169,7 +175,7 @@ const showPublishPanel = ref(false)
     <header class="wb-topbar">
       <!-- Left: branding + target tabs -->
       <div class="wb-topbar-left">
-        <span class="wb-logo">XCAGI <span class="wb-logo-badge">工作台</span></span>
+        <router-link :to="{ name: 'workbench-home' }" class="wb-logo">工作台</router-link>
         <nav class="wb-target-tabs">
           <button
             v-for="tab in TARGET_TABS"
@@ -178,7 +184,7 @@ const showPublishPanel = ref(false)
             :class="{ 'wb-target-tab--active': store.target.kind === tab.kind }"
             @click="switchTarget(tab.kind)"
           >
-            <span>{{ tab.icon }}</span>
+            <span class="wb-target-tab__icon">{{ tab.icon }}</span>
             <span>{{ tab.label }}</span>
           </button>
         </nav>
@@ -306,22 +312,23 @@ const showPublishPanel = ref(false)
 .wb-shell {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
-  background: #080f1a;
+  background: #050505;
   color: #e2e8f0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 }
 
 /* ── Top bar ── */
 .wb-topbar {
-  height: 48px;
+  min-height: 56px;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 0 16px;
-  background: rgba(8, 15, 26, 0.98);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  padding: 0.75rem var(--layout-pad-x, 16px) 0.65rem;
+  background: rgba(0, 0, 0, 0.45);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
   z-index: 100;
 }
@@ -343,53 +350,46 @@ const showPublishPanel = ref(false)
 }
 
 .wb-logo {
-  font-size: 14px;
-  font-weight: 900;
-  color: #6366f1;
-  letter-spacing: -0.02em;
+  color: #fff;
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   white-space: nowrap;
-}
-
-.wb-logo-badge {
-  font-size: 9px;
-  font-weight: 700;
-  background: rgba(99, 102, 241, 0.15);
-  color: #a5b4fc;
-  padding: 2px 6px;
-  border-radius: 5px;
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  vertical-align: middle;
-  margin-left: 4px;
+  text-decoration: none;
 }
 
 .wb-target-tabs {
   display: flex;
-  gap: 2px;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .wb-target-tab {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
+  padding: 0.45rem 0.7rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.92rem;
+  font-weight: 700;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
-.wb-target-tab:hover { color: #94a3b8; background: rgba(148, 163, 184, 0.06); }
+.wb-target-tab:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
 
 .wb-target-tab--active {
-  color: #a5b4fc;
-  background: rgba(99, 102, 241, 0.12);
-  border-color: rgba(99, 102, 241, 0.2);
+  color: #fff;
+  background: rgba(59, 130, 246, 0.28);
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25);
+}
+
+.wb-target-tab__icon {
+  opacity: 0.8;
 }
 
 .wb-target-name {

@@ -23,7 +23,7 @@
             首页
           </router-link>
           <router-link
-            :to="{ name: 'workbench-unified', query: { focus: 'repository' } }"
+            :to="{ name: 'workbench-shell', params: { target: 'mod' } }"
             class="workbench-tab"
             active-class="workbench-tab--active"
           >

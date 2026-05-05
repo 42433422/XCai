@@ -85,22 +85,22 @@ const routes: RouteRecordRaw[] = [
         name: 'workbench-home',
         component: () => import('../views/WorkbenchHomeView.vue'),
       },
-      // /workbench/unified → 原统一工作台；员工制作子页再进入新 Shell
+      // /workbench/unified → AI-native 统一工作台
       {
         path: 'unified',
         name: 'workbench-unified',
-        component: () => import('../views/UnifiedWorkbenchView.vue'),
+        component: () => import('../views/workbench/WorkbenchShell.vue'),
       },
-      // Legacy sub-paths → 原统一工作台不同 focus
+      // Legacy sub-paths → AI-native Shell with appropriate target
       {
         path: 'repository',
         name: 'workbench-repository',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'repository' } }),
+        redirect: { name: 'workbench-shell', params: { target: 'mod' } },
       },
       {
         path: 'workflow',
         name: 'workbench-workflow',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'skill' } }),
+        redirect: { name: 'workbench-shell', params: { target: 'workflow' } },
       },
       {
         path: 'employee',
@@ -110,17 +110,14 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'integrations',
         name: 'workbench-integrations',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'integrations' } }),
+        redirect: { name: 'workbench-shell', params: { target: 'skill' } },
       },
       // Mod authoring still uses its own view for now
       { path: 'mod/:modId', name: 'mod-authoring', component: () => import('../views/ModAuthoringView.vue') },
       {
         path: 'my-employees',
         name: 'workbench-my-employees',
-        redirect: (to: any) => ({
-          name: 'workbench-unified',
-          query: { ...to.query, focus: 'employee', employeeView: 'list' },
-        }),
+        component: () => import('../views/MyEmployeesChatView.vue'),
       },
     ],
   },
