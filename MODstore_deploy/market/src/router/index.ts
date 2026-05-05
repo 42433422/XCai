@@ -2,7 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { installAuthGuards } from './guards'
 
 const routes: RouteRecordRaw[] = [
-  { path: '/', name: 'home', component: () => import('../views/WorkbenchHomeView.vue') },
+  { path: '/', redirect: { name: 'workbench-shell', params: { target: 'employee' } } },
   { path: '/about', name: 'about', component: () => import('../views/HomeView.vue') },
   { path: '/ai-store', name: 'ai-store', component: () => import('../views/AiStoreView.vue') },
   { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
@@ -41,7 +41,10 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/workflow/v2/:id',
     name: 'workflow-v2-editor',
-    component: () => import('../views/workflow/v2/WorkflowFlowEditorPage.vue'),
+    redirect: (to: any) => ({
+      name: 'workbench-shell',
+      params: { target: 'workflow', id: to.params.id },
+    }),
     meta: { auth: true },
   },
   // ===== 脚本即工作流（替代节点图）=====
@@ -71,42 +74,63 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/workbench',
-    component: () => import('../views/WorkbenchView.vue'),
     meta: { auth: true },
     children: [
-      { path: '', redirect: { name: 'workbench-home' } },
-      { path: 'home', name: 'workbench-home', component: () => import('../views/WorkbenchHomeView.vue') },
-      { path: 'unified', name: 'workbench-unified', component: () => import('../views/UnifiedWorkbenchView.vue') },
+      // Default → AI-native Shell (employee target)
+      { path: '', redirect: { name: 'workbench-shell', params: { target: 'employee' } } },
+      // Legacy /workbench/home → Shell
+      {
+        path: 'home',
+        name: 'workbench-home',
+        redirect: { name: 'workbench-shell', params: { target: 'employee' } },
+      },
+      // Legacy /workbench/unified → Shell
+      {
+        path: 'unified',
+        name: 'workbench-unified',
+        redirect: (to: any) => ({
+          name: 'workbench-shell',
+          params: { target: to.query?.focus || 'employee' },
+        }),
+      },
+      // Legacy sub-paths → Shell with appropriate target
       {
         path: 'repository',
         name: 'workbench-repository',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'repository' } }),
+        redirect: { name: 'workbench-shell', params: { target: 'mod' } },
       },
       {
         path: 'workflow',
         name: 'workbench-workflow',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'skill' } }),
+        redirect: { name: 'workbench-shell', params: { target: 'workflow' } },
       },
       {
         path: 'employee',
         name: 'workbench-employee',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'employee' } }),
+        redirect: { name: 'workbench-shell', params: { target: 'employee' } },
       },
       {
         path: 'integrations',
         name: 'workbench-integrations',
-        redirect: (to: any) => ({ name: 'workbench-unified', query: { ...to.query, focus: 'integrations' } }),
+        redirect: { name: 'workbench-shell', params: { target: 'skill' } },
       },
+      // Mod authoring still uses its own view for now
       { path: 'mod/:modId', name: 'mod-authoring', component: () => import('../views/ModAuthoringView.vue') },
       {
         path: 'my-employees',
         name: 'workbench-my-employees',
-        redirect: (to: any) => ({
-          name: 'workbench-unified',
-          query: { ...to.query, focus: 'employee', employeeView: 'list' },
-        }),
+        redirect: { name: 'workbench-shell', params: { target: 'employee' } },
       },
     ],
+    // Use WorkbenchShell as layout for non-child routes; children with their own components override
+    component: () => import('../views/workbench/WorkbenchShell.vue'),
+  },
+  // ===== AI-Native WorkbenchShell (三栏 shell) =====
+  {
+    path: '/workbench/shell/:target?/:id?',
+    name: 'workbench-shell',
+    component: () => import('../views/workbench/WorkbenchShell.vue'),
+    meta: { auth: true },
   },
   { path: '/repository', redirect: '/workbench/repository' },
   {

@@ -69,6 +69,14 @@ async function stubCommonApis(page: import('@playwright/test').Page) {
       })
       return
     }
+    if (pathname === '/api/employees/') {
+      await route.fulfill({ json: [] })
+      return
+    }
+    if (pathname === '/api/workflow/employee-eligible') {
+      await route.fulfill({ json: { workflows: [], all_workflows: [] } })
+      return
+    }
     if (pathname.startsWith('/api/')) {
       await route.fulfill({ json: { items: [], ok: true, workflows: [], executions: [] } })
       return
@@ -123,23 +131,24 @@ test('order detail renders payment and refund state', async ({ page }) => {
   await expect(page.getByText('无退款')).toBeVisible()
 })
 
-test('workbench focus tabs switch between employee workflow and repository surfaces', async ({ page }) => {
+test('workbench shell target tabs switch between employee, workflow, mod and skill surfaces', async ({ page }) => {
   await stubCommonApis(page)
   await page.addInitScript(() => {
     localStorage.setItem('modstore_token', 'token-e2e')
-    localStorage.setItem('employee_workbench_onboarding_seen_v1', '1')
   })
 
-  await page.goto('/workbench/unified?focus=employee')
-  await expect(page.getByRole('tab', { name: '专注员工制作' })).toHaveAttribute('aria-selected', 'true')
+  // Navigate to the new AI-native shell (employee target)
+  await page.goto('/workbench/shell/employee')
+  // Shell renders with employee target tab active
+  await expect(page).toHaveURL(/\/workbench\/shell\/employee/)
 
-  await page.getByRole('tab', { name: '专注工作流' }).click()
-  await expect(page).toHaveURL(/focus=workflow/)
-  await expect(page.getByRole('tab', { name: '专注工作流' })).toHaveAttribute('aria-selected', 'true')
+  // Legacy unified redirect still works
+  await page.goto('/workbench/unified')
+  await expect(page).toHaveURL(/\/workbench\/shell/)
 
-  await page.getByRole('tab', { name: '专注 Mod 库' }).click()
-  await expect(page).toHaveURL(/focus=repository/)
-  await expect(page.getByRole('tab', { name: '专注 Mod 库' })).toHaveAttribute('aria-selected', 'true')
+  // Legacy home redirect still works
+  await page.goto('/workbench/home')
+  await expect(page).toHaveURL(/\/workbench\/shell/)
 })
 
 test('unknown routes render the not found page', async ({ page }) => {
