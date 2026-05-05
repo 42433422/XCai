@@ -83,17 +83,54 @@ async function loadTarget(kind: TargetKind, id: string | null) {
       if (pack) {
         const rawManifest = (pack as Record<string, unknown>).manifest ?? pack
         const raw = rawManifest && typeof rawManifest === 'object' ? rawManifest as Record<string, unknown> : {}
+
         // Pack manifest can have three shapes:
         //   1. { employee_config_v2: { identity, cognition, ... } }  ← generated packs
         //   2. { identity, cognition, ... }                           ← already V2 at root
         //   3. { panel_summary, workflow_employees, ... }             ← legacy V1
-        const manifest: Record<string, unknown> = (
+        const v2Base: Record<string, unknown> = (
           raw.employee_config_v2 && typeof raw.employee_config_v2 === 'object'
             ? raw.employee_config_v2
             : raw.identity && typeof raw.identity === 'object'
               ? raw
               : upgradeLegacyToV2(raw)
         ) as Record<string, unknown>
+
+        // Outer manifest's workflow_employees[0] is the authoritative source for
+        // workflow_id (written by attach_nl_workflow_to_employee_pack_dir) and
+        // panel_summary (the LLM-generated system prompt).
+        const empEntry = (Array.isArray(raw.workflow_employees) && raw.workflow_employees.length > 0)
+          ? raw.workflow_employees[0] as Record<string, unknown>
+          : null
+
+        // Back-fill collaboration.workflow.workflow_id if V2 has none
+        const collab = (v2Base.collaboration ?? {}) as Record<string, unknown>
+        const wf = (collab.workflow ?? {}) as Record<string, unknown>
+        const v2WfId = Number(wf.workflow_id ?? 0)
+        const outerWfId = Number(
+          empEntry?.workflow_id ?? (raw.employee as Record<string, unknown> | undefined)?.workflow_id ?? 0,
+        )
+        const finalWfId = v2WfId > 0 ? v2WfId : outerWfId
+
+        // Back-fill cognition.agent.system_prompt from panel_summary if V2 has none
+        const cognition = (v2Base.cognition ?? {}) as Record<string, unknown>
+        const agent = (cognition.agent ?? {}) as Record<string, unknown>
+        const v2Prompt = String(agent.system_prompt ?? '').trim()
+        const outerPrompt = String(empEntry?.panel_summary ?? '').trim()
+        const finalPrompt = v2Prompt || outerPrompt
+
+        const manifest: Record<string, unknown> = {
+          ...v2Base,
+          collaboration: {
+            ...collab,
+            workflow: { ...wf, workflow_id: finalWfId },
+          },
+          cognition: {
+            ...cognition,
+            agent: { ...agent, system_prompt: finalPrompt },
+          },
+        }
+
         const displayName = String(
           (manifest.identity as Record<string, unknown> | undefined)?.name
           ?? raw.name
