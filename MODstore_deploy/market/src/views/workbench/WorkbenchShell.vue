@@ -53,6 +53,146 @@ function _snapshotBaseline(id: string, manifest: Record<string, unknown>) {
   } catch { /* quota exceeded – ignore */ }
 }
 
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+}
+
+function firstRecord(v: unknown): Record<string, unknown> {
+  return Array.isArray(v) && v[0] && typeof v[0] === 'object' ? v[0] as Record<string, unknown> : {}
+}
+
+function firstNonEmpty(...vals: unknown[]): string {
+  for (const v of vals) {
+    const s = String(v ?? '').trim()
+    if (s) return s
+  }
+  return ''
+}
+
+function firstPositiveNumber(...vals: unknown[]): number {
+  for (const v of vals) {
+    const n = Number(v ?? 0)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return 0
+}
+
+function normalizeEmployeePackManifest(
+  pack: Record<string, unknown>,
+  fallbackId: string,
+): { manifest: Record<string, unknown>; displayName: string } {
+  const raw = asRecord(pack.manifest ?? pack)
+  const rootV2 = asRecord(raw.employee_config_v2)
+  const v2Base: Record<string, unknown> = Object.keys(rootV2).length
+    ? rootV2
+    : Object.keys(asRecord(raw.identity)).length
+      ? raw
+      : upgradeLegacyToV2(raw)
+
+  const empEntry = firstRecord(raw.workflow_employees)
+  const rootEmployee = asRecord(raw.employee)
+  const v2Identity = asRecord(v2Base.identity)
+  const v2Cognition = asRecord(v2Base.cognition)
+  const v2Agent = asRecord(v2Cognition.agent)
+  const v2Role = asRecord(v2Agent.role)
+  const v2Model = asRecord(v2Agent.model)
+  const v2Collab = asRecord(v2Base.collaboration)
+  const v2Workflow = asRecord(v2Collab.workflow)
+
+  const identity = {
+    ...v2Identity,
+    id: firstNonEmpty(v2Identity.id, rootEmployee.id, empEntry.id, raw.id, pack.pack_id, pack.id, fallbackId),
+    name: firstNonEmpty(v2Identity.name, rootEmployee.label, rootEmployee.name, empEntry.label, empEntry.name, raw.name, pack.name, fallbackId),
+    version: firstNonEmpty(v2Identity.version, raw.version, pack.version, '1.0.0'),
+    artifact: firstNonEmpty(v2Identity.artifact, raw.artifact, 'employee_pack'),
+    description: firstNonEmpty(v2Identity.description, rootEmployee.description, empEntry.description, raw.description, pack.description),
+  }
+
+  const roleName = firstNonEmpty(v2Role.name, rootEmployee.label, rootEmployee.name, empEntry.label, empEntry.name, identity.name)
+  const persona = firstNonEmpty(
+    v2Role.persona,
+    rootEmployee.description,
+    empEntry.description,
+    raw.description,
+    identity.description,
+    '专业、高效、亲切',
+  )
+  const systemPrompt = firstNonEmpty(
+    v2Agent.system_prompt,
+    empEntry.system_prompt,
+    empEntry.panel_summary,
+    rootEmployee.system_prompt,
+    raw.panel_summary,
+    raw.description,
+    identity.description,
+  )
+
+  const workflowId = firstPositiveNumber(
+    v2Workflow.workflow_id,
+    empEntry.workflow_id,
+    empEntry.workflowId,
+    asRecord(raw.workflow_attachment).workflow_id,
+    rootEmployee.workflow_id,
+    route.query.wfId,
+  )
+
+  const rawSkills = Array.isArray(asRecord(v2Base.cognition).skills)
+    ? asRecord(v2Base.cognition).skills as unknown[]
+    : Array.isArray(raw.skills)
+      ? raw.skills as unknown[]
+      : Array.isArray(empEntry.skills)
+        ? empEntry.skills as unknown[]
+        : Array.isArray(asRecord(raw.metadata).suggested_skills)
+          ? asRecord(raw.metadata).suggested_skills as unknown[]
+          : []
+
+  const cognition = {
+    ...v2Cognition,
+    agent: {
+      ...v2Agent,
+      system_prompt: systemPrompt,
+      role: {
+        ...v2Role,
+        name: roleName,
+        persona,
+        tone: firstNonEmpty(v2Role.tone, 'professional'),
+        expertise: Array.isArray(v2Role.expertise) ? v2Role.expertise : [],
+      },
+      behavior_rules: Array.isArray(v2Agent.behavior_rules) ? v2Agent.behavior_rules : [],
+      few_shot_examples: Array.isArray(v2Agent.few_shot_examples) ? v2Agent.few_shot_examples : [],
+      model: {
+        provider: firstNonEmpty(v2Model.provider, 'deepseek'),
+        model_name: firstNonEmpty(v2Model.model_name, 'deepseek-chat'),
+        temperature: Number.isFinite(Number(v2Model.temperature)) ? Number(v2Model.temperature) : 0.7,
+        max_tokens: Number.isFinite(Number(v2Model.max_tokens)) ? Number(v2Model.max_tokens) : 4000,
+        top_p: Number.isFinite(Number(v2Model.top_p)) ? Number(v2Model.top_p) : 0.9,
+      },
+    },
+    skills: rawSkills,
+  }
+
+  const manifest: Record<string, unknown> = {
+    ...v2Base,
+    identity,
+    cognition,
+    collaboration: {
+      ...v2Collab,
+      workflow: {
+        ...v2Workflow,
+        workflow_id: workflowId,
+        name: firstNonEmpty(v2Workflow.name, asRecord(raw.workflow_attachment).workflow_name, empEntry.workflow_name),
+      },
+    },
+    workflow_employees: Array.isArray(v2Base.workflow_employees)
+      ? v2Base.workflow_employees
+      : Array.isArray(raw.workflow_employees)
+        ? raw.workflow_employees
+        : [],
+  }
+
+  return { manifest, displayName: String(identity.name || fallbackId) }
+}
+
 async function loadTarget(kind: TargetKind, id: string | null) {
   loading.value = true
   loadError.value = ''
@@ -86,62 +226,7 @@ async function loadTarget(kind: TargetKind, id: string | null) {
         pack = null
       }
       if (pack) {
-        const rawManifest = (pack as Record<string, unknown>).manifest ?? pack
-        const raw = rawManifest && typeof rawManifest === 'object' ? rawManifest as Record<string, unknown> : {}
-
-        // Pack manifest can have three shapes:
-        //   1. { employee_config_v2: { identity, cognition, ... } }  ← generated packs
-        //   2. { identity, cognition, ... }                           ← already V2 at root
-        //   3. { panel_summary, workflow_employees, ... }             ← legacy V1
-        const v2Base: Record<string, unknown> = (
-          raw.employee_config_v2 && typeof raw.employee_config_v2 === 'object'
-            ? raw.employee_config_v2
-            : raw.identity && typeof raw.identity === 'object'
-              ? raw
-              : upgradeLegacyToV2(raw)
-        ) as Record<string, unknown>
-
-        // Outer manifest's workflow_employees[0] is the authoritative source for
-        // workflow_id (written by attach_nl_workflow_to_employee_pack_dir) and
-        // panel_summary (the LLM-generated system prompt).
-        const empEntry = (Array.isArray(raw.workflow_employees) && raw.workflow_employees.length > 0)
-          ? raw.workflow_employees[0] as Record<string, unknown>
-          : null
-
-        // Back-fill collaboration.workflow.workflow_id if V2 has none
-        const collab = (v2Base.collaboration ?? {}) as Record<string, unknown>
-        const wf = (collab.workflow ?? {}) as Record<string, unknown>
-        const v2WfId = Number(wf.workflow_id ?? 0)
-        const outerWfId = Number(
-          empEntry?.workflow_id ?? (raw.employee as Record<string, unknown> | undefined)?.workflow_id ?? 0,
-        )
-        const finalWfId = v2WfId > 0 ? v2WfId : outerWfId
-
-        // Back-fill cognition.agent.system_prompt from panel_summary if V2 has none
-        const cognition = (v2Base.cognition ?? {}) as Record<string, unknown>
-        const agent = (cognition.agent ?? {}) as Record<string, unknown>
-        const v2Prompt = String(agent.system_prompt ?? '').trim()
-        const outerPrompt = String(empEntry?.panel_summary ?? '').trim()
-        const finalPrompt = v2Prompt || outerPrompt
-
-        const manifest: Record<string, unknown> = {
-          ...v2Base,
-          collaboration: {
-            ...collab,
-            workflow: { ...wf, workflow_id: finalWfId },
-          },
-          cognition: {
-            ...cognition,
-            agent: { ...agent, system_prompt: finalPrompt },
-          },
-        }
-
-        const displayName = String(
-          (manifest.identity as Record<string, unknown> | undefined)?.name
-          ?? raw.name
-          ?? (pack as Record<string, unknown>).name
-          ?? id,
-        )
+        const { manifest, displayName } = normalizeEmployeePackManifest(pack, id)
         store.setTarget(kind, id, manifest, displayName)
         _snapshotBaseline(id, manifest)
       } else {
