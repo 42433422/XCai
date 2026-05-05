@@ -2201,3 +2201,168 @@ async def employee_publish(
         "stored_filename": saved.get("stored_filename") or "",
         "name": saved.get("name") or rec["name"],
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 员工同步测试：bench → 发布到 catalog → 推送到宿主 fhd-sandbox-runtime
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class EmployeeSyncTestRequest(BaseModel):
+    employee_id: str = Field(..., description="员工包 ID（同 pack_id）")
+    fhd_base_url: Optional[str] = Field(None, description="宿主 fhd-sandbox-runtime 的 base URL，如 http://localhost:9999")
+    provider: Optional[str] = Field(None)
+    model: Optional[str] = Field(None)
+    price: float = Field(0.0)
+    industry: str = Field("通用", max_length=64)
+
+
+@router.post("/employee-sync-test", summary="员工同步测试：bench→发布→推送到宿主安装")
+async def employee_sync_test(
+    body: EmployeeSyncTestRequest,
+    user: User = Depends(_get_current_user),
+):
+    """
+    一键同步流程：
+    1. LLM 生成 1-5 级测试任务并执行 + 五维审核
+    2. 通过后发布到 MODstore catalog（/v1/packages）
+    3. 调用宿主 fhd-sandbox-runtime 的 /api/mod-store/install 安装此员工包
+       → 员工出现在宿主「一键托管」面板、「员工工作流管理」页等位置
+    """
+    import httpx
+
+    from modstore_server.employee_bench import generate_bench_tasks, run_and_score_bench
+    from modstore_server.mod_scaffold_runner import modstore_library_path
+    from modstore_server.catalog_store import append_package
+    from modstore_server.catalog_sync import upsert_catalog_item_from_xc_package_dict
+    from modstore_server.models import CatalogItem
+
+    employee_id = (body.employee_id or "").strip()
+    if not employee_id:
+        raise HTTPException(400, "employee_id 不能为空")
+
+    # ── Step 1: 读取员工信息 ──────────────────────────────────────────────────
+    pack_dir = modstore_library_path() / employee_id
+    mf_path = pack_dir / "manifest.json"
+    if not mf_path.is_file():
+        raise HTTPException(404, f"员工包不存在: {employee_id}")
+
+    try:
+        raw_mf = json.loads(mf_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"manifest.json 读取失败: {exc}") from exc
+
+    brief = str(raw_mf.get("description") or "").strip()[:800]
+    rows = raw_mf.get("workflow_employees") or []
+    panel_summary = ""
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        panel_summary = str(rows[0].get("panel_summary") or "").strip()[:400]
+
+    # ── Step 2: bench test ────────────────────────────────────────────────────
+    sf = get_session_factory()
+    with sf() as db:
+        prov, mdl, err = await resolve_llm_provider_model_auto(db, user, body.provider, body.model)
+        if err:
+            raise HTTPException(400, err)
+
+        task_list = await generate_bench_tasks(
+            brief or employee_id,
+            panel_summary,
+            db=db,
+            user_id=user.id,
+            provider=prov,
+            model=mdl,
+        )
+        report = await run_and_score_bench(employee_id, task_list, db=db, user=user)
+
+    if not report.get("passed"):
+        return {
+            "ok": False,
+            "stage": "bench_test",
+            "reason": f"基准测试未通过（得分 {report.get('overall_score', 0):.1f}，需 ≥ 60）",
+            "bench": report,
+        }
+
+    # ── Step 3: 发布到 MODstore catalog ─────────────────────────────────────
+    pkg_id = str(raw_mf.get("id") or employee_id).strip()
+    version = str(raw_mf.get("version") or "1.0.0").strip()
+
+    try:
+        zip_bytes = build_employee_pack_zip(employee_id, raw_mf)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"员工包打包失败: {exc}") from exc
+
+    rec = {
+        "id": pkg_id,
+        "name": str(raw_mf.get("name") or pkg_id),
+        "version": version,
+        "description": str(raw_mf.get("description") or ""),
+        "artifact": "employee_pack",
+        "industry": body.industry or str(raw_mf.get("industry") or "通用"),
+        "release_channel": "stable",
+        "commerce": {"mode": "free", "price": 0.0},
+        "license": {"type": "personal", "verify_url": None},
+    }
+
+    import tempfile as _tmpmod
+
+    with _tmpmod.NamedTemporaryFile(suffix=".xcemp", delete=False) as tmp:
+        tmp.write(zip_bytes)
+        tmp_path_str = tmp.name
+
+    try:
+        saved = append_package(rec, Path(tmp_path_str))
+    except Exception as exc:  # noqa: BLE001
+        Path(tmp_path_str).unlink(missing_ok=True)
+        raise HTTPException(500, f"写入 catalog_store 失败: {exc}") from exc
+    finally:
+        Path(tmp_path_str).unlink(missing_ok=True)
+
+    sf2 = get_session_factory()
+    with sf2() as db2:
+        try:
+            upsert_catalog_item_from_xc_package_dict(db2, saved, author_id=user.id)
+            row = db2.query(CatalogItem).filter(CatalogItem.pkg_id == pkg_id).first()
+            if not row:
+                row = CatalogItem(pkg_id=pkg_id, author_id=user.id)
+                db2.add(row)
+            row.version = saved.get("version") or version
+            row.name = saved.get("name") or rec["name"]
+            row.description = saved.get("description") or rec["description"]
+            row.price = 0.0
+            row.artifact = "employee_pack"
+            row.industry = saved.get("industry") or rec["industry"]
+            row.stored_filename = saved.get("stored_filename") or ""
+            row.sha256 = saved.get("sha256") or ""
+            db2.commit()
+        except Exception as exc:  # noqa: BLE001
+            db2.rollback()
+            raise HTTPException(500, f"写入数据库失败: {exc}") from exc
+
+    # ── Step 4: 推送到宿主 fhd-sandbox-runtime ───────────────────────────────
+    fhd_base = (body.fhd_base_url or "").strip().rstrip("/")
+    fhd_result: Dict[str, Any] = {"skipped": True, "reason": "未提供 fhd_base_url"}
+
+    if fhd_base:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    f"{fhd_base}/api/mod-store/install",
+                    json={"pkg_id": pkg_id, "version": saved.get("version") or version, "activate": True},
+                )
+            if r.status_code < 400:
+                fhd_result = {"ok": True, "status": r.status_code, "data": r.json()}
+            else:
+                fhd_result = {"ok": False, "status": r.status_code, "error": r.text[:400]}
+        except Exception as exc:  # noqa: BLE001
+            fhd_result = {"ok": False, "error": str(exc)[:400]}
+
+    return {
+        "ok": True,
+        "stage": "synced",
+        "pkg_id": pkg_id,
+        "version": saved.get("version") or version,
+        "bench": report,
+        "catalog": {"ok": True, "stored_filename": saved.get("stored_filename") or ""},
+        "fhd_install": fhd_result,
+    }

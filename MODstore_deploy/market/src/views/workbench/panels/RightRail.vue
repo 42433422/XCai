@@ -370,6 +370,68 @@ async function downloadPack() {
   }
 }
 
+// ── Sync test section ─────────────────────────────────────────────────────
+
+type SyncState = 'idle' | 'running' | 'done' | 'error'
+
+const syncState = ref<SyncState>('idle')
+const syncError = ref<string | null>(null)
+
+interface SyncResult {
+  ok: boolean
+  stage: string
+  pkg_id?: string
+  version?: string
+  bench?: BenchResult
+  fhd_install?: { ok?: boolean; skipped?: boolean; reason?: string; error?: string }
+  reason?: string
+}
+
+const syncResult = ref<SyncResult | null>(null)
+// 同步步骤动画（7步）
+const SYNC_STEPS = ['读取员工', '生成任务', '执行测试', '量化评分', '发布目录', '推送宿主', '完成'] as const
+const syncCurrentStep = ref(-1)
+
+async function startSyncTest() {
+  const eid = store.target.id as string | undefined
+  if (!eid) {
+    syncError.value = '请先保存员工（需要 ID）'
+    return
+  }
+  syncState.value = 'running'
+  syncError.value = null
+  syncResult.value = null
+  syncCurrentStep.value = 0
+
+  // 模拟步骤进度（真实进度由后端耗时决定，这里做视觉动画）
+  const stepTimer = setInterval(() => {
+    if (syncCurrentStep.value < SYNC_STEPS.length - 2) {
+      syncCurrentStep.value++
+    }
+  }, 1800)
+
+  try {
+    // 读取宿主 URL（从 store.target 或环境）
+    const fhdBase = (store.target as Record<string, unknown>).fhd_base_url as string | undefined || ''
+    const res = await api.employeeSyncTest(eid, fhdBase) as SyncResult & { ok: boolean }
+    clearInterval(stepTimer)
+    syncCurrentStep.value = SYNC_STEPS.length - 1
+    syncResult.value = res
+    if (res.ok) {
+      syncState.value = 'done'
+      // 同步成功后也更新 benchResult
+      if (res.bench) benchResult.value = res.bench as BenchResult
+    } else {
+      syncState.value = 'error'
+      syncError.value = res.reason || '同步测试失败'
+    }
+  } catch (e: unknown) {
+    clearInterval(stepTimer)
+    syncState.value = 'error'
+    syncError.value = (e as Error)?.message || String(e)
+  }
+}
+
 function formatDiffVal(val: unknown): string {
   if (val === undefined || val === null || val === '') return '(空)'
   if (typeof val === 'string') {
@@ -666,7 +728,67 @@ function formatDiffVal(val: unknown): string {
         </button>
       </section>
 
-      <!-- ② 上架测试区 -->
+      <!-- ② 同步测试区（bench + publish + 推送宿主 一步完成） -->
+      <section class="pub-section pub-section--sync">
+        <h4 class="pub-section-title">同步测试</h4>
+        <p class="pub-hint">一键完成：基准测试 → 发布到目录 → 推送宿主安装，成功后员工出现在「一键托管」面板与员工工作流管理页。</p>
+
+        <button
+          class="pub-btn pub-btn--sync"
+          :disabled="syncState === 'running' || !store.target.id"
+          @click="startSyncTest"
+        >
+          <span v-if="syncState === 'running'" class="pub-spinner" />
+          {{ syncState === 'running' ? '同步中…' : syncState === 'done' ? '✓ 同步完成' : '开始同步测试' }}
+        </button>
+
+        <!-- 步骤进度流 -->
+        <div v-if="syncState !== 'idle'" class="sync-steps">
+          <div
+            v-for="(step, i) in SYNC_STEPS"
+            :key="step"
+            class="sync-step"
+            :class="{
+              'sync-step--done': i < syncCurrentStep,
+              'sync-step--active': i === syncCurrentStep && syncState === 'running',
+              'sync-step--finish': i === syncCurrentStep && syncState === 'done',
+              'sync-step--error': i === syncCurrentStep && syncState === 'error',
+            }"
+          >
+            <span class="sync-step-dot" />
+            <span class="sync-step-label">{{ step }}</span>
+          </div>
+        </div>
+
+        <!-- 同步结果 -->
+        <div v-if="syncResult" class="sync-result">
+          <template v-if="syncResult.ok">
+            <div class="sync-ok-box">
+              <span class="sync-ok-icon">✓</span>
+              <div class="sync-ok-text">
+                <strong>{{ syncResult.pkg_id }}</strong> v{{ syncResult.version }}<br />
+                <span v-if="syncResult.fhd_install?.ok">已推送到宿主并安装</span>
+                <span v-else-if="syncResult.fhd_install?.skipped">未配置宿主 URL，已发布到 catalog</span>
+                <span v-else class="sync-warn">宿主推送失败：{{ syncResult.fhd_install?.error }}</span>
+              </div>
+            </div>
+            <!-- 综合得分简报 -->
+            <div
+              v-if="syncResult.bench"
+              class="pub-overall"
+              :class="syncResult.bench.passed ? 'pub-overall--pass' : 'pub-overall--fail'"
+            >
+              <span class="pub-overall-score">{{ syncResult.bench.overall_score.toFixed(1) }}</span>
+              <span class="pub-overall-label">{{ syncResult.bench.passed ? '基准通过' : '基准未达标' }}</span>
+            </div>
+          </template>
+          <p v-else class="pub-error">{{ syncResult.reason }}</p>
+        </div>
+
+        <p v-if="syncState === 'error' && syncError && !syncResult" class="pub-error">{{ syncError }}</p>
+      </section>
+
+      <!-- ③ 上架测试区（单独运行，不推送宿主） -->
       <section class="pub-section">
         <h4 class="pub-section-title">上架测试</h4>
         <p class="pub-hint">大模型将生成 1–5 级共 15 项测试任务，根据完成率与消耗量量化打分，再进行五维审核。</p>
@@ -1686,4 +1808,134 @@ function formatDiffVal(val: unknown): string {
   color: #f87171;
   line-height: 1.4;
 }
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   同步测试
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+.pub-section--sync {
+  border-color: rgba(56, 189, 248, 0.2);
+  background: rgba(56, 189, 248, 0.03);
+}
+
+.pub-btn--sync {
+  background: rgba(56, 189, 248, 0.15);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+.pub-btn--sync:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.28);
+}
+
+/* 步骤列表 */
+.sync-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 14px;
+  position: relative;
+}
+/* 竖线 */
+.sync-steps::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: rgba(56, 189, 248, 0.15);
+}
+
+.sync-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  position: relative;
+}
+
+.sync-step-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(148, 163, 184, 0.15);
+  border: 2px solid rgba(148, 163, 184, 0.2);
+  transition: all 0.3s ease;
+  position: relative;
+  z-index: 1;
+}
+
+.sync-step--done .sync-step-dot {
+  background: #22c55e;
+  border-color: #22c55e;
+}
+.sync-step--done .sync-step-dot::after {
+  content: '✓';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  color: #fff;
+  font-weight: 700;
+}
+
+.sync-step--active .sync-step-dot {
+  background: #38bdf8;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.2);
+  animation: sync-pulse 1.2s ease-in-out infinite;
+}
+@keyframes sync-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.2); }
+  50%       { box-shadow: 0 0 0 8px rgba(56, 189, 248, 0.06); }
+}
+
+.sync-step--finish .sync-step-dot {
+  background: #4ade80;
+  border-color: #4ade80;
+}
+.sync-step--error .sync-step-dot {
+  background: #f87171;
+  border-color: #f87171;
+}
+
+.sync-step-label {
+  font-size: 11px;
+  color: #475569;
+  transition: color 0.3s;
+}
+.sync-step--done .sync-step-label   { color: #4ade80; }
+.sync-step--active .sync-step-label { color: #7dd3fc; font-weight: 600; }
+.sync-step--finish .sync-step-label { color: #4ade80; font-weight: 700; }
+.sync-step--error .sync-step-label  { color: #f87171; }
+
+/* 同步结果区 */
+.sync-result { margin-top: 12px; }
+
+.sync-ok-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.07);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  margin-bottom: 10px;
+}
+.sync-ok-icon {
+  font-size: 16px;
+  color: #4ade80;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.sync-ok-text {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+.sync-ok-text strong { color: #e2e8f0; }
+.sync-warn { color: #fb923c; }
 </style>

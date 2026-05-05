@@ -384,6 +384,21 @@ export const api = {
       body: JSON.stringify({ employee_id: employeeId, ...(opts || {}) }),
     }),
 
+  /**
+   * 员工同步测试：bench → 发布到 catalog → 推送到宿主 fhd-sandbox-runtime /api/mod-store/install
+   * 成功后员工出现在宿主「一键托管」面板
+   */
+  employeeSyncTest: (employeeId: string, fhdBaseUrl?: string, provider?: string, model?: string) =>
+    req('/api/workbench/employee-sync-test', {
+      method: 'POST',
+      body: JSON.stringify({
+        employee_id: employeeId,
+        fhd_base_url: fhdBaseUrl || null,
+        provider: provider || null,
+        model: model || null,
+      }),
+    }),
+
   // ----- 脚本即工作流（替代节点图）-----
   listScriptWorkflows: (status: string = '') =>
     req(`/api/script-workflows${status ? `?status=${encodeURIComponent(status)}` : ''}`),
