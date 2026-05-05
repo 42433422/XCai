@@ -15,6 +15,14 @@ const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  initialTarget?: TargetKind
+}>(), {
+  embedded: false,
+  initialTarget: 'employee',
+})
+
 const canvasRef = ref<InstanceType<typeof CanvasStage> | null>(null)
 
 // ── Target kind from route ───────────────────────────────────────────────────
@@ -22,7 +30,7 @@ const canvasRef = ref<InstanceType<typeof CanvasStage> | null>(null)
 const VALID_KINDS: TargetKind[] = ['employee', 'workflow', 'mod', 'skill']
 
 function resolveKind(): TargetKind {
-  const k = String(route.params.target ?? route.query.focus ?? 'employee')
+  const k = String(route.params.target ?? route.query.focus ?? props.initialTarget)
   return (VALID_KINDS.includes(k as TargetKind) ? k : 'employee') as TargetKind
 }
 
@@ -119,13 +127,17 @@ const TARGET_TABS: { kind: TargetKind; label: string; icon: string }[] = [
 ]
 
 function switchTarget(kind: TargetKind) {
+  if (props.embedded) {
+    void loadTarget(kind, null)
+    return
+  }
   router.push({ name: 'workbench-shell', params: { target: kind } })
 }
 
 // ── Panels resize ─────────────────────────────────────────────────────────────
 
-const leftWidth = ref(280)
-const rightWidth = ref(300)
+const leftWidth = ref(props.embedded ? 260 : 280)
+const rightWidth = ref(props.embedded ? 280 : 300)
 
 // ── Save / publish actions ────────────────────────────────────────────────────
 
@@ -164,9 +176,9 @@ const showPublishPanel = ref(false)
 </script>
 
 <template>
-  <div class="wb-shell">
+  <div class="wb-shell" :class="{ 'wb-shell--embedded': embedded }">
     <!-- Top bar -->
-    <header class="wb-topbar">
+    <header v-if="!embedded" class="wb-topbar">
       <!-- Left: branding + target tabs -->
       <div class="wb-topbar-left">
         <span class="wb-logo">XCAGI <span class="wb-logo-badge">工作台</span></span>
@@ -311,6 +323,14 @@ const showPublishPanel = ref(false)
   background: #080f1a;
   color: #e2e8f0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.wb-shell--embedded {
+  height: 100%;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: #050505;
 }
 
 /* ── Top bar ── */

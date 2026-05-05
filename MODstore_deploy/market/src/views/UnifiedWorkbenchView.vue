@@ -47,7 +47,7 @@
     <section class="focus-layout">
       <template v-if="viewMode === 'employee'">
         <MyEmployeesChatView v-if="employeeSubview === 'list'" embedded class="focus-embed" />
-        <EmployeePanel v-else />
+        <EmployeePanel v-else class="focus-embed" />
       </template>
       <WorkflowPanel v-else-if="viewMode === 'workflow'" />
       <OpenApiConnectorsPanel v-else-if="viewMode === 'integrations'" />
