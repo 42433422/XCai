@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,7 @@ from modstore_server.mod_scaffold_runner import (
     attach_nl_workflow_to_employee_pack_dir,
     create_mod_suite_workflows_async,
     generate_mod_suite_blueprint_async,
+    generate_workflow_for_intent,
     import_mod_suite_repository,
     mod_compileall_warnings,
     patch_workflow_graph_employee_nodes,
@@ -41,6 +42,7 @@ from modstore_server.mod_scaffold_runner import (
     run_mod_suite_workflow_sandboxes,
     run_employee_ai_scaffold_async,
     run_mod_ai_scaffold_async,
+    resolve_llm_provider_model_auto,
     write_mod_suite_blueprint,
     write_mod_suite_industry_card,
     write_mod_suite_ui_shell,
@@ -155,6 +157,21 @@ def _hydrate_workbench_session_unlocked(sid: str) -> None:
 async def _persist_workbench_session(sid: str) -> None:
     async with _SESSION_LOCK:
         _persist_workbench_session_unlocked(sid)
+
+
+class EmployeeAiDraftBody(BaseModel):
+    brief: str = Field(..., min_length=3, max_length=8000)
+    provider: Optional[str] = Field(None, max_length=64)
+    model: Optional[str] = Field(None, max_length=128)
+    suggested_id: Optional[str] = Field(None, max_length=64)
+
+
+class EmployeeAiRefinePromptBody(BaseModel):
+    current_prompt: str = Field(..., min_length=1, max_length=16000)
+    instruction: str = Field(..., min_length=3, max_length=2000)
+    role_context: str = Field("", max_length=500)
+    provider: Optional[str] = Field(None, max_length=64)
+    model: Optional[str] = Field(None, max_length=128)
 
 
 class WorkbenchResearchBody(BaseModel):
@@ -1685,3 +1702,160 @@ async def workbench_edge_tts(
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"TTS 合成失败: {exc}") from exc
+
+
+# ── AI Employee Draft Pipeline (SSE) ─────────────────────────────────────────
+
+@router.post("/employee-ai/draft", summary="6 阶段 AI 员工生成（SSE 流式）")
+async def employee_ai_draft(
+    body: EmployeeAiDraftBody,
+    user: User = Depends(_get_current_user),
+):
+    """SSE 事件序列：stage_start / stage_progress / stage_done / stage_error / pipeline_done。
+
+    ``pipeline_done`` 携带完整 manifest；客户端可在收到后离线编辑，再调 ``/api/mods/ai-scaffold``
+    或 ``import_zip`` 落库上架（保持与现有 employee 工作台链路兼容）。
+    """
+    from modstore_server.employee_ai_pipeline import run_pipeline
+    from modstore_server.script_agent.llm_client import RealLlmClient
+    from modstore_server.llm_key_resolver import resolve_api_key, resolve_base_url, OAI_COMPAT_OPENAI_STYLE_PROVIDERS
+
+    sf = get_session_factory()
+
+    async def _stream():
+        events: List[Dict[str, Any]] = []
+
+        async def on_event(ev: Dict[str, Any]) -> None:
+            events.append(ev)
+            line = f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            yield line.encode()
+
+        with sf() as db:
+            prov, mdl, err = await resolve_llm_provider_model_auto(db, user, body.provider, body.model)
+            if err:
+                err_ev = {"event": "pipeline_error", "stage": "init", "error": err}
+                yield f"data: {json.dumps(err_ev, ensure_ascii=False)}\n\n".encode()
+                return
+
+            api_key, _ = resolve_api_key(db, user.id, prov)
+            if not api_key:
+                err_ev = {"event": "pipeline_error", "stage": "init", "error": "该供应商未配置可用 API Key"}
+                yield f"data: {json.dumps(err_ev, ensure_ascii=False)}\n\n".encode()
+                return
+            base_url = (
+                resolve_base_url(db, user.id, prov)
+                if prov in OAI_COMPAT_OPENAI_STYLE_PROVIDERS
+                else None
+            )
+            llm = RealLlmClient(prov, api_key=api_key, model=mdl, base_url=base_url)
+
+            # Fetch eligible workflows for stage 2 ranking
+            from modstore_server.models import Workflow as WorkflowModel
+            wf_rows = (
+                db.query(WorkflowModel)
+                .filter(WorkflowModel.user_id == user.id, WorkflowModel.is_active == True)  # noqa: E712
+                .order_by(WorkflowModel.updated_at.desc())
+                .limit(20)
+                .all()
+            )
+            eligible_wfs = [
+                {
+                    "id": w.id,
+                    "name": w.name or "",
+                    "description": w.description or "",
+                    "sandbox_passed": bool(getattr(w, "sandbox_passed_for_current_graph", False)),
+                }
+                for w in wf_rows
+            ]
+
+            async def _gen_wf_fallback() -> Dict[str, Any]:
+                # Re-open a fresh session for the workflow creation call
+                with sf() as db2:
+                    return await generate_workflow_for_intent(
+                        db2,
+                        user,
+                        role=body.brief[:40],
+                        scenario=body.brief[:120],
+                        workflow_name=f"AI 员工工作流 - {(body.suggested_id or body.brief[:16]).strip()}",
+                        provider=prov,
+                        model=mdl,
+                    )
+
+            # Yield events through the generator
+            collected: List[Dict[str, Any]] = []
+
+            async def on_event_gen(ev: Dict[str, Any]) -> None:
+                collected.append(ev)
+
+            # We need to bridge the async generator pattern with run_pipeline's callback
+            # Use a queue to bridge
+            import asyncio as _asyncio
+            q: asyncio.Queue = _asyncio.Queue()
+
+            async def _on_ev(ev: Dict[str, Any]) -> None:
+                await q.put(ev)
+
+            async def _run_and_sentinel() -> None:
+                try:
+                    await run_pipeline(
+                        body.brief,
+                        llm=llm,
+                        on_event=_on_ev,
+                        eligible_workflows=eligible_wfs,
+                        generate_workflow_fallback=_gen_wf_fallback,
+                    )
+                finally:
+                    await q.put(None)  # sentinel
+
+            task = _asyncio.create_task(_run_and_sentinel())
+            while True:
+                ev = await q.get()
+                if ev is None:
+                    break
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode()
+            await task
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/employee-ai/refine-prompt", summary="LLM 优化 system prompt")
+async def employee_ai_refine_prompt(
+    body: EmployeeAiRefinePromptBody,
+    user: User = Depends(_get_current_user),
+):
+    """用 LLM 重写 employee system prompt，返回优化后文本与一句话 diff 说明。"""
+    from modstore_server.employee_ai_pipeline import refine_system_prompt
+    from modstore_server.script_agent.llm_client import RealLlmClient
+    from modstore_server.llm_key_resolver import resolve_api_key, resolve_base_url, OAI_COMPAT_OPENAI_STYLE_PROVIDERS
+
+    sf = get_session_factory()
+    with sf() as db:
+        prov, mdl, err = await resolve_llm_provider_model_auto(db, user, body.provider, body.model)
+        if err:
+            raise HTTPException(400, err)
+        api_key, _ = resolve_api_key(db, user.id, prov)
+        if not api_key:
+            raise HTTPException(400, "该供应商未配置可用 API Key")
+        base_url = (
+            resolve_base_url(db, user.id, prov)
+            if prov in OAI_COMPAT_OPENAI_STYLE_PROVIDERS
+            else None
+        )
+
+    llm = RealLlmClient(prov, api_key=api_key, model=mdl, base_url=base_url)
+    result, err = await refine_system_prompt(
+        current_prompt=body.current_prompt,
+        instruction=body.instruction,
+        role_context=body.role_context,
+        llm=llm,
+    )
+    if err or result is None:
+        raise HTTPException(502, f"Prompt 优化失败: {err or '未知错误'}")
+    return result

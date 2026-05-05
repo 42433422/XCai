@@ -39,6 +39,14 @@
               <span class="emp-list__id">{{ e.id }}{{ e.source === 'v1_catalog' ? ' · 仅目录' : '' }}</span>
             </button>
             <button
+              type="button"
+              class="emp-list__action emp-list__action--edit"
+              title="在工作台中二次编辑"
+              @click.stop="editEmployee(e.id)"
+            >
+              编辑
+            </button>
+            <button
               v-if="isAdmin"
               type="button"
               class="emp-list__action emp-list__action--danger"
@@ -86,11 +94,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
 const { isAdmin } = storeToRefs(auth)
+const router = useRouter()
 
 const HIDDEN_PKG_IDS_KEY = 'modstore_emp_chat_hidden_pkg_ids'
 
@@ -152,6 +162,10 @@ function selectEmployee(id: string) {
   selectedId.value = id
   messages.value = []
   sendError.value = ''
+}
+
+function editEmployee(id: string) {
+  router.push({ name: 'workbench-shell', params: { target: 'employee', id } })
 }
 
 async function confirmDeleteEmployee(e: EmployeeRow) {
@@ -360,6 +374,13 @@ onMounted(() => {
 .emp-list__action:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+.emp-list__action--edit {
+  border-color: rgba(99, 102, 241, 0.35);
+  color: #a5b4fc;
+}
+.emp-list__action--edit:hover {
+  background: rgba(99, 102, 241, 0.15);
 }
 .emp-list__action--danger {
   border-color: rgba(248, 113, 113, 0.35);

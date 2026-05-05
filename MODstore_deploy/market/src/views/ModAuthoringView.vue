@@ -127,6 +127,53 @@
           <p v-else class="muted small readiness-sub">暂无缺口；仍建议在工作流沙箱里跑一次非 Mock 真实执行。</p>
         </div>
 
+        <!-- AI 流水线建议（来自 employee_config_v2.metadata） -->
+        <template v-if="suggestedSkills.length || suggestedPricing">
+          <h3 class="sub-title">AI 制作草稿建议</h3>
+          <div class="ai-suggestions-panel">
+            <!-- System Prompt 优化 -->
+            <div class="ai-suggest-card">
+              <span class="ai-suggest-kicker">认知 · System Prompt</span>
+              <p class="muted small">基于 AI 流水线生成的 system_prompt 已写入 manifest。</p>
+              <button
+                type="button"
+                class="btn btn-sm btn-secondary"
+                :disabled="refinePromptLoading"
+                @click="handleRefineSystemPrompt"
+              >
+                {{ refinePromptLoading ? 'AI 优化中…' : 'AI 优化 System Prompt' }}
+              </button>
+              <p v-if="refinePromptDiff" class="muted small">改动说明：{{ refinePromptDiff }}</p>
+              <p v-if="refinePromptError" class="flash flash-err small">{{ refinePromptError }}</p>
+            </div>
+
+            <!-- 建议技能 -->
+            <div v-if="suggestedSkills.length" class="ai-suggest-card">
+              <span class="ai-suggest-kicker">AI 建议技能（草稿，不影响运行）</span>
+              <div class="ai-skill-chips">
+                <span
+                  v-for="(sk, i) in suggestedSkills"
+                  :key="i"
+                  class="ai-skill-chip"
+                  :title="sk.brief"
+                >{{ sk.name }}</span>
+              </div>
+              <a class="btn btn-sm" href="/market/#/workbench?gear=vibe" target="_blank">制作技能 →</a>
+            </div>
+
+            <!-- 建议定价 -->
+            <div v-if="suggestedPricing" class="ai-suggest-card">
+              <span class="ai-suggest-kicker">AI 建议定价</span>
+              <p>
+                <strong>{{ suggestedPricing.tier }}</strong>
+                ¥{{ suggestedPricing.cny }}/{{ suggestedPricing.period === 'month' ? '月' : suggestedPricing.period === 'year' ? '年' : '次' }}
+              </p>
+              <p v-if="suggestedPricing.reasoning" class="muted small">{{ suggestedPricing.reasoning }}</p>
+              <button type="button" class="btn btn-sm" @click="applyPricingSuggestion">复制定价建议</button>
+            </div>
+          </div>
+        </template>
+
         <h3 class="sub-title">工作流里会用到的「AI 员工名片」</h3>
         <p class="emp-intro">
           这里的每一条，相当于给自动化流程起的一个<strong>角色名片</strong>：名字、说明会出现在工作台和流程配置里。
@@ -652,6 +699,72 @@ const frontendSpecPreview = computed(() => {
 })
 
 const PREFILL_KEY = 'modstore_employee_prefill'
+
+// ── AI pipeline suggestions (读自 employee_config_v2.metadata) ────────────────
+const suggestedSkills = computed<Array<{ name: string; brief: string }>>(() => {
+  const meta = modData.value?.manifest?.employee_config_v2?.metadata
+  return Array.isArray(meta?.suggested_skills) ? meta.suggested_skills : []
+})
+
+const suggestedPricing = computed<{ tier: string; cny: number; period: string; reasoning?: string } | null>(() => {
+  const meta = modData.value?.manifest?.employee_config_v2?.metadata
+  return meta?.suggested_pricing && typeof meta.suggested_pricing === 'object' ? meta.suggested_pricing : null
+})
+
+// ── Refine system prompt ──────────────────────────────────────────────────────
+const refinePromptLoading = ref(false)
+const refinePromptError = ref('')
+const refinePromptDiff = ref('')
+
+async function handleRefineSystemPrompt() {
+  const v2 = modData.value?.manifest?.employee_config_v2
+  const currentPrompt = v2?.cognition?.agent?.system_prompt || ''
+  if (!currentPrompt) {
+    flash('当前 manifest 中未找到 cognition.agent.system_prompt，请先在「配置 (JSON)」填写', false)
+    return
+  }
+  const instruction = window.prompt('优化指令（例如：增加拒绝服务的边界说明）', '') || ''
+  if (!instruction.trim()) return
+  refinePromptLoading.value = true
+  refinePromptError.value = ''
+  refinePromptDiff.value = ''
+  try {
+    const res = await api.refineSystemPrompt({
+      current_prompt: currentPrompt,
+      instruction,
+      role_context: `${modData.value?.manifest?.name || ''} - ${modData.value?.manifest?.description || ''}`,
+    })
+    if (!res?.improved_prompt) throw new Error('未收到优化结果')
+    // Write back into manifest
+    const mf = JSON.parse(JSON.stringify(modData.value?.manifest || {}))
+    if (!mf.employee_config_v2) mf.employee_config_v2 = {}
+    if (!mf.employee_config_v2.cognition) mf.employee_config_v2.cognition = {}
+    if (!mf.employee_config_v2.cognition.agent) mf.employee_config_v2.cognition.agent = {}
+    mf.employee_config_v2.cognition.agent.system_prompt = res.improved_prompt
+    await api.putModManifest(modId.value, mf)
+    refinePromptDiff.value = res.diff_explanation || ''
+    flash('System Prompt 已优化并保存', true)
+    await reload()
+  } catch (e) {
+    refinePromptError.value = (e as Error)?.message || String(e)
+    flash(`Prompt 优化失败: ${refinePromptError.value}`, false)
+  } finally {
+    refinePromptLoading.value = false
+  }
+}
+
+function applyPricingSuggestion() {
+  if (!suggestedPricing.value) return
+  // The pricing suggestion shows up in the guide; this helper opens the publishing modal
+  // if it exists, or just copies the suggestion to clipboard as a hint.
+  const p = suggestedPricing.value
+  const text = `建议定价：${p.tier} ¥${p.cny}/${p.period === 'month' ? '月' : p.period === 'year' ? '年' : '次'}`
+  navigator.clipboard?.writeText(text).then(
+    () => flash('已复制定价建议', true),
+    () => flash(text, true),
+  )
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const industryCard = computed(() => {
   const card = aiBlueprint.value?.industry_card
@@ -1757,6 +1870,46 @@ watch(
 
 .guide-list li {
   margin-bottom: 0.35rem;
+}
+
+.ai-suggestions-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.ai-suggest-card {
+  padding: 0.85rem;
+  border-radius: 10px;
+  border: 1px solid rgba(124, 58, 237, 0.25);
+  background: rgba(124, 58, 237, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-suggest-kicker {
+  display: block;
+  font-size: 0.72rem;
+  color: rgba(167, 139, 250, 0.9);
+  margin-bottom: 2px;
+}
+
+.ai-skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.ai-skill-chip {
+  background: rgba(124, 58, 237, 0.12);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  border-radius: 12px;
+  padding: 2px 9px;
+  font-size: 0.8rem;
+  color: rgba(200, 180, 255, 0.9);
+  cursor: default;
 }
 
 .ai-blueprint-panel {

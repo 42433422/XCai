@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useWorkbenchStore } from '../../../stores/workbench'
 import { useFieldAi } from '../../../composables/useFieldAi'
+import { useManifestDiff } from '../../../composables/useManifestDiff'
 import {
   MODULE_META,
   DEFAULT_MODULE_ORDER,
@@ -13,6 +14,7 @@ import { api } from '../../../api'
 
 const store = useWorkbenchStore()
 const fieldAi = useFieldAi()
+const manifestDiff = useManifestDiff()
 
 // ── Inspector mode computed ─────────────────────────────────────────────────
 
@@ -232,6 +234,14 @@ function dragModuleStart(kind: EmployeeModuleKind, event: DragEvent) {
 watch(() => store.inspectorMode, (m) => {
   if (m === 'run') runResult.value = null
 })
+
+function formatDiffVal(val: unknown): string {
+  if (val === undefined || val === null || val === '') return '(空)'
+  if (typeof val === 'string') {
+    return val.length > 120 ? val.slice(0, 120) + '…' : val
+  }
+  return JSON.stringify(val)
+}
 </script>
 
 <template>
@@ -259,6 +269,17 @@ watch(() => store.inspectorMode, (m) => {
         @click="store.inspectorMode = 'run'"
       >
         运行
+      </button>
+      <button
+        v-if="manifestDiff.hasBaseline.value"
+        class="rr-tab rr-tab--diff"
+        :class="{ 'rr-tab--active': mode === 'diff' }"
+        @click="store.inspectorMode = 'diff'"
+      >
+        变更
+        <span v-if="manifestDiff.diffCount.value > 0" class="rr-diff-badge">
+          {{ manifestDiff.diffCount.value }}
+        </span>
       </button>
     </div>
 
@@ -487,6 +508,38 @@ watch(() => store.inspectorMode, (m) => {
     <!-- Empty state when no node selected in node mode -->
     <div v-else-if="mode === 'node' && !selectedNodeData" class="rr-pane empty-pane">
       <p class="empty-hint">点击画布中的模块节点以编辑属性</p>
+    </div>
+
+    <!-- ── Diff panel ─────────────────────────────────────────────── -->
+    <div v-else-if="mode === 'diff'" class="rr-pane diff-pane">
+      <p class="diff-title">变更对比</p>
+      <p class="diff-sub">当前配置与加载时的快照对比</p>
+
+      <div v-if="!manifestDiff.hasDiff.value" class="diff-empty">
+        <span class="diff-empty__icon">✓</span>
+        <p>与基准版本无差异</p>
+      </div>
+
+      <div v-else class="diff-list">
+        <div
+          v-for="entry in manifestDiff.diffs.value"
+          :key="entry.path"
+          class="diff-entry"
+        >
+          <div class="diff-entry__label">{{ entry.label }}</div>
+          <div class="diff-entry__row">
+            <div class="diff-entry__side diff-entry__side--before">
+              <span class="diff-entry__side-tag">原</span>
+              <span class="diff-entry__val">{{ formatDiffVal(entry.before) }}</span>
+            </div>
+            <span class="diff-entry__arrow">→</span>
+            <div class="diff-entry__side diff-entry__side--after">
+              <span class="diff-entry__side-tag">现</span>
+              <span class="diff-entry__val">{{ formatDiffVal(entry.after) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -936,5 +989,123 @@ watch(() => store.inspectorMode, (m) => {
   text-align: center;
   padding: 20px;
   line-height: 1.6;
+}
+
+/* Diff tab */
+.rr-tab--diff { position: relative; }
+
+.rr-diff-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #6366f1;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  padding: 0 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* Diff pane */
+.diff-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  margin: 0 0 4px;
+}
+
+.diff-sub {
+  font-size: 11px;
+  color: #475569;
+  margin: 0 0 14px;
+}
+
+.diff-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 30px 10px;
+  color: #475569;
+  font-size: 12px;
+  text-align: center;
+}
+
+.diff-empty__icon {
+  font-size: 22px;
+  color: #10b981;
+}
+
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diff-entry {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.diff-entry__label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.diff-entry__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.diff-entry__side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.diff-entry__side-tag {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.diff-entry__side--before .diff-entry__side-tag {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.diff-entry__side--after .diff-entry__side-tag {
+  background: rgba(16, 185, 129, 0.12);
+  color: #6ee7b7;
+}
+
+.diff-entry__val {
+  font-size: 11px;
+  color: #cbd5e1;
+  word-break: break-all;
+  line-height: 1.4;
+  font-family: monospace;
+}
+
+.diff-entry__arrow {
+  font-size: 12px;
+  color: #475569;
+  flex-shrink: 0;
+  margin-top: 16px;
 }
 </style>

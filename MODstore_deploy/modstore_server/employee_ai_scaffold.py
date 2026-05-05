@@ -143,6 +143,9 @@ def _default_employee_config_v2(
     label: str,
     capabilities: List[str],
 ) -> Dict[str, Any]:
+    # Deprecated: 仅在 LLM 不可用/离线环境时作为静态关键词兜底使用。
+    # 新流量请走 employee_ai_pipeline.stage_design_v2（完整 LLM 多维度设计），
+    # 不要在 run_employee_ai_scaffold_async 以外的路径新增对本函数的调用。
     text = " ".join([pid, name, description, employee_id, label, " ".join(capabilities)]).lower()
     wants_rankings = any(k in text for k in ("排行", "rank", "leaderboard", "模型", "model", "上网", "联网"))
     perception: Dict[str, Any] = {"type": "web_rankings" if wants_rankings else "text"}

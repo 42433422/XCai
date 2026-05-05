@@ -334,6 +334,55 @@ async def resolve_llm_provider_model_auto(
     return None, None, "没有找到已配置 API Key 且可用模型目录的 LLM 供应商"
 
 
+async def generate_workflow_for_intent(
+    db: Session,
+    user: User,
+    *,
+    role: str,
+    scenario: str,
+    workflow_name: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """为 employee_ai_pipeline Stage 2 兜底生成：创建 Workflow 记录 + NL 生图。
+
+    返回 {"ok": True, "workflow_id": int, "name": str} 或 {"ok": False, "error": str}。
+    不进行完整沙箱回归（沙箱验证留给用户在工作流页面手动运行），
+    但会记录工作流以供 Stage 6 manifest 引用。
+    """
+    from modstore_server.workflow_nl_graph import apply_nl_workflow_graph
+
+    prov, mdl, err = await resolve_llm_provider_model_auto(db, user, provider, model)
+    if err:
+        return {"ok": False, "error": err}
+
+    name = (workflow_name or f"AI 生成工作流 - {role[:20]}")[:256]
+    brief_for_nl = f"角色：{role}\n场景：{scenario}" if scenario else role
+    wf = Workflow(
+        user_id=user.id,
+        name=name,
+        description=brief_for_nl[:1000],
+        is_active=True,
+    )
+    db.add(wf)
+    db.commit()
+    db.refresh(wf)
+
+    nl = await apply_nl_workflow_graph(
+        db,
+        user,
+        workflow_id=wf.id,
+        brief=brief_for_nl,
+        provider=prov,
+        model=mdl,
+        status_hook=None,
+    )
+    if not nl.get("ok"):
+        return {"ok": False, "error": f"工作流 NL 生图失败: {nl.get('error') or ''}"}
+
+    return {"ok": True, "workflow_id": wf.id, "name": name}
+
+
 async def run_mod_ai_scaffold_async(
     db: Session,
     user: User,

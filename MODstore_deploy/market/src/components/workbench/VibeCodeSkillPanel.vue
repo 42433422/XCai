@@ -83,8 +83,21 @@
     <div v-if="error" class="vibe-error">{{ error }}</div>
 
     <article v-if="result" class="vibe-result">
-      <h3>执行结果</h3>
-      <p v-if="result.skill?.skill_id" class="muted small">skill_id: <code>{{ result.skill.skill_id }}</code></p>
+      <div class="vibe-result-head">
+        <h3>执行结果</h3>
+        <button
+          v-if="hasHandoffTarget"
+          type="button"
+          class="btn btn-handoff"
+          title="将生成的技能代码与配置带入员工制作工作台"
+          @click="sendToEmployeeWorkbench"
+        >
+          带入员工工作台 →
+        </button>
+      </div>
+      <p v-if="result.skill?.skill_id" class="muted small">
+        skill_id: <code>{{ result.skill.skill_id }}</code>
+      </p>
       <details open>
         <summary>生成代码</summary>
         <pre class="vibe-code">{{ resultCode }}</pre>
@@ -103,9 +116,14 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { requestJson } from '../../infrastructure/http/client'
 
 const req = requestJson
+const router = useRouter()
+
+/** sessionStorage key 与 EmployeeAuthoringView 约定一致 */
+const EMP_VIBE_HANDOFF_KEY = 'modstore_emp_vibe_handoff'
 
 const brief = ref('')
 const runInputJson = ref('{}')
@@ -124,6 +142,8 @@ const error = ref('')
 const result = ref<any>(null)
 
 const resultCode = computed(() => String(result.value?.skill?.code || result.value?.skill?.code_excerpt || ''))
+
+const hasHandoffTarget = computed(() => !!result.value?.skill?.skill_id || !!result.value?.skill?.code)
 
 async function submit() {
   busy.value = true
@@ -171,6 +191,25 @@ async function submit() {
   } finally {
     busy.value = false
   }
+}
+
+function sendToEmployeeWorkbench() {
+  const skill = result.value?.skill
+  if (!skill) return
+  const payload = {
+    skill_id: String(skill.skill_id || '').trim(),
+    brief: brief.value.trim(),
+    code: String(skill.code || skill.code_excerpt || '').trim(),
+    pkg_id: String(result.value?.publish?.pkg_id || pkgId.value || '').trim(),
+    name: String(result.value?.publish?.name || pubName.value || '').trim(),
+    description: String(result.value?.publish?.description || pubDescription.value || brief.value || '').trim(),
+  }
+  try {
+    sessionStorage.setItem(EMP_VIBE_HANDOFF_KEY, JSON.stringify(payload))
+  } catch {
+    /* ignore storage errors */
+  }
+  void router.push({ name: 'workbench-employee', query: { fromVibe: '1' } })
 }
 </script>
 
@@ -313,9 +352,33 @@ async function submit() {
   padding: 0.9rem 1rem 1rem;
 }
 
+.vibe-result-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
 .vibe-result h3 {
-  margin: 0 0 0.5rem;
+  margin: 0;
   font-size: 1rem;
+}
+
+.btn-handoff {
+  background: linear-gradient(135deg, #6c63ff 0%, #a855f7 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+
+.btn-handoff:hover {
+  opacity: 0.88;
 }
 
 .vibe-code {
