@@ -92,3 +92,42 @@ You can run both simultaneously: `eskill.vibe_coding.VibeCoder` for the
 production tree, `vibe_coding.VibeCoder` (this package) as a sandbox to
 research alternative prompts / retry strategies / patch generators without
 touching production.
+
+## Reference integration: MODstore_deploy
+
+The sibling project [`MODstore_deploy`](../../MODstore_deploy/) is a
+production reference of the patterns above. It wires vibe-coding into
+**three production lines** simultaneously:
+
+| Line | Surface | vibe-coding API |
+|---|---|---|
+| AI Mod authoring | `mod_employee_impl_scaffold.generate_mod_employee_impls_async` | `ProjectVibeCoder.heal_project` (after LLM-generated employees), `index_project` to cache the symbol table for the authoring page |
+| AI Employees | `employee_executor._actions_real` handlers `vibe_edit` / `vibe_heal` / `vibe_code` | `VibeCoder.edit_project` + `apply_patch`, `heal_project`, `code` + `run` |
+| Skills | `eskill_runtime._execute_logic` kinds `vibe_code` / `vibe_workflow`, canvas nodes `vibe_skill` / `vibe_workflow`, `script_agent.agent_loop.run_vibe_agent_loop` (alternate to `run_agent_loop`), workbench tab "AI 代码技能" | full surface: `code` + `run`, `workflow` + `execute`, `code_factory.repair`, `SkillPackager` + `MODstoreClient` for one-click publish |
+
+Key implementation details worth borrowing:
+
+- **One LLMClient bridge** instead of duplicating provider/key logic.
+  MODstore's adapter wraps its existing `chat_dispatch` / `chat_dispatch_via_session` as a `LLMClient`
+  ([`integrations/vibe_adapter.py:ChatDispatchLLMClient`](../../MODstore_deploy/modstore_server/integrations/vibe_adapter.py)).
+  This keeps BYOK routing, quota counting, and provider catalog in one place.
+
+- **Per-user `VibeCoder` cache** keyed on `(user_id, provider, model)` so each
+  tenant gets isolated `store_dir`/`PatchLedger`, but multiple requests reuse the
+  same indexes / skill store.
+
+- **Path whitelist for project-level actions**.
+  `vibe_edit` / `vibe_heal` MUST refuse roots outside `MODSTORE_TENANT_WORKSPACE_ROOT`
+  (`ensure_within_workspace`); see the same module above.
+
+- **In-process import + optional sub-app mount**.
+  `vibe_coding.agent.web.create_app()` is mounted at `/api/vibe` only when
+  `MODSTORE_ENABLE_VIBE_WEB=1`; the rest of the integration uses direct Python imports.
+
+- **Graceful degradation on missing vibe-coding**.
+  Every adapter call is guarded; if `import vibe_coding` fails it returns a
+  structured `{"ok": false, "reason": "..."}` so the host service still boots and
+  surfaces a clear error to the operator.
+
+See [`MODstore_deploy/docs/VIBE_INTEGRATION.md`](../../MODstore_deploy/docs/VIBE_INTEGRATION.md)
+for the full architecture diagram, environment variables, and operator runbook.

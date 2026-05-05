@@ -131,3 +131,32 @@ def test_list_employees_sees_upserted_row(monkeypatch, mem_db):
     rows = employee_executor.list_employees()
     ids = [r["id"] for r in rows]
     assert "emp.list.test" in ids
+    assert all(r.get("source") == "catalog" for r in rows if r["id"] == "emp.list.test")
+
+
+def test_list_employees_merges_v1_only_from_packages_json(monkeypatch, mem_db):
+    from modstore_server import catalog_store, employee_executor
+
+    factory = sessionmaker(bind=mem_db.bind)
+    monkeypatch.setattr(employee_executor, "get_session_factory", lambda: factory)
+
+    def fake_load_store():
+        return {
+            "packages": [
+                {
+                    "id": "v1.only.merge",
+                    "version": "1.0.0",
+                    "name": "V1 Only Name",
+                    "artifact": "employee_pack",
+                    "stored_filename": "f.zip",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(catalog_store, "load_store", fake_load_store)
+
+    rows = employee_executor.list_employees()
+    by_id = {r["id"]: r for r in rows}
+    assert "v1.only.merge" in by_id
+    assert by_id["v1.only.merge"]["source"] == "v1_catalog"
+    assert by_id["v1.only.merge"]["name"] == "V1 Only Name"

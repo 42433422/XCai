@@ -16,6 +16,8 @@ if ! rb=$(printf '%s' "$b64" | base64 -d 2>/dev/null); then
   exit 1
 fi
 export REMOTE_BASE="${rb}"
+# sync-modstore-to-server.ps1 经本脚本调用全链发布；与 remote_sync_extract 的「弃用护栏」配套
+export MODSTORE_ALLOW_LEGACY_FULLCHAIN=1
 chmod +x /tmp/remote_sync_extract.sh
 bash /tmp/remote_sync_extract.sh
 s=$?

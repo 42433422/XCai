@@ -404,6 +404,7 @@ async def generate_mod_employee_impls_async(
     provider: Optional[str],
     model: Optional[str],
     status_hook: Optional[Callable[[str], Awaitable[None]]] = None,
+    enable_vibe_heal: bool = True,
 ) -> Dict[str, Any]:
     """
     为 employees 中每名员工生成 ``backend/employees/<stem>.py``。
@@ -492,8 +493,85 @@ async def generate_mod_employee_impls_async(
     generated = list(results)
     errors = [e for e in generated if e.get("fallback") and e.get("note")]
 
+    heal_report: Dict[str, Any] = {"enabled": False}
+    if enable_vibe_heal and prov and mdl:
+        if status_hook:
+            await status_hook("vibe-coding 自愈中：对生成的员工脚本做静态校验与补丁修复…")
+        heal_report = await asyncio.to_thread(
+            _vibe_heal_mod_employees,
+            db,
+            user,
+            mod_dir=mod_dir,
+            mod_id=mod_id,
+            employees=valid_employees,
+            provider=prov,
+            model=mdl,
+        )
+
     return {
         "ok": not errors,
         "generated": generated,
         "errors": errors,
+        "vibe_heal": heal_report,
     }
+
+
+def _vibe_heal_mod_employees(
+    db: Session,
+    user: User,
+    *,
+    mod_dir: Path,
+    mod_id: str,
+    employees: List[Dict[str, Any]],
+    provider: str,
+    model: str,
+) -> Dict[str, Any]:
+    """同步辅助:把 vibe-coding 的 ``ProjectVibeCoder.heal_project`` 跑一轮。
+
+    失败 / 缺依赖时静默降级,把 reason 记到返回值,不会让员工脚本生成整体失败。
+    PatchLedger 自动记录补丁链,后续 ``ModAuthoringView`` 沙盒报告会通过
+    ``ai_blueprint.sandbox_report`` 读到这一段。
+    """
+    try:
+        from modstore_server.integrations.vibe_adapter import (
+            VibeIntegrationError,
+            get_project_vibe_coder,
+            heal_result_to_dict,
+        )
+    except ImportError as exc:  # pragma: no cover
+        return {"enabled": False, "reason": f"integrations 未导入: {exc}"}
+
+    try:
+        coder = get_project_vibe_coder(
+            mod_dir,
+            session=db,
+            user_id=user.id,
+            provider=provider,
+            model=model,
+        )
+    except VibeIntegrationError as exc:
+        return {"enabled": False, "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": False, "reason": f"vibe coder 构造失败: {exc}"}
+
+    employee_paths = [
+        f"backend/employees/{sanitize_employee_stem(str(e.get('id') or ''))}.py"
+        for e in employees
+        if isinstance(e, dict) and str(e.get("id") or "").strip()
+    ]
+    paths_hint = ", ".join(employee_paths[:6]) if employee_paths else "backend/employees/*.py"
+    brief = (
+        f"对 mod={mod_id} 的 {paths_hint} 做最小自愈:"
+        f"修复语法错误、补缺失 import、保留 async def run(payload, ctx) 签名。"
+        f"不要新增/删除文件,不要改 manifest.json。"
+    )
+    try:
+        result = coder.heal_project(brief, max_rounds=2)
+        return {
+            "enabled": True,
+            "ok": bool(getattr(result, "ok", True)),
+            "rounds": int(getattr(result, "rounds", 0) or 0),
+            "result": heal_result_to_dict(result),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": True, "ok": False, "reason": f"heal_project 失败: {exc}"}

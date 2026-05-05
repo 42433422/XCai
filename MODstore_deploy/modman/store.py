@@ -271,6 +271,38 @@ def remove_mod(library: Path, mod_id: str) -> None:
     shutil.rmtree(p)
 
 
+def find_mod_dir_by_manifest_id(library: Path, mod_id: str) -> Path:
+    """
+    在 library 下定位 manifest.id == mod_id 的包目录。
+    目录名通常与 id 一致；若历史数据不一致，仍能通过 manifest 命中磁盘目录。
+    """
+    if not mod_id or "/" in mod_id or "\\" in mod_id or mod_id in (".", ".."):
+        raise ValueError("非法 mod id")
+    target = mod_id.strip()
+    if not target:
+        raise ValueError("非法 mod id")
+    lib = library.resolve()
+    for d in iter_mod_dirs(library):
+        data, err = read_manifest(d)
+        if err or not data:
+            continue
+        mid = (data.get("id") or "").strip()
+        if mid == target:
+            p = d.resolve()
+            if p.parent.resolve() == lib:
+                return p
+    p = (library / target).resolve()
+    if p.is_dir() and p.parent.resolve() == lib:
+        return p
+    raise FileNotFoundError(target)
+
+
+def remove_mod_by_manifest_id(library: Path, mod_id: str) -> None:
+    """按 manifest id 删除包目录（解析真实文件夹名，与 user_mod 中的 mod_id 一致）。"""
+    p = find_mod_dir_by_manifest_id(library, mod_id)
+    shutil.rmtree(p)
+
+
 def list_mod_relative_files(mod_dir: Path, *, max_files: int = 400) -> List[str]:
     mod_dir = mod_dir.resolve()
     out: List[str] = []

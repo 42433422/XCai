@@ -17,17 +17,18 @@
       <aside class="emp-chat__side">
         <h2>员工列表</h2>
         <p v-if="hasV1OnlyEmployees" class="emp-muted emp-muted--hint">
-          部分条目仅出现在本地 /v1/packages，执行依赖服务端 catalog_items。若发送失败，请管理员同步目录或重新登记。
+          标记「仅目录」的条目尚未写入 catalog_items；对话执行以数据库登记为准。若发送失败，请管理员「从 XC catalog 同步」或重新登记。
         </p>
         <p v-if="listError" class="emp-chat__err">{{ listError }}</p>
         <p v-else-if="!employees.length && !loadingList" class="emp-muted">
-          <template v-if="v1PackagesSeen">
-            检测到本地包目录中有 employee_pack，但尚未进入可执行列表。新上传登记会自动写入数据库；历史包请管理员执行「从 XC catalog 同步」或在本站重新登记。
-          </template>
-          <template v-else>暂无可用员工包。请先在 Mod 制作或员工制作中登记 employee_pack。</template>
+          暂无可用员工包。请先在 Mod 制作或员工制作中登记 employee_pack；若 packages.json 与数据库不一致，请管理员执行「从 XC catalog 同步」或重新登记。
+        </p>
+        <p v-else-if="!visibleEmployees.length && !loadingList" class="emp-muted emp-muted--hint">
+          列表中的员工均已从本机隐藏。
+          <button type="button" class="emp-btn emp-btn--ghost emp-btn--inline" @click="clearHiddenPkgIds">显示全部</button>
         </p>
         <ul v-else class="emp-list">
-          <li v-for="e in employees" :key="e.id">
+          <li v-for="e in visibleEmployees" :key="e.id" class="emp-list__row">
             <button
               type="button"
               class="emp-list__btn"
@@ -36,6 +37,25 @@
             >
               <span class="emp-list__name">{{ e.name || e.id }}</span>
               <span class="emp-list__id">{{ e.id }}{{ e.source === 'v1_catalog' ? ' · 仅目录' : '' }}</span>
+            </button>
+            <button
+              v-if="isAdmin"
+              type="button"
+              class="emp-list__action emp-list__action--danger"
+              title="从服务端删除该员工包"
+              :disabled="deletingId === e.id"
+              @click.stop="confirmDeleteEmployee(e)"
+            >
+              {{ deletingId === e.id ? '…' : '删除' }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="emp-list__action"
+              title="仅从本机列表隐藏"
+              @click.stop="hideLocally(e.id)"
+            >
+              隐藏
             </button>
           </li>
         </ul>
@@ -65,7 +85,47 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { api } from '../api'
+import { useAuthStore } from '../stores/auth'
+
+const auth = useAuthStore()
+const { isAdmin } = storeToRefs(auth)
+
+const HIDDEN_PKG_IDS_KEY = 'modstore_emp_chat_hidden_pkg_ids'
+
+function readHiddenPkgIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(HIDDEN_PKG_IDS_KEY)
+    const arr = raw ? (JSON.parse(raw) as unknown) : []
+    if (!Array.isArray(arr)) return new Set()
+    return new Set(arr.filter((x): x is string => typeof x === 'string'))
+  } catch {
+    return new Set()
+  }
+}
+
+const hiddenPkgIds = ref<Set<string>>(readHiddenPkgIds())
+const deletingId = ref('')
+
+function persistHiddenPkgIds() {
+  localStorage.setItem(HIDDEN_PKG_IDS_KEY, JSON.stringify([...hiddenPkgIds.value]))
+}
+
+function hideLocally(pkgId: string) {
+  hiddenPkgIds.value = new Set([...hiddenPkgIds.value, pkgId])
+  persistHiddenPkgIds()
+  if (selectedId.value === pkgId) {
+    selectedId.value = ''
+    messages.value = []
+    sendError.value = ''
+  }
+}
+
+function clearHiddenPkgIds() {
+  hiddenPkgIds.value = new Set()
+  persistHiddenPkgIds()
+}
 
 withDefaults(
   defineProps<{
@@ -75,10 +135,10 @@ withDefaults(
   { embedded: false },
 )
 
-type EmployeeRow = { id: string; name?: string; source?: 'executor' | 'v1_catalog' }
+type EmployeeRow = { id: string; name?: string; source?: 'catalog' | 'v1_catalog' }
 
 const employees = ref<EmployeeRow[]>([])
-const v1PackagesSeen = ref(false)
+const visibleEmployees = computed(() => employees.value.filter((e) => !hiddenPkgIds.value.has(e.id)))
 const hasV1OnlyEmployees = computed(() => employees.value.some((e) => e.source === 'v1_catalog'))
 const selectedId = ref('')
 const messages = ref<{ role: 'user' | 'assistant'; text: string }[]>([])
@@ -94,6 +154,29 @@ function selectEmployee(id: string) {
   sendError.value = ''
 }
 
+async function confirmDeleteEmployee(e: EmployeeRow) {
+  if (!isAdmin.value) return
+  const label = e.name || e.id
+  const ok = window.confirm(`确定删除员工包「${label}」（${e.id}）？将从目录与数据库移除，不可恢复。`)
+  if (!ok) return
+  deletingId.value = e.id
+  listError.value = ''
+  try {
+    await api.adminDeleteEmployeePack(e.id)
+    hiddenPkgIds.value.delete(e.id)
+    persistHiddenPkgIds()
+    if (selectedId.value === e.id) {
+      selectedId.value = ''
+      messages.value = []
+    }
+    await loadEmployees()
+  } catch (err: unknown) {
+    listError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    deletingId.value = ''
+  }
+}
+
 function extractAssistantText(res: unknown): string {
   const r = res as Record<string, unknown> | null
   const result = r?.result as Record<string, unknown> | undefined
@@ -107,42 +190,25 @@ function extractAssistantText(res: unknown): string {
 async function loadEmployees() {
   listError.value = ''
   loadingList.value = true
-  v1PackagesSeen.value = false
   try {
-    const idsFromApi = new Set<string>()
-    let sqlRows: EmployeeRow[] = []
-    try {
-      const rows = await api.listEmployees()
-      sqlRows = Array.isArray(rows) ? (rows as EmployeeRow[]) : []
-      sqlRows.forEach((e) => idsFromApi.add(e.id))
-    } catch (e: unknown) {
-      listError.value = e instanceof Error ? e.message : String(e)
+    const rows = await api.listEmployees()
+    if (!Array.isArray(rows)) {
+      employees.value = []
+      return
     }
-    const merged: EmployeeRow[] = sqlRows.map((e) => ({ ...e, source: 'executor' as const }))
-    try {
-      const r = await api.listV1Packages('employee_pack', '', 120, 0)
-      const pkgs = r?.packages || []
-      v1PackagesSeen.value = pkgs.length > 0
-      for (const p of pkgs) {
-        const id = String((p as { id?: unknown }).id || '').trim()
-        if (!id || idsFromApi.has(id)) continue
-        idsFromApi.add(id)
-        merged.push({
-          id,
-          name: String((p as { name?: unknown }).name || id),
-          source: 'v1_catalog',
-        })
+    employees.value = (rows as Record<string, unknown>[]).map((e) => {
+      const id = String(e.id ?? '').trim()
+      const rawSrc = e.source
+      const source: EmployeeRow['source'] = rawSrc === 'v1_catalog' ? 'v1_catalog' : 'catalog'
+      return {
+        id,
+        name: typeof e.name === 'string' ? e.name : undefined,
+        source,
       }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      if (!merged.length) {
-        const hint = `本地包目录请求失败（GET /v1/packages）：${msg}`
-        listError.value = listError.value
-          ? `${listError.value}；${hint}`
-          : `${hint}。若使用外层 Nginx，请增加 location /v1/ 反代至 Python API（见 MODstore_deploy/docs/nginx-https-example.conf）。`
-      }
-    }
-    employees.value = merged
+    })
+  } catch (e: unknown) {
+    listError.value = e instanceof Error ? e.message : String(e)
+    employees.value = []
   } finally {
     loadingList.value = false
   }
@@ -259,8 +325,15 @@ onMounted(() => {
   flex-direction: column;
   gap: 0.35rem;
 }
+.emp-list__row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+  min-width: 0;
+}
 .emp-list__btn {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   text-align: left;
   padding: 0.5rem 0.6rem;
   border-radius: 8px;
@@ -268,6 +341,32 @@ onMounted(() => {
   background: rgba(0, 0, 0, 0.25);
   color: inherit;
   cursor: pointer;
+}
+.emp-list__action {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+}
+.emp-list__action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+.emp-list__action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.emp-list__action--danger {
+  border-color: rgba(248, 113, 113, 0.35);
+  color: #fca5a5;
+}
+.emp-list__action--danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.15);
 }
 .emp-list__btn--active {
   border-color: rgba(99, 102, 241, 0.65);
@@ -349,6 +448,12 @@ onMounted(() => {
 .emp-btn--ghost {
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.88);
+}
+.emp-btn--inline {
+  margin-left: 0.35rem;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.82rem;
+  vertical-align: baseline;
 }
 .emp-muted {
   color: rgba(255, 255, 255, 0.45);

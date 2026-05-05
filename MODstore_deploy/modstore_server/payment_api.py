@@ -27,9 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-import importlib
 from modstore_server import alipay_service
-importlib.reload(alipay_service)
 from modstore_server.application.payment_gateway import PaymentGatewayService, java_payment_unreachable_message
 from modstore_server import payment_orders
 from modstore_server import cache
@@ -51,47 +49,13 @@ from modstore_server.models import (
     init_db,
 )
 from modstore_server.api.deps import _get_current_user
-
-# 防重放攻击的时间窗口（秒）
-REPLAY_WINDOW = 300
-
-# 存储已处理的请求ID，防止重放
-processed_requests = set()
-
-
-def generate_signature(data: dict, secret: str) -> str:
-    """生成请求签名（``data`` 的 value 须为字符串，与前端 canonical 一致）。"""
-    sorted_keys = sorted(data.keys())
-    sign_string = '&'.join([f"{k}={data[k]}" for k in sorted_keys])
-    sign_string += secret
-    return hashlib.sha256(sign_string.encode('utf-8')).hexdigest()
-
-
-def verify_signature(data: dict, secret: str, signature: str) -> bool:
-    """验证请求签名"""
-    return generate_signature(data, secret) == signature
-
-
-def check_replay_attack(request_id: str, timestamp: int) -> bool:
-    """检查是否为重放攻击"""
-    # 检查时间戳是否在有效窗口内
-    current_time = int(time.time())
-    if abs(current_time - timestamp) > REPLAY_WINDOW:
-        return True
-    
-    # 检查请求ID是否已处理过
-    if request_id in processed_requests:
-        return True
-    
-    # 添加到已处理集合
-    processed_requests.add(request_id)
-    
-    # 清理过期的请求ID（每100次检查清理一次）
-    if len(processed_requests) % 100 == 0:
-        # 这里可以添加清理逻辑
-        pass
-    
-    return False
+from modstore_server.payment_common import (
+    REPLAY_WINDOW,
+    check_replay_attack,
+    generate_signature,
+    processed_requests,
+    verify_signature,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/payment", tags=["payment"])
@@ -396,8 +360,9 @@ def _checkout_return_url(request: Request, out_trade_no: str) -> str | None:
 def _fulfill_paid_order(out_trade_no: str) -> None:
     """支付成功后幂等入账（钱包 / 套餐 / 市场商品）。
 
-    ``PAYMENT_BACKEND=java`` 时 Java 拥有履约权（通过事件 + DB 事务），本地仅记录警告
-    并直接返回，避免与 Java 重复扣减/赠送权益。
+    Phase A：``PAYMENT_BACKEND=java`` 时 Java 拥有履约权（通过事件 + DB 事务），
+    本函数直接返回。Python 侧履约逻辑已移除，待 Java 稳定 6 个月后（Phase C）
+    删除本函数及其调用点。
     """
     if not payment_orders.is_local_source_of_truth():
         logger.warning(
@@ -405,277 +370,12 @@ def _fulfill_paid_order(out_trade_no: str) -> None:
             out_trade_no,
         )
         return
-    order = payment_orders.find(out_trade_no)
-    if not order or order.get("status") != "paid":
-        return
-    if order.get("fulfilled"):
-        return
-
-    user_id = int(order.get("user_id") or 0)
-    if not user_id:
-        logger.error(
-            "订单 %s 已支付但 user_id=0，无法发放权益；不标记 fulfilled，请补全订单用户后重试 query/补单",
-            out_trade_no,
-        )
-        return
-
-    try:
-        total_amount = float(order.get("total_amount") or 0)
-    except (TypeError, ValueError):
-        logger.warning("订单金额异常: %s", out_trade_no)
-        return
-
-    item_id = int(order.get("item_id") or 0)
-    plan_id = (order.get("plan_id") or "").strip()
-    kind = (order.get("order_kind") or "").strip()
-
-    if item_id:
-        desc = f"商品购买 ({out_trade_no})"
-        txn_type = "item_purchase"
-    elif kind == "wallet":
-        desc = f"钱包充值 (订单 {out_trade_no})"
-        txn_type = "alipay_wallet"
-    elif plan_id or kind == "plan":
-        desc = f"套餐「{order.get('subject', '')}」({out_trade_no})"
-        txn_type = "plan_purchase"
-    else:
-        desc = f"支付宝入账 ({out_trade_no})"
-        txn_type = "alipay_recharge"
-
-    sf = get_session_factory()
-    with sf() as session:
-        try:
-            # 幂等：避免异步重复回调或「DB 已入账但本地订单未标 fulfilled」时的重复发放
-            if item_id:
-                exists_ent = (
-                    session.query(Entitlement)
-                    .filter(Entitlement.source_order_id == out_trade_no)
-                    .first()
-                )
-                if exists_ent:
-                    payment_orders.merge_fields(out_trade_no, fulfilled=True)
-                    logger.info("商品订单权益已存在，幂等跳过: %s", out_trade_no)
-                    return
-            elif plan_id or kind == "plan":
-                exists_plan = (
-                    session.query(Entitlement)
-                    .filter(
-                        Entitlement.source_order_id == out_trade_no,
-                        Entitlement.entitlement_type == "plan",
-                    )
-                    .first()
-                )
-                if exists_plan:
-                    payment_orders.merge_fields(out_trade_no, fulfilled=True)
-                    logger.info("套餐权益已存在，幂等跳过: %s", out_trade_no)
-                    return
-            else:
-                txn_marker = f"({out_trade_no})"
-                dup_wallet = (
-                    session.query(Transaction)
-                    .filter(
-                        Transaction.user_id == user_id,
-                        Transaction.description.contains(txn_marker),
-                    )
-                    .first()
-                )
-                if dup_wallet:
-                    payment_orders.merge_fields(out_trade_no, fulfilled=True)
-                    logger.info("钱包/充值流水已存在，幂等跳过: %s", out_trade_no)
-                    return
-
-            # 开始事务
-            now = datetime.now(timezone.utc)
-            if item_id:
-                item = session.query(CatalogItem).filter(CatalogItem.id == item_id).first()
-                if item:
-                    exists = session.query(Purchase).filter(
-                        Purchase.user_id == user_id, Purchase.catalog_id == item_id
-                    ).first()
-                    if not exists:
-                        session.add(Purchase(user_id=user_id, catalog_id=item_id, amount=total_amount))
-                    ent_type = "employee" if (item.artifact or "") == "employee_pack" else "mod"
-                    session.add(
-                        Entitlement(
-                            user_id=user_id,
-                            catalog_id=item_id,
-                            entitlement_type=ent_type,
-                            source_order_id=out_trade_no,
-                            metadata_json='{"source":"payment"}',
-                            granted_at=now,
-                            is_active=True,
-                        )
-                    )
-                    if ent_type == "employee":
-                        q = session.query(Quota).filter(
-                            Quota.user_id == user_id, Quota.quota_type == "employee_count"
-                        ).first()
-                        if not q:
-                            q = Quota(user_id=user_id, quota_type="employee_count", total=1, used=0)
-                        else:
-                            q.total = int(q.total or 0) + 1
-                        session.add(q)
-            elif plan_id or kind == "plan":
-                plan = session.query(PlanTemplate).filter(PlanTemplate.id == plan_id).first()
-                if plan:
-                    session.query(UserPlan).filter(
-                        UserPlan.user_id == user_id, UserPlan.is_active == True
-                    ).update({"is_active": False})
-                    expires = now + timedelta(days=30)
-                    session.add(
-                        UserPlan(
-                            user_id=user_id,
-                            plan_id=plan.id,
-                            started_at=now,
-                            expires_at=expires,
-                            is_active=True,
-                        )
-                    )
-                    session.add(
-                        Entitlement(
-                            user_id=user_id,
-                            catalog_id=None,
-                            entitlement_type="plan",
-                            source_order_id=out_trade_no,
-                            metadata_json=f'{{"plan_id":"{plan.id}"}}',
-                            granted_at=now,
-                            expires_at=expires,
-                            is_active=True,
-                        )
-                    )
-                    quotas = _plan_quotas(plan)
-                    for quota_type, total in quotas.items():
-                        row = session.query(Quota).filter(
-                            Quota.user_id == user_id, Quota.quota_type == quota_type
-                        ).first()
-                        if not row:
-                            row = Quota(user_id=user_id, quota_type=quota_type, total=total, used=0)
-                        else:
-                            row.total = total
-                            row.used = 0
-                        row.reset_at = now + timedelta(days=30)
-                        session.add(row)
-                    # 与 java_payment_service 一致：按实付价四舍五入的整数元增加钱包（LLM 等按量消费）
-                    try:
-                        grant_yuan = int(
-                            Decimal(str(total_amount)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                        )
-                    except Exception:
-                        grant_yuan = int(round(float(total_amount or 0)))
-                    if grant_yuan > 0:
-                        w = (
-                            session.query(Wallet)
-                            .filter(Wallet.user_id == user_id)
-                            .with_for_update()
-                            .first()
-                        )
-                        if not w:
-                            w = Wallet(user_id=user_id, balance=0.0)
-                            session.add(w)
-                            session.flush()
-                        w.balance = float(w.balance or 0) + float(grant_yuan)
-                        w.updated_at = now
-                        session.add(
-                            Transaction(
-                                user_id=user_id,
-                                amount=float(grant_yuan),
-                                txn_type="plan_membership_tokens",
-                                status="completed",
-                                description=f"会员随单：按实付价取整的 LLM 可用余额(元) ({out_trade_no})",
-                            )
-                        )
-            else:
-                wallet = (
-                    session.query(Wallet)
-                    .filter(Wallet.user_id == user_id)
-                    .with_for_update()
-                    .first()
-                )
-                if not wallet:
-                    wallet = Wallet(user_id=user_id, balance=0.0)
-                    session.add(wallet)
-                    session.flush()
-                wallet.balance += total_amount
-                wallet.updated_at = now
-                session.add(
-                    Transaction(
-                        user_id=user_id,
-                        amount=total_amount,
-                        txn_type=txn_type,
-                        status="completed",
-                        description=desc,
-                    )
-                )
-            try:
-                xp_added = account_level_service.apply_order_xp(
-                    session,
-                    user_id=user_id,
-                    out_trade_no=out_trade_no,
-                    amount_yuan=total_amount,
-                    order_kind=kind,
-                    item_id=item_id,
-                    plan_id=plan_id,
-                    description=f"订单消费经验 ({out_trade_no})",
-                )
-                if xp_added:
-                    logger.info(
-                        "账号经验 +%s user=%s order=%s amount=%s",
-                        xp_added,
-                        user_id,
-                        out_trade_no,
-                        total_amount,
-                    )
-            except Exception:
-                logger.exception("订单经验入账失败 (不影响履约): %s", out_trade_no)
-
-            # 事务内入 outbox：业务写 + 事件入队同一 commit，避免「履约成功但事件丢失」或「事件已发但履约回滚」
-            # 通知由 ``eventing.subscribers._on_payment_paid`` 订阅 ``payment.paid`` 后异步处理。
-            webhook_dispatcher.enqueue_event(
-                session,
-                PAYMENT_PAID,
-                out_trade_no,
-                {
-                    "out_trade_no": out_trade_no,
-                    "trade_no": order.get("trade_no"),
-                    "buyer_id": order.get("buyer_id"),
-                    "user_id": user_id,
-                    "subject": order.get("subject"),
-                    "total_amount": order.get("total_amount"),
-                    "order_kind": kind,
-                    "item_id": item_id,
-                    "plan_id": plan_id,
-                    "paid_at": order.get("paid_at"),
-                },
-            )
-            if kind == "wallet":
-                webhook_dispatcher.enqueue_event(
-                    session,
-                    WALLET_BALANCE_CHANGED,
-                    str(user_id),
-                    {
-                        "user_id": user_id,
-                        "amount": total_amount,
-                        "source_order_id": out_trade_no,
-                        "transaction_type": txn_type,
-                    },
-                )
-            session.commit()
-
-            # commit 成功后再标记订单已发放并发出本地 NeuroBus 事件，
-            # OutboxDispatcherWorker 会负责把 outbox 行 drain 到外部 webhook。
-            payment_orders.merge_fields(out_trade_no, fulfilled=True)
-            logger.info("订单权益已发放: %s user=%s amount=%s", out_trade_no, user_id, total_amount)
-            try:
-                from modstore_server.modstore_xcagi_deploy import try_auto_deploy_after_purchase
-
-                try_auto_deploy_after_purchase(item_id=item_id, order_kind=kind or "")
-            except Exception:
-                logger.debug("购买后自动部署 XCAGI 跳过或失败", exc_info=True)
-        except Exception as e:
-            # 回滚事务
-            session.rollback()
-            logger.error("发放权益异常: %s, 订单 %s", e, out_trade_no)
-            # 不标记为已发放，允许下次重试
+    # Phase C（Java 稳定后）: 删除以下 Python 履约路径及整个函数
+    logger.error(
+        "_fulfill_paid_order called in Python mode for %s — "
+        "this path is deprecated; set PAYMENT_BACKEND=java to route via Java.",
+        out_trade_no,
+    )
 
 
 # ── 套餐列表 ─────────────────────────────────────────────────
@@ -853,6 +553,16 @@ async def api_payment_checkout(
         if java_response is not None:
             return java_response
 
+        # Phase A: Python Alipay 下单路径已进入弃用状态。
+        # 生产环境应设置 PAYMENT_BACKEND=java；中间件会在到达此处前完成代理。
+        # 若到达此处说明 PAYMENT_BACKEND != java，仅允许本地开发。
+        if not payment_orders.is_local_source_of_truth():
+            raise HTTPException(
+                503,
+                "支付路由配置错误：PAYMENT_BACKEND=java 时请求应由中间件代理到 Java，"
+                "未预期到达 Python checkout 路径。请检查中间件配置。",
+            )
+
         user_id = user.id
 
         if not alipay_service.alipay_ui_ready():
@@ -995,12 +705,14 @@ async def api_payment_notify_alipay(request: Request):
 
 
 @router.get("/query/{out_trade_no}")
-def api_payment_query(out_trade_no: str):
-    """查询本地订单状态，同时调用支付宝接口确认。"""
+def api_payment_query(out_trade_no: str, user: User = Depends(_get_current_user)):
+    """查询本地订单状态，同时调用支付宝接口确认。登录用户只能查询自己的订单；管理员可查任意订单。"""
     try:
         order = payment_orders.find(out_trade_no)
         if not order:
             raise HTTPException(404, "订单不存在")
+        if not user.is_admin and str(order.get("user_id", "")) != str(user.id):
+            raise HTTPException(403, "无权查看该订单")
 
         # 如果本地状态为 pending，尝试调用支付宝确认
         if order.get("status") == "pending":
@@ -1067,6 +779,26 @@ def api_payment_list_orders(
     except Exception as e:
         logger.error("查询订单列表异常: %s", e)
         raise HTTPException(500, "系统内部错误，请稍后重试")
+
+
+@router.post("/orders/dismiss-non-active")
+def api_payment_dismiss_non_active_orders(user: User = Depends(_get_current_user)):
+    """将当前用户所有「非活跃」（closed / expired / refunded）订单标记为已读/隐藏。
+    前端 paymentDismissNonActiveOrders 消费此接口。
+    """
+    try:
+        rows, _ = payment_orders.list_orders(user_id=user.id, status=None, limit=500, offset=0)
+        dismissed = 0
+        for o in rows:
+            if (o.get("status") or "").lower() in ("closed", "expired", "refunded", "cancelled"):
+                ono = o.get("out_trade_no") or o.get("order_no") or ""
+                if ono:
+                    payment_orders.merge_fields(ono, dismissed=True)
+                    dismissed += 1
+        return {"ok": True, "dismissed": dismissed}
+    except Exception as e:
+        logger.error("dismiss-non-active 异常: %s", e)
+        raise HTTPException(500, "系统内部错误")
 
 
 @router.post("/cancel/{order_no}")
@@ -1160,6 +892,11 @@ def api_usage_metrics(user: User = Depends(_get_current_user)):
 class RefundDTO(BaseModel):
     out_trade_no: str
     reason: str = "用户申请退款"
+    refund_reason: Optional[str] = Field(
+        None,
+        description="结构化退款原因（用于风控/对账归档）。空时取 reason 兜底。",
+        max_length=256,
+    )
 
 
 @router.post("/refund")
@@ -1187,7 +924,22 @@ def api_payment_refund(body: RefundDTO, user: User = Depends(_get_current_user))
             wallet = Wallet(user_id=user_id, balance=0.0)
             session.add(wallet)
             session.flush()
-        wallet.balance -= amount
+        # 按订单类型决定是否调整钱包余额：
+        #   wallet  — 充值退款，需从余额扣回（余额必须充足，否则拒绝）
+        #   plan    — 套餐退款，同步收回已发放的 LLM 余额（向下取 0，不允许负数）
+        #   item    — 市场商品通过支付宝退款，钱包余额无需变动
+        kind = (order.get("kind") or "").strip()
+        if kind == "wallet":
+            current = float(wallet.balance or 0)
+            if current < amount:
+                raise HTTPException(
+                    400,
+                    f"钱包余额（{current:.2f}）不足以退款（{amount:.2f}），请先检查账户",
+                )
+            wallet.balance = current - amount
+        elif kind == "plan":
+            wallet.balance = max(0.0, float(wallet.balance or 0) - amount)
+        # else: item/其他 — 支付宝渠道退款，不动钱包余额
         session.add(
             Transaction(
                 user_id=user_id,

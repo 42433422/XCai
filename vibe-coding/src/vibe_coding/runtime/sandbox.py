@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import traceback
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from typing import Any
+
+# Why prefer ``fork`` on POSIX: Python 3.12 spawn workers occasionally hit
+# ``SystemError: <built-in function compile> returned NULL without setting an
+# exception`` when ``compile()`` is called on a fresh interpreter. The bug is
+# fixed in 3.12.7+ but production hosts often lag. ``fork`` doesn't touch
+# this code path. Windows has no fork so it falls back to ``spawn``.
+_DEFAULT_CTX_NAME = "fork" if os.name == "posix" else "spawn"
 
 from .._internals.code_models import CodeSandboxResult
 
@@ -140,6 +148,39 @@ def _limit_memory_mb(max_mb: int) -> None:
         pass
 
 
+def _isolate_worker_process(max_mem_mb: int) -> None:
+    """Lock down the child process before user code runs.
+
+    Three quick wins:
+
+    1. Move into a fresh temp dir so accidental ``open(path)`` calls land
+       in throwaway storage instead of the project root.
+    2. Close stdin so ``input()`` raises immediately rather than hanging.
+    3. Apply the RLIMIT_AS memory cap (best-effort; POSIX only).
+
+    All steps are wrapped in ``try`` because any failure here would
+    abort the worker entirely; for cross-platform portability we'd
+    rather forge ahead than crash on Windows.
+    """
+    try:
+        import tempfile
+
+        sandbox_cwd = tempfile.mkdtemp(prefix="vibe-fnsbx-")
+        os.chdir(sandbox_cwd)
+    except Exception:
+        pass
+    try:
+        if hasattr(os, "devnull"):
+            devnull_fd = os.open(os.devnull, os.O_RDONLY)
+            try:
+                os.dup2(devnull_fd, 0)
+            finally:
+                os.close(devnull_fd)
+    except Exception:
+        pass
+    _limit_memory_mb(max_mem_mb)
+
+
 def _sandbox_worker_entry(payload: dict[str, Any]) -> dict[str, Any]:
     """Runs inside child process; must stay picklable at module level."""
     import json as _json
@@ -150,12 +191,20 @@ def _sandbox_worker_entry(payload: dict[str, Any]) -> dict[str, Any]:
     input_data = dict(payload.get("input_data") or {})
     max_mem = int(payload.get("max_memory_mb") or 128)
 
-    _limit_memory_mb(max_mem)
+    _isolate_worker_process(max_mem)
 
     try:
         safe_builtins = _build_safe_builtins()
         ns: dict[str, Any] = {"__builtins__": safe_builtins}
-        exec(compile(source, "<sandbox>", "exec"), ns, ns)
+        # Compile separately so we can fall back to ``exec(source, ns)`` if
+        # the explicit ``compile()`` hits the Python 3.12 spawn-context
+        # SystemError ("compile returned NULL without setting an exception").
+        # That bug is fixed in 3.12.7+ but production hosts often lag.
+        try:
+            code_obj = compile(source, "<sandbox>", "exec")
+            exec(code_obj, ns, ns)
+        except SystemError:
+            exec(source, ns, ns)
         fn = ns.get(fn_name)
         if not callable(fn):
             return {
@@ -271,7 +320,7 @@ class CodeSandbox:
                 traceback_str="",
             )
 
-        ctx = get_context("spawn")
+        ctx = get_context(_DEFAULT_CTX_NAME)
         parent_conn, child_conn = ctx.Pipe(duplex=False)
         payload: dict[str, Any] = {
             "source_code": source_code,

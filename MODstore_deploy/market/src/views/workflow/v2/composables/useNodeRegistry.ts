@@ -7,46 +7,13 @@
  *
  * 任何新增节点类型都应在此处登记 metadata + 属性字段 schema，
  * 编辑器不需要为每种节点单独写 Vue 组件。
+ *
+ * 纯类型定义（NodeKind / NodeCategory / FieldSchema / NodeMeta）已迁移至
+ * `domain/workflow/nodeKinds.ts`，此处重新导出保持向后兼容。
  */
 
-export type NodeKind =
-  | 'start'
-  | 'end'
-  | 'employee'
-  | 'condition'
-  | 'openapi_operation'
-  | 'knowledge_search'
-  | 'webhook_trigger'
-  | 'cron_trigger'
-  | 'variable_set'
-  | 'eskill'
-
-export type NodeCategory = 'flow' | 'employee' | 'logic' | 'integration' | 'trigger' | 'data'
-
-export interface FieldSchema {
-  key: string
-  label: string
-  type: 'text' | 'textarea' | 'number' | 'switch' | 'select' | 'json' | 'employee-picker' | 'eskill-picker'
-  placeholder?: string
-  helper?: string
-  options?: { label: string; value: string | number | boolean }[]
-  required?: boolean
-}
-
-export interface NodeMeta {
-  kind: NodeKind
-  label: string
-  category: NodeCategory
-  description: string
-  accent: string
-  icon: string
-  hasInput: boolean
-  hasOutput: boolean
-  /** condition 节点用 true/false 两个出 handle，其它默认单出 */
-  branchOutputs?: boolean
-  defaultConfig: Record<string, unknown>
-  fields: FieldSchema[]
-}
+export type { NodeKind, NodeCategory, FieldSchema, NodeMeta } from '../../../../domain/workflow/nodeKinds'
+import type { NodeKind, NodeCategory, NodeMeta } from '../../../../domain/workflow/nodeKinds'
 
 const REGISTRY: Record<NodeKind, NodeMeta> = {
   start: {
@@ -244,6 +211,83 @@ const REGISTRY: Record<NodeKind, NodeMeta> = {
     fields: [
       { key: 'name', label: '变量名', type: 'text', required: true },
       { key: 'value', label: '值（支持 {{ var }} 模板）', type: 'textarea' },
+    ],
+  },
+  vibe_skill: {
+    kind: 'vibe_skill',
+    label: 'AI 代码技能 (vibe)',
+    category: 'employee',
+    description: 'NL → CodeSkill：vibe-coding 生成 Python 函数并按 input 跑一次',
+    accent: '#f97316',
+    icon: '✨',
+    hasInput: true,
+    hasOutput: true,
+    defaultConfig: {
+      brief: '',
+      skill_id: '',
+      mode: 'brief_first',
+      run_immediately: true,
+      output_var: 'vibe_result',
+      provider: '',
+      model: '',
+    },
+    fields: [
+      {
+        key: 'brief',
+        label: '需求 brief',
+        type: 'textarea',
+        required: true,
+        placeholder: '例：把字符串反转 / 解析 csv 并求和 / 把 input.text 翻成英文',
+        helper: '会调用 vibe-coding 的 NLCodeSkillFactory(brief_first) 生成代码并自带沙箱校验',
+      },
+      {
+        key: 'skill_id',
+        label: '技能 ID（可选，留空则按 vc-<random>）',
+        type: 'text',
+        helper: '同名 skill_id 可在多次执行间复用 PatchLedger',
+      },
+      {
+        key: 'mode',
+        label: '生成模式',
+        type: 'select',
+        options: [
+          { label: 'brief-first（先约束后写代码，推荐）', value: 'brief_first' },
+          { label: 'direct（直接生成）', value: 'direct' },
+        ],
+      },
+      { key: 'run_immediately', label: '立即用 input 跑一次', type: 'switch' },
+      { key: 'output_var', label: '输出变量名', type: 'text' },
+      { key: 'provider', label: 'LLM provider 覆盖（可选）', type: 'text' },
+      { key: 'model', label: 'LLM model 覆盖（可选）', type: 'text' },
+    ],
+  },
+  vibe_workflow: {
+    kind: 'vibe_workflow',
+    label: 'AI 子工作流 (vibe)',
+    category: 'employee',
+    description: 'NL → VibeWorkflowGraph：让 vibe-coding 自动拆成多技能小图后执行',
+    accent: '#fb923c',
+    icon: '🌀',
+    hasInput: true,
+    hasOutput: true,
+    defaultConfig: {
+      brief: '',
+      output_var: 'vibe_workflow_result',
+      provider: '',
+      model: '',
+    },
+    fields: [
+      {
+        key: 'brief',
+        label: '子工作流 brief',
+        type: 'textarea',
+        required: true,
+        placeholder: '例：先抓页面、再抽人物列表、再写一段 markdown 总结',
+        helper: '会调用 vibe_coding.NLWorkflowFactory，再交给 VibeWorkflowEngine 执行',
+      },
+      { key: 'output_var', label: '输出变量名', type: 'text' },
+      { key: 'provider', label: 'LLM provider 覆盖（可选）', type: 'text' },
+      { key: 'model', label: 'LLM model 覆盖（可选）', type: 'text' },
     ],
   },
 }

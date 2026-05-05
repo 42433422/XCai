@@ -1,5 +1,14 @@
 import { requestJson, fetchZipBlob, requestBlob } from './infrastructure/http/client'
 import { clearAuthTokens, getAccessToken, setAuthTokens } from './infrastructure/storage/tokenStore'
+import type {
+  PaymentCheckoutBody,
+  PaymentCheckoutInput,
+  PaymentCheckoutResponse,
+  PaymentSignResponse,
+  RefundApplyResponse,
+  WorkflowSandboxRequest,
+  WorkflowSandboxResponse,
+} from './types/api'
 
 const req = requestJson
 
@@ -21,7 +30,7 @@ async function authRequest(path: string, init: RequestInit = {}) {
   return req(path, init)
 }
 
-export const api: any = {
+export const api = {
   register: async (username: string, password: string, email: string, verificationCode = '') => {
     const res = await authRequest('/api/auth/register', {
       method: 'POST',
@@ -111,8 +120,8 @@ export const api: any = {
   paymentCancelOrder: (orderNo: string) => req(`/api/payment/cancel/${encodeURIComponent(orderNo)}`, { method: 'POST', body: '{}' }),
   paymentDiagnostics: () => req('/api/payment/diagnostics'),
   paymentEntitlements: () => req('/api/payment/entitlements'),
-  paymentCheckout: async (data: any) => {
-    const sign: any = await req('/api/payment/sign-checkout', {
+  paymentCheckout: async (data: PaymentCheckoutInput): Promise<PaymentCheckoutResponse> => {
+    const sign = (await req('/api/payment/sign-checkout', {
       method: 'POST',
       body: JSON.stringify({
         plan_id: data?.plan_id ?? '',
@@ -121,8 +130,8 @@ export const api: any = {
         subject: data?.subject ?? '',
         wallet_recharge: Boolean(data?.wallet_recharge),
       }),
-    })
-    const checkoutBody: any = {
+    })) as PaymentSignResponse
+    const checkoutBody: PaymentCheckoutBody = {
       plan_id: sign.plan_id ?? '',
       item_id: sign.item_id ?? 0,
       total_amount: sign.total_amount ?? 0,
@@ -134,10 +143,10 @@ export const api: any = {
     }
     if (data?.pay_channel) checkoutBody.pay_channel = data.pay_channel
     if (data?.pay_type) checkoutBody.pay_type = data.pay_type
-    const checkout: any = await req('/api/payment/checkout', {
+    const checkout = (await req('/api/payment/checkout', {
       method: 'POST',
       body: JSON.stringify(checkoutBody),
-    })
+    })) as PaymentCheckoutResponse
     if (checkout?.ok === false) {
       return checkout
     }
@@ -163,8 +172,8 @@ export const api: any = {
     return checkout
   },
 
-  refundsApply: async (orderNo: string, reason: string) => {
-    const res: any = await req('/api/refunds/apply', { method: 'POST', body: JSON.stringify({ order_no: orderNo, reason }) })
+  refundsApply: async (orderNo: string, reason: string): Promise<RefundApplyResponse> => {
+    const res = (await req('/api/refunds/apply', { method: 'POST', body: JSON.stringify({ order_no: orderNo, reason }) })) as RefundApplyResponse
     if (res?.ok === false) throw new Error(res.message || '退款申请失败')
     return res
   },
@@ -211,14 +220,16 @@ export const api: any = {
 
   adminStatus: () => req('/api/admin/status'),
   adminResearchSettings: () => req('/api/admin/research-settings'),
-  adminSaveResearchSettings: (data: any) =>
+  adminSaveResearchSettings: (data: Record<string, unknown>) =>
     req('/api/admin/research-settings', { method: 'PUT', body: JSON.stringify(data || {}) }),
   adminVectorSettings: () => req('/api/admin/vector-settings'),
-  adminSaveVectorSettings: (data: any) =>
+  adminSaveVectorSettings: (data: Record<string, unknown>) =>
     req('/api/admin/vector-settings', { method: 'PUT', body: JSON.stringify(data || {}) }),
   adminUpload: (formData: FormData) => req('/api/admin/catalog', { method: 'POST', body: formData }),
   adminListCatalog: (limit = 200, offset = 0) => req(`/api/admin/catalog?limit=${limit}&offset=${offset}`),
   adminDeleteCatalog: (id: string | number) => req(`/api/admin/catalog/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  adminDeleteEmployeePack: (pkgId: string) =>
+    req(`/api/admin/employee-packs/${encodeURIComponent(pkgId)}`, { method: 'DELETE' }),
   adminListCatalogComplaints: (status = '', limit = 50, offset = 0) => {
     const p = new URLSearchParams({ limit: String(limit), offset: String(offset) })
     if (status) p.set('status', status)
@@ -326,10 +337,11 @@ export const api: any = {
     return req('/api/package-audit', { method: 'POST', body: fd })
   },
 
-  listV1Packages: (artifact = '', q = '', limit = 50, offset = 0) => {
+  listV1Packages: (artifact = '', q = '', limit = 50, offset = 0, cacheBust = false) => {
     const p = new URLSearchParams({ limit: String(limit), offset: String(offset) })
     if (artifact) p.set('artifact', artifact)
     if (q) p.set('q', q)
+    if (cacheBust) p.set('_', String(Date.now()))
     return req(`/v1/packages?${p}`)
   },
   listCatalogPackageVersions: (pkgId: string) => req(`/v1/packages/by-id/${encodeURIComponent(pkgId)}/versions`),
@@ -342,7 +354,7 @@ export const api: any = {
     fd.append('file', file)
     return req('/v1/packages', { method: 'POST', body: fd, headers: catalogWriteHeaders() })
   },
-  registerWorkflowEmployeeCatalog: (modId: string, workflowIndex = 0, opts: any = {}) =>
+  registerWorkflowEmployeeCatalog: (modId: string, workflowIndex = 0, opts: { industry?: string; price?: number; release_channel?: string } = {}) =>
     req(`/api/mods/${encodeURIComponent(modId)}/register-workflow-employee-catalog`, {
       method: 'POST',
       body: JSON.stringify({ workflow_index: workflowIndex, industry: opts.industry || '通用', price: opts.price ?? 0, release_channel: opts.release_channel || 'stable' }),
@@ -355,7 +367,7 @@ export const api: any = {
   listScriptWorkflows: (status: string = '') =>
     req(`/api/script-workflows${status ? `?status=${encodeURIComponent(status)}` : ''}`),
   getScriptWorkflow: (id: number | string) => req(`/api/script-workflows/${id}`),
-  updateScriptWorkflow: (id: number | string, body: any) =>
+  updateScriptWorkflow: (id: number | string, body: Record<string, unknown>) =>
     req(`/api/script-workflows/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteScriptWorkflow: (id: number | string) =>
     req(`/api/script-workflows/${id}`, { method: 'DELETE' }),
@@ -387,7 +399,7 @@ export const api: any = {
   },
   listScriptWorkflowVersions: (id: number | string) =>
     req(`/api/script-workflows/${id}/versions`),
-  commitScriptWorkflowSession: (sid: string, body: { name: string; schema_in?: any }) =>
+  commitScriptWorkflowSession: (sid: string, body: { name: string; schema_in?: Record<string, unknown> }) =>
     req(`/api/script-workflows/sessions/${encodeURIComponent(sid)}/commit`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -415,7 +427,7 @@ export const api: any = {
   deleteWorkflowEdge: (edgeId: string | number) => req(`/api/workflow/edges/${edgeId}`, { method: 'DELETE' }),
   executeWorkflow: (workflowId: string | number, inputData = {}) => req(`/api/workflow/${workflowId}/execute`, { method: 'POST', body: JSON.stringify({ input_data: inputData }) }),
   workflowValidate: (workflowId: string | number) => req(`/api/workflow/${workflowId}/validate`),
-  workflowSandboxRun: (workflowId: string | number, payload: any) => req(`/api/workflow/${workflowId}/sandbox-run`, { method: 'POST', body: JSON.stringify(payload || {}) }),
+  workflowSandboxRun: (workflowId: string | number, payload: WorkflowSandboxRequest): Promise<WorkflowSandboxResponse> => req(`/api/workflow/${workflowId}/sandbox-run`, { method: 'POST', body: JSON.stringify(payload || {}) }),
   listWorkflowExecutions: (workflowId: string | number, limit = 50, offset = 0) => req(`/api/workflow/${workflowId}/executions?limit=${limit}&offset=${offset}`),
   listWorkflowTriggers: (workflowId: string | number) => req(`/api/workflow/${workflowId}/triggers`),
   createWorkflowTrigger: (workflowId: string | number, payload: unknown) => req(`/api/workflow/${workflowId}/triggers`, { method: 'POST', body: JSON.stringify(payload || {}) }),
@@ -557,7 +569,7 @@ export const api: any = {
   llmUsage: (limit = 50, offset = 0) => req(`/api/llm/usage?limit=${limit}&offset=${offset}`),
   llmConversations: (limit = 30, offset = 0) => req(`/api/llm/conversations?limit=${limit}&offset=${offset}`),
   llmConversationDetail: (id: string | number) => req(`/api/llm/conversations/${encodeURIComponent(String(id))}`),
-  llmAdminSavePrice: (data: any) => req('/api/llm/admin/pricing', { method: 'PUT', body: JSON.stringify(data || {}) }),
+  llmAdminSavePrice: (data: Record<string, unknown>) => req('/api/llm/admin/pricing', { method: 'PUT', body: JSON.stringify(data || {}) }),
   llmAdminModelCapabilities: (opts?: { provider?: string; q?: string; limit?: number }) => {
     const p = new URLSearchParams()
     if (opts?.provider) p.set('provider', opts.provider)
@@ -595,7 +607,7 @@ export const api: any = {
       body: JSON.stringify({ provider, model, messages, max_tokens: maxTokens, conversation_id: conversationId }),
     })
   },
-  llmGenerateImage: (provider: string, model: string, prompt: string, opts: any = {}) =>
+  llmGenerateImage: (provider: string, model: string, prompt: string, opts: { size?: string; count?: number; n?: number } = {}) =>
     req('/api/llm/image', {
       method: 'POST',
       body: JSON.stringify({

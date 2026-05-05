@@ -8,12 +8,16 @@ Differences from the upstream ``eskill.vibe_coding.facade.VibeCoder``:
   ``report()`` work identically.
 - ``config_skill()`` raises ``NotImplementedError``; install the upstream
   ``eskill`` package if you need it, or extend this facade.
+- ``index_project()`` / ``edit_project()`` / ``apply_patch()`` /
+  ``heal_project()`` are added in P0 of the agent upgrade and lazy-load the
+  :mod:`vibe_coding.agent` subpackage so legacy imports stay free of the
+  agent code.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._internals import CodeSkill, CodeSkillRun
 from .audit import PatchLedger, PatchRecord
@@ -28,6 +32,12 @@ from .runtime import (
 from .workflow_engine import VibeWorkflowEngine, WorkflowRunResult
 from .workflow_factory import NLWorkflowFactory, WorkflowGenerationReport
 from .workflow_models import VibeWorkflowGraph
+
+if TYPE_CHECKING:
+    from .agent.context import AgentContext
+    from .agent.patch import ApplyResult, ProjectPatch
+    from .agent.repo_index import RepoIndex
+    from .agent.coder import HealResult, ProjectVibeCoder
 
 
 class VibeCoder:
@@ -108,6 +118,123 @@ class VibeCoder:
 
     def list_code_skills(self) -> list[CodeSkill]:
         return self.code_store.list_code_skills()
+
+    # ------------------------------------------------------------------ agent
+
+    def project_coder(self, root: str | Path) -> "ProjectVibeCoder":
+        """Construct (or reuse) a :class:`ProjectVibeCoder` for ``root``.
+
+        Lazy-imports :mod:`vibe_coding.agent.coder` so legacy users never pay
+        the import cost. The same coder is cached per-root for the lifetime
+        of this :class:`VibeCoder` instance.
+        """
+        from .agent.coder import ProjectVibeCoder
+
+        cache: dict[str, ProjectVibeCoder] = self.__dict__.setdefault(
+            "_project_coders", {}
+        )
+        key = str(Path(root).resolve())
+        coder = cache.get(key)
+        if coder is None:
+            coder = ProjectVibeCoder(
+                llm=self.llm,
+                root=root,
+                store_dir=self.store_dir / "agent",
+            )
+            cache[key] = coder
+        return coder
+
+    def index_project(self, root: str | Path, *, refresh: bool = False) -> "RepoIndex":
+        """Build (or refresh) the :class:`RepoIndex` for ``root``."""
+        return self.project_coder(root).index_project(refresh=refresh)
+
+    def edit_project(
+        self,
+        brief: str,
+        *,
+        root: str | Path,
+        context: "AgentContext | None" = None,
+        focus_paths: list[str] | None = None,
+    ) -> "ProjectPatch":
+        return self.project_coder(root).edit_project(
+            brief, context=context, focus_paths=focus_paths
+        )
+
+    def apply_patch(
+        self,
+        patch: "ProjectPatch",
+        *,
+        root: str | Path,
+        dry_run: bool = False,
+    ) -> "ApplyResult":
+        return self.project_coder(root).apply_patch(patch, dry_run=dry_run)
+
+    def rollback_patch(self, patch_id: str, *, root: str | Path) -> bool:
+        return self.project_coder(root).rollback_patch(patch_id)
+
+    def heal_project(
+        self,
+        brief: str,
+        *,
+        root: str | Path,
+        context: "AgentContext | None" = None,
+        max_rounds: int = 3,
+        tool_runner: Any | None = None,
+    ) -> "HealResult":
+        return self.project_coder(root).heal_project(
+            brief,
+            context=context,
+            max_rounds=max_rounds,
+            tool_runner=tool_runner,
+        )
+
+    # ------------------------------------------------------------------ marketplace
+
+    def publish_skill(
+        self,
+        skill_id: str,
+        *,
+        base_url: str,
+        admin_token: str,
+        version: str = "",
+        name: str = "",
+        description: str = "",
+        price: float = 0.0,
+        artifact: str = "mod",
+        industry: str = "通用",
+        verify_ssl: bool = True,
+        dry_run: bool = False,
+    ) -> Any:
+        """Package the given skill and publish it to a MODstore deployment.
+
+        The publisher is lazy-loaded so users that never publish never
+        pay the import cost. A ``dry_run=True`` invocation still produces
+        the ``.xcmod`` zip on disk (handy to inspect / hand to ``modman``)
+        without contacting the network.
+        """
+        from .agent.marketplace import (
+            PublishOptions,
+            SkillPublisher,
+        )
+
+        try:
+            skill = self.code_store.get_code_skill(skill_id)
+        except KeyError as exc:
+            raise ValueError(f"unknown skill_id: {skill_id!r}") from exc
+        publisher = SkillPublisher.from_token(
+            base_url=base_url,
+            admin_token=admin_token,
+            verify_ssl=verify_ssl,
+        )
+        opts = PublishOptions(
+            version=version,
+            name=name or skill.skill_id,
+            description=description,
+            price=price,
+            artifact=artifact,
+            industry=industry,
+        )
+        return publisher.publish_skill(skill, options=opts, dry_run=dry_run)
 
 
 def _build_code_patch_generator(llm: LLMClient):

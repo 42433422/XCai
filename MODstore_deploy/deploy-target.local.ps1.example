@@ -1,0 +1,4 @@
+# 复制为 deploy-target.local.ps1 并填写（该文件已 gitignore，不会提交）
+$env:DEPLOY_SSH = 'root@你的服务器IP或域名'
+$env:DEPLOY_REMOTE_REPO = '/root/modstore-git'
+$env:DEPLOY_GIT_BRANCH = 'main'

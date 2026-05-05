@@ -10,7 +10,6 @@ trigger automatic patch + solidify).
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +19,7 @@ from .code_factory import NLCodeSkillFactory, VibeCodingError
 # removed: config-layer factory unavailable in standalone
 # from .config_factory import NLConfigSkillFactory
 from .nl.llm import LLMClient
+from .nl.parsing import JSONParseError, safe_parse_json_object
 from .nl.prompts import WORKFLOW_PROMPT
 from .workflow_models import (
     VibeWorkflowEdge,
@@ -39,26 +39,13 @@ def _slug(value: str, fallback: str = "workflow") -> str:
     return s or fallback
 
 
-def _strip_fence(text: str) -> str:
-    t = (text or "").strip()
-    if t.startswith("```"):
-        t = re.sub(r"^```(?:json)?\s*", "", t, flags=re.I)
-        t = re.sub(r"\s*```\s*$", "", t)
-    return t.strip()
-
-
 def _parse_json(raw: str) -> dict[str, Any]:
-    text = _strip_fence(raw)
+    """Tolerant JSON parser; shared pipeline lives in :mod:`vibe_coding.nl.parsing`."""
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        i, j = text.find("{"), text.rfind("}")
-        if i < 0 or j <= i:
-            raise VibeCodingError(f"workflow LLM did not return JSON: {text[:200]!r}")
-        data = json.loads(text[i : j + 1])
-    if not isinstance(data, dict):
-        raise VibeCodingError(f"workflow JSON is not an object: {type(data).__name__}")
-    return data
+        return safe_parse_json_object(raw)
+    except JSONParseError as exc:
+        snippet = exc.snippet or str(raw or "")[:200]
+        raise VibeCodingError(f"workflow LLM did not return JSON: {snippet!r}") from exc
 
 
 @dataclass(slots=True)

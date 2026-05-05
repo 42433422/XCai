@@ -78,3 +78,53 @@ def test_catalog_upload_with_token(monkeypatch, tmp_path: Path):
     idx = c.get("/v1/index.json").json()
     assert len(idx["packages"]) == 1
     assert idx["packages"][0]["id"] == "catalog-test-mod"
+
+
+def test_remove_package_deletes_json_and_file(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("MODSTORE_CATALOG_DIR", str(tmp_path))
+    from modstore_server.catalog_store import append_package, load_store, remove_package
+
+    stub = tmp_path / "src.zip"
+    stub.write_bytes(b"PK\x03\x04fake")
+    append_package(
+        {
+            "id": "emp-del-test",
+            "version": "1.0.0",
+            "name": "Del",
+            "artifact": "employee_pack",
+        },
+        stub,
+    )
+    data = load_store()
+    assert len(data["packages"]) == 1
+    fn = data["packages"][0].get("stored_filename")
+    assert fn
+    assert (tmp_path / "files" / str(fn)).is_file()
+
+    n = remove_package("emp-del-test", version=None)
+    assert n == 1
+    assert load_store()["packages"] == []
+    assert not (tmp_path / "files" / str(fn)).is_file()
+
+
+def test_remove_package_matches_int_id_in_json(monkeypatch, tmp_path: Path):
+    """packages.json 中 id 可能为数字，与 URL 中的字符串 pkg_id 应对齐。"""
+    monkeypatch.setenv("MODSTORE_CATALOG_DIR", str(tmp_path))
+    from modstore_server.catalog_store import load_store, remove_package, save_store
+
+    save_store(
+        {
+            "packages": [
+                {
+                    "id": 42,
+                    "version": "1.0.0",
+                    "name": "IntId",
+                    "artifact": "employee_pack",
+                }
+            ]
+        }
+    )
+    assert len(load_store()["packages"]) == 1
+    n = remove_package("42", version=None)
+    assert n == 1
+    assert load_store()["packages"] == []

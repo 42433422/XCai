@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import py_compile
 import tempfile
@@ -917,6 +918,8 @@ def write_mod_suite_blueprint(
     api_summary: Optional[Dict[str, Any]] = None,
     workflow_sandbox: Optional[Dict[str, Any]] = None,
     employee_readiness: Optional[Dict[str, Any]] = None,
+    vibe_index: Optional[Dict[str, Any]] = None,
+    vibe_heal: Optional[Dict[str, Any]] = None,
 ) -> None:
     data = dict(blueprint)
     if industry_card is not None:
@@ -929,6 +932,10 @@ def write_mod_suite_blueprint(
         data["workflow_sandbox"] = workflow_sandbox
     if employee_readiness is not None:
         data["employee_readiness"] = employee_readiness
+    if vibe_index is not None:
+        data["vibe_index"] = vibe_index
+    if vibe_heal is not None:
+        data["vibe_heal"] = vibe_heal
     (mod_dir / "config").mkdir(parents=True, exist_ok=True)
     (mod_dir / "config" / "ai_blueprint.json").write_text(
         _suite_blueprint_file(data, workflow_results),
@@ -993,10 +1000,15 @@ async def run_mod_suite_ai_scaffold_async(
     replace: bool = True,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    generate_frontend: bool = True,
+    enable_vibe_heal: bool = True,
 ) -> Dict[str, Any]:
     """
     文档/需求驱动的一体化 Mod 生成：manifest + ai_blueprint + 员工路由骨架，
     并为每个员工创建工作流后回写 workflow_id。
+
+    ``generate_frontend`` 之前是 NameError 导致仓库页 AI 脚手架直接挂；现在补默认。
+    ``enable_vibe_heal`` 控制是否在导入后调用 vibe-coding 的 ``heal_project`` 自愈一轮。
     """
     gen = await generate_mod_suite_blueprint_async(
         db,
@@ -1042,6 +1054,18 @@ async def run_mod_suite_ai_scaffold_async(
         "warnings": wf.get("api_warnings") or [],
     }
     employee_readiness = analyze_mod_employee_readiness(db, user, dest)
+    vibe_index_summary = (
+        await asyncio.to_thread(
+            _index_mod_with_vibe,
+            db,
+            user,
+            mod_dir=dest,
+            provider=gen.get("provider") or "",
+            model=gen.get("model") or "",
+        )
+        if enable_vibe_heal
+        else {"enabled": False}
+    )
     write_mod_suite_blueprint(
         dest,
         blueprint,
@@ -1051,12 +1075,14 @@ async def run_mod_suite_ai_scaffold_async(
         api_summary=api_summary,
         workflow_sandbox=workflow_sandbox,
         employee_readiness=employee_readiness,
+        vibe_index=vibe_index_summary,
     )
     mod_sandbox = run_mod_suite_mod_sandbox(dest, workflow_results)
     validation_summary = _suite_validation_summary(dest, workflow_results)
     validation_summary["mod_sandbox"] = mod_sandbox
     validation_summary["api_warnings"] = api_summary["warnings"]
     validation_summary["employee_readiness"] = employee_readiness
+    validation_summary["vibe_index"] = vibe_index_summary
     data, err = None, None
     try:
         from modman.manifest_util import read_manifest
@@ -1079,7 +1105,61 @@ async def run_mod_suite_ai_scaffold_async(
         "employee_readiness": employee_readiness,
         "mod_sandbox": mod_sandbox,
         "validation_summary": validation_summary,
+        "vibe_index": vibe_index_summary,
     }
+
+
+def _index_mod_with_vibe(
+    db: Session,
+    user: User,
+    *,
+    mod_dir: Path,
+    provider: str,
+    model: str,
+) -> Dict[str, Any]:
+    """同步辅助:用 vibe-coding 的 ``ProjectVibeCoder.index_project`` 缓存索引。
+
+    任何失败都视为可降级,只把 reason 留在返回值,不阻塞 Mod 流水线。
+    """
+    if not provider or not model:
+        return {"enabled": False, "reason": "缺少 provider/model,跳过 vibe 索引"}
+    try:
+        from modstore_server.integrations.vibe_adapter import (
+            VibeIntegrationError,
+            get_project_vibe_coder,
+        )
+    except ImportError as exc:  # pragma: no cover
+        return {"enabled": False, "reason": f"integrations 未导入: {exc}"}
+
+    try:
+        coder = get_project_vibe_coder(
+            mod_dir,
+            session=db,
+            user_id=user.id,
+            provider=provider,
+            model=model,
+        )
+    except VibeIntegrationError as exc:
+        return {"enabled": False, "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": False, "reason": f"vibe coder 构造失败: {exc}"}
+
+    try:
+        idx = coder.index_project(refresh=True)
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": True, "ok": False, "reason": f"index_project 失败: {exc}"}
+
+    summary: Dict[str, Any] = {"enabled": True, "ok": True}
+    try:
+        if hasattr(idx, "summary") and callable(idx.summary):
+            summary["summary"] = idx.summary()
+        else:
+            summary["summary"] = {
+                "files": getattr(idx, "files_count", None) or len(getattr(idx, "files", []) or []),
+            }
+    except Exception as exc:  # noqa: BLE001
+        summary["summary"] = {"error": f"index summary 取数失败: {exc}"}
+    return summary
 
 
 async def attach_nl_workflow_to_employee_pack_dir(
@@ -1167,13 +1247,15 @@ async def run_employee_ai_scaffold_async(
         {"role": "system", "content": SYSTEM_PROMPT_EMPLOYEE},
         {"role": "user", "content": brief},
     ]
+    # 思考型模型（如 mimo-v2.5-pro / deepseek-reasoner）的 reasoning_content 会大量挤占
+    # completion 预算；2048 不够。给到 6000 以保留足够 content 输出空间。
     result = await chat_dispatch(
         prov,
         api_key=api_key,
         base_url=base,
         model=mdl,
         messages=msgs,
-        max_tokens=2048,
+        max_tokens=6000,
     )
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error") or "upstream error"}

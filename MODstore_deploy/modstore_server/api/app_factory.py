@@ -114,6 +114,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     except Exception:
         logger.exception("outbox dispatcher worker failed to start")
 
+    try:
+        from modstore_server.subscription_renewer import start_subscription_scheduler
+
+        start_subscription_scheduler()
+    except Exception:
+        logger.exception("subscription auto-renew scheduler failed to start")
+
     from modstore_server.middleware_registry import register_all_middleware
 
     register_all_middleware(app)
@@ -128,6 +135,20 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
         app.include_router(market_router)
         app.include_router(payment_router)
+
+        # 联系表单、手机短信登录等补充认证路由（前缀 /api，路由中已带完整 path）
+        try:
+            from modstore_server.market_auth_api import router as market_auth_router
+            app.include_router(market_auth_router, prefix="/api")
+        except Exception:
+            logger.exception("market_auth_api 加载失败，跳过")
+
+        # 投诉、合规、material_category/license_scope 增强目录路由
+        try:
+            from modstore_server.market_catalog_api import router as market_catalog_router
+            app.include_router(market_catalog_router, prefix="/api")
+        except Exception:
+            logger.exception("market_catalog_api 加载失败，跳过")
 
         from modstore_server.api import admin_events, authoring, catalog, config as config_routes, debug, health, sync
 
@@ -170,6 +191,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         "modstore_server.webhook_subscription_api",
         "modstore_server.templates_api",
         "modstore_server.sandbox_api",
+        # 支付系统补全模块
+        "modstore_server.author_earnings",
+        "modstore_server.invoice_api",
+        "modstore_server.reconciliation",
+        "modstore_server.subscription_renewer",
     )
     if cfg.profile == "llm-only":
         from modstore_server.api import health as health_routes
@@ -180,10 +206,41 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     for _m in _optional:
         _include_optional(app, _m)
 
+    _maybe_mount_vibe_subapp(app)
+
     ui_mount.maybe_mount_dev_docs(app)
     ui_mount.maybe_mount_ui(app)
 
     return app
+
+
+def _maybe_mount_vibe_subapp(app: FastAPI) -> None:
+    """挂载 vibe-coding 自带的 Web UI / JSON API 到 ``/api/vibe``。
+
+    默认关闭(避免在没装 vibe-coding 时报错)。设置 ``MODSTORE_ENABLE_VIBE_WEB=1``
+    才挂载。挂载只是把 vibe-coding 暴露给前端 / IDE / LSP,实际业务流仍然走
+    in-process import(:mod:`modstore_server.integrations.vibe_adapter`)。
+    """
+    if (os.environ.get("MODSTORE_ENABLE_VIBE_WEB") or "").strip() not in ("1", "true", "yes"):
+        return
+    try:
+        from modstore_server.integrations.vibe_adapter import vibe_available
+    except Exception:
+        return
+    if not vibe_available():
+        logger.info("MODSTORE_ENABLE_VIBE_WEB=1 但 vibe-coding 未安装,跳过挂载")
+        return
+    try:
+        from vibe_coding.agent.web import create_app as create_vibe_app
+    except Exception:
+        logger.exception("vibe_coding.agent.web 加载失败,跳过 /api/vibe 挂载")
+        return
+    try:
+        sub = create_vibe_app()
+        app.mount("/api/vibe", sub)
+        logger.info("已挂载 vibe-coding sub-app 到 /api/vibe")
+    except Exception:
+        logger.exception("挂载 /api/vibe 失败")
 
 
 __all__ = ["AppConfig", "create_app", "load_default_config"]

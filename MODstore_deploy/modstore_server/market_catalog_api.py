@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from modstore_server.models import (
-    CatalogComplaint,
     CatalogItem,
     Favorite,
     Purchase,
@@ -18,6 +17,7 @@ from modstore_server.models import (
     User,
     get_session_factory,
 )
+from modstore_server.models_catalog import CatalogComplaint
 from modstore_server.market_shared import (
     _catalog_item_payload,
     _get_current_user,

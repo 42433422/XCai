@@ -7,7 +7,7 @@ dependencies = []
 
 [project.optional-dependencies]
 web = [
-    "fastapi>=0.109",
+    "fastapi>=0.115",
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.6",
     "httpx>=0.27",
@@ -36,6 +36,14 @@ employee-docs = [
 ]
 aliyun-tts = [
     "dashscope>=1.14",
+]
+vibe = [
+    # vibe-coding 接入：NL → 代码 → 沙盒 → 自愈 + 仓库级 patch / heal。
+    # 与本仓库源码并列时建议在部署/开发机上手动 `pip install -e ../vibe-coding[web]`，
+    # 这样能把 path dep 的解析问题留给 pip。CI / 容器镜像可保留下面的版本约束以
+    # 强制 lockfile 锁版本；运行时由 `modstore_server.integrations.vibe_adapter`
+    # 做 import 失败的优雅降级。
+    "vibe-coding[web]>=0.1.0",
 ]
 dev = [
   "pytest>=7.4",

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from .facade import VibeCoder
@@ -131,6 +132,156 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+# ----------------------------------------------------------------- agent (P0)
+
+
+def _make_context(args: argparse.Namespace) -> "Any | None":
+    """Best-effort :class:`AgentContext` from CLI flags + git status."""
+    from .agent.context import AgentContext
+
+    ctx = AgentContext.from_git(args.root) if getattr(args, "auto_context", True) else AgentContext()
+    if getattr(args, "active_file", None):
+        ctx.active_file = args.active_file
+    cursor = getattr(args, "cursor", None)
+    if cursor:
+        if ":" in cursor:
+            line_str, col_str = cursor.split(":", 1)
+        else:
+            line_str, col_str = cursor, "0"
+        try:
+            ctx.cursor_line = int(line_str)
+            ctx.cursor_column = int(col_str)
+        except ValueError:
+            print(f"warning: ignoring invalid --cursor {cursor!r}", file=sys.stderr)
+    notes = getattr(args, "notes", None)
+    if notes:
+        ctx.notes = notes
+    return ctx if ctx.to_dict() else None
+
+
+def _cmd_index(args: argparse.Namespace) -> int:
+    coder = _make_coder(args).project_coder(args.root)
+    index = coder.index_project(refresh=args.refresh)
+    print(json.dumps(index.summary(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_edit(args: argparse.Namespace) -> int:
+    coder = _make_coder(args).project_coder(args.root)
+    patch = coder.edit_project(
+        args.brief,
+        context=_make_context(args),
+        focus_paths=list(args.focus or []),
+    )
+    if args.apply:
+        result = coder.apply_patch(patch, dry_run=False)
+        print(
+            json.dumps(
+                {"patch": patch.to_dict(), "apply": result.to_dict()},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0 if result.applied else 1
+    if args.dry_run:
+        result = coder.apply_patch(patch, dry_run=True)
+        print(
+            json.dumps(
+                {"patch": patch.to_dict(), "dry_run": result.to_dict()},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0 if result.applied else 1
+    print(json.dumps(patch.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    from .agent.patch import ProjectPatch
+
+    coder = _make_coder(args).project_coder(args.root)
+    raw_path = Path(args.patch_file)
+    if not raw_path.is_file():
+        print(f"error: patch file not found: {raw_path}", file=sys.stderr)
+        return 2
+    try:
+        data = json.loads(raw_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"error: invalid JSON in patch: {exc}", file=sys.stderr)
+        return 2
+    patch = ProjectPatch.from_dict(data)
+    result = coder.apply_patch(patch, dry_run=args.dry_run)
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if result.applied else 1
+
+
+def _cmd_heal(args: argparse.Namespace) -> int:
+    coder = _make_coder(args).project_coder(args.root)
+    result = coder.heal_project(
+        args.brief,
+        context=_make_context(args),
+        max_rounds=args.max_rounds,
+    )
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if result.success else 1
+
+
+# ----------------------------------------------------------------- marketplace
+
+
+def _cmd_publish(args: argparse.Namespace) -> int:
+    coder = _make_coder(args)
+    base_url = args.base_url or os.environ.get("MODSTORE_BASE_URL", "")
+    admin_token = args.admin_token or os.environ.get("MODSTORE_ADMIN_TOKEN", "")
+    if not (base_url and admin_token):
+        print(
+            "error: --base-url and --admin-token (or MODSTORE_* env vars) are required",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        result = coder.publish_skill(
+            args.skill_id,
+            base_url=base_url,
+            admin_token=admin_token,
+            version=args.version,
+            name=args.name,
+            description=args.description,
+            price=args.price,
+            artifact=args.artifact,
+            industry=args.industry,
+            verify_ssl=not args.no_verify_ssl,
+            dry_run=args.dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: publish failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if result.published or result.dry_run else 1
+
+
+# ----------------------------------------------------------------- web / lsp
+
+
+def _cmd_web(args: argparse.Namespace) -> int:
+    from .agent.web import run_server
+
+    coder = _make_coder(args)
+    print(f"vibe-coding web ui listening on http://{args.host}:{args.port}", file=sys.stderr)
+    run_server(host=args.host, port=args.port, coder=coder, log_level=args.log_level)
+    return 0
+
+
+def _cmd_lsp(args: argparse.Namespace) -> int:
+    """Run the JSON-RPC LSP-lite server over stdin/stdout for editor plugins."""
+    from .agent.web import LSPServer
+
+    coder = _make_coder(args)
+    LSPServer(coder).serve_stdio()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m vibe_coding",
@@ -173,6 +324,77 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("list", help="list known code skills")
     ls.set_defaults(func=_cmd_list)
+
+    # -------------------------------------------------------------- agent (P0)
+    idx_cmd = sub.add_parser("index", help="build / refresh the project RepoIndex")
+    idx_cmd.add_argument("--root", default=".")
+    idx_cmd.add_argument("--refresh", action="store_true", help="ignore the cached index")
+    idx_cmd.set_defaults(func=_cmd_index)
+
+    edit_cmd = sub.add_parser("edit", help="generate a multi-file ProjectPatch from a NL brief")
+    edit_cmd.add_argument("brief")
+    edit_cmd.add_argument("--root", default=".")
+    edit_cmd.add_argument("--apply", action="store_true", help="apply the patch instead of just printing it")
+    edit_cmd.add_argument("--dry-run", action="store_true", help="run the applier in dry-run mode")
+    edit_cmd.add_argument("--focus", action="append", default=[], help="files to surface to the LLM (repeatable)")
+    edit_cmd.add_argument("--active-file", default=None)
+    edit_cmd.add_argument("--cursor", default=None, help="LINE or LINE:COL")
+    edit_cmd.add_argument("--notes", default=None)
+    edit_cmd.add_argument(
+        "--no-auto-context",
+        dest="auto_context",
+        action="store_false",
+        default=True,
+        help="skip the git-status auto context",
+    )
+    edit_cmd.set_defaults(func=_cmd_edit)
+
+    apply_cmd = sub.add_parser("apply", help="apply a saved ProjectPatch JSON")
+    apply_cmd.add_argument("patch_file")
+    apply_cmd.add_argument("--root", default=".")
+    apply_cmd.add_argument("--dry-run", action="store_true")
+    apply_cmd.set_defaults(func=_cmd_apply)
+
+    heal_cmd = sub.add_parser("heal", help="iterative edit + apply + (P1) tool validation loop")
+    heal_cmd.add_argument("brief")
+    heal_cmd.add_argument("--root", default=".")
+    heal_cmd.add_argument("--max-rounds", type=int, default=3)
+    heal_cmd.add_argument("--active-file", default=None)
+    heal_cmd.add_argument("--cursor", default=None)
+    heal_cmd.add_argument("--notes", default=None)
+    heal_cmd.add_argument("--no-auto-context", dest="auto_context", action="store_false", default=True)
+    heal_cmd.set_defaults(func=_cmd_heal)
+
+    # ------------------------------------------------------------- marketplace
+    pub = sub.add_parser(
+        "publish", help="package a skill and upload it to a MODstore deployment"
+    )
+    pub.add_argument("skill_id")
+    pub.add_argument("--base-url", default="", help="MODstore origin (env: MODSTORE_BASE_URL)")
+    pub.add_argument("--admin-token", default="", help="admin access token (env: MODSTORE_ADMIN_TOKEN)")
+    pub.add_argument("--version", default="")
+    pub.add_argument("--name", default="")
+    pub.add_argument("--description", default="")
+    pub.add_argument("--price", type=float, default=0.0)
+    pub.add_argument("--artifact", default="mod", choices=["mod", "employee_pack"])
+    pub.add_argument("--industry", default="通用")
+    pub.add_argument("--no-verify-ssl", action="store_true")
+    pub.add_argument("--dry-run", action="store_true", help="package only; skip upload")
+    pub.set_defaults(func=_cmd_publish)
+
+    # --------------------------------------------------------------- web / lsp
+    web_cmd = sub.add_parser(
+        "web", help="run the vibe-coding Web UI / API on host:port"
+    )
+    web_cmd.add_argument("--host", default="127.0.0.1")
+    web_cmd.add_argument("--port", type=int, default=8765)
+    web_cmd.add_argument("--log-level", default="info")
+    web_cmd.set_defaults(func=_cmd_web)
+
+    lsp_cmd = sub.add_parser(
+        "lsp", help="speak JSON-RPC over stdio for editor plugin integration"
+    )
+    lsp_cmd.set_defaults(func=_cmd_lsp)
 
     return parser
 

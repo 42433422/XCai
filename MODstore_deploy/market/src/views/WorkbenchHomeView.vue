@@ -602,13 +602,35 @@
                 <p v-if="planSession.displayBrief" class="wb-plan-summary-source">{{ planSession.displayBrief }}</p>
               </section>
               <div class="wb-plan-actions">
-                <button type="button" class="wb-plan-secondary" :disabled="planSession.loading" @click="backSummaryToComposer">
+                <button
+                  type="button"
+                  class="wb-plan-secondary"
+                  :disabled="planSession.loading || autoPilotRunning"
+                  @click="backSummaryToComposer"
+                >
                   返回修改
                 </button>
-                <button type="button" class="wb-plan-primary" :disabled="planSession.loading || !planSession.summaryText" @click="() => void confirmSummaryAndStartPlanning()">
+                <button
+                  type="button"
+                  class="wb-plan-primary"
+                  :disabled="planSession.loading || autoPilotRunning || !planSession.summaryText"
+                  @click="() => void confirmSummaryAndStartPlanning()"
+                >
                   确认并开始规划
                 </button>
+                <button
+                  type="button"
+                  class="wb-plan-primary wb-plan-autopilot"
+                  :disabled="planSession.loading || autoPilotRunning || !planSession.summaryText"
+                  :title="autoPilotRunning ? 'AI 正在自主跑完整个流程…' : '跳过澄清与确认，AI 自动跑完规划→清单→制作→生成'"
+                  @click="() => void runAutoPilotFromSummary()"
+                >
+                  {{ autoPilotRunning ? 'AI 自主进行中…' : 'AI 自主全部进行' }}
+                </button>
               </div>
+              <p v-if="autoPilotError" class="wb-plan-autopilot-error" role="alert">
+                AI 自主流程失败：{{ autoPilotError }}
+              </p>
             </template>
             <template v-if="planSession.phase === 'chat'">
               <div
@@ -1169,6 +1191,13 @@
                   title="Enter 发送 · Shift+Enter 换行"
                 >
                   <div class="wb-input-hint__primary">
+                    <button
+                      type="button"
+                      class="wb-direct-new-btn wb-composer-new-btn"
+                      title="清空输入与附件，并退出需求规划"
+                      :disabled="knowledgeUploading"
+                      @click="resetMakeComposer"
+                    >新建</button>
                     <span class="wb-input-hint__intent"
                       >当前：{{ composerMainTitle
                       }}<template v-if="planSession?.phase === 'chat'"> · 规划追问</template></span
@@ -1662,6 +1691,9 @@ const linkError = ref('')
 /** 需求规划：多轮澄清 → 执行清单 → 再进入制作草稿 */
 const planSession = ref(null)
 const planReplyDraft = ref('')
+/** 「AI 自主全部进行」：从 summary 一路串到 runOrchestration 结束的互斥锁 */
+const autoPilotRunning = ref(false)
+const autoPilotError = ref('')
 /** 快捷选项：题目 id -> 选中的 choice id（含 UI 专用「其他」） */
 const planOptionSelections = ref({})
 /** 「其他」在提交与 canSend 中使用的保留 choice id（勿与模型返回的 id 重复） */
@@ -4804,6 +4836,28 @@ function dismissPlanSession() {
   planDiagramError.value = {}
 }
 
+/** 二档制作主输入：清空草稿、附件与需求规划，与一档「新建」一致 */
+function resetMakeComposer() {
+  if (knowledgeUploading.value) return
+  dismissPlanSession()
+  draft.value = ''
+  knowledgeError.value = ''
+  const files = directAttachedFiles.value.slice()
+  directAttachedFiles.value = []
+  for (const item of files as Array<{ docId?: string }>) {
+    if (item.docId) {
+      void api.knowledgeDeleteDocument(item.docId).catch(() => {
+        /* 与移除单附件一致 */
+      })
+    }
+  }
+  clearMakeProgressCache()
+  nextTick(() => {
+    const el = inputRef.value
+    if (el && typeof el.focus === 'function') el.focus()
+  })
+}
+
 async function loadKnowledgeDocuments(requireLogin = false) {
   if (!getAccessToken()) {
     if (requireLogin) requireLoginForWorkbenchUse()
@@ -5644,6 +5698,65 @@ async function confirmSummaryAndStartPlanning() {
   } finally {
     ps.loading = false
     scrollPlanIntoView()
+  }
+}
+
+/**
+ * 「AI 自主全部进行」：从 summary 阶段一路串到后端编排完成。
+ * 流程：confirmSummaryAndStartPlanning → 自动答快捷题（如有） →
+ * requestExecutionChecklist → confirmPlanAndOpenHandoff → runOrchestration。
+ * 任一步失败：把可读错误写入 autoPilotError，停在当前阶段，让用户手动接管。
+ */
+async function runAutoPilotFromSummary() {
+  const ps0 = planSession.value
+  if (!ps0 || ps0.phase !== 'summary' || ps0.loading) return
+  if (autoPilotRunning.value) return
+  if (!ps0.summaryText) return
+  autoPilotRunning.value = true
+  autoPilotError.value = ''
+  try {
+    await confirmSummaryAndStartPlanning()
+    let ps = planSession.value
+    if (!ps || ps.phase !== 'chat') {
+      throw new Error('未能进入澄清阶段')
+    }
+    if (ps.planError) throw new Error(ps.planError)
+
+    await nextTick()
+    if (planQuickOptions.value.length) {
+      autoPickPlanQuickOptions()
+      await nextTick()
+      if (canSendPlanQuickPicks.value) {
+        await sendPlanReplyFromQuickPicks()
+      }
+      ps = planSession.value
+      if (ps?.planError) throw new Error(ps.planError)
+    }
+
+    ps = planSession.value
+    if (!ps || ps.phase !== 'chat') {
+      throw new Error('澄清阶段已被打断')
+    }
+    if ((ps.messages?.length || 0) < 2) {
+      throw new Error('澄清回合不足，无法生成执行清单')
+    }
+
+    await requestExecutionChecklist()
+    ps = planSession.value
+    if (!ps) throw new Error('规划会话已丢失')
+    if (ps.planError) throw new Error(ps.planError)
+    if (ps.phase !== 'checklist') throw new Error('未能生成执行清单')
+
+    confirmPlanAndOpenHandoff()
+    await nextTick()
+    if (!pendingHandoff.value) throw new Error('未能生成制作草稿')
+
+    await runOrchestration()
+    if (finalizeError.value) throw new Error(finalizeError.value)
+  } catch (e) {
+    autoPilotError.value = friendlyPlanPanelApiError(e)
+  } finally {
+    autoPilotRunning.value = false
   }
 }
 
@@ -8622,6 +8735,16 @@ function onComposerKeydown(e) {
   cursor: not-allowed;
 }
 
+.wb-plan-autopilot {
+  background: linear-gradient(135deg, #10b981, #059669);
+}
+
+.wb-plan-autopilot-error {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: #fca5a5;
+}
+
 .wb-plan-checklist-title {
   margin: 0 0 0.5rem;
   font-size: 0.92rem;
@@ -10326,6 +10449,12 @@ function onComposerKeydown(e) {
   gap: 0.35rem 0.45rem;
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-composer-new-btn {
+  flex-shrink: 0;
+  padding: 0.16rem 0.42rem;
+  font-size: 0.65rem;
 }
 
 .wb-make-scene .wb-composer-column.wb-composer-column--task-slim .wb-input-hint__intent {

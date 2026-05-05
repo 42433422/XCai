@@ -29,6 +29,15 @@ from modstore_server.workflow_variables import eval_condition, resolve_value
 
 logger = logging.getLogger(__name__)
 
+# Hard cap for one ``_run_graph`` invocation. Protects against cycles or
+# pathological condition expressions that would otherwise loop forever.
+# Tuned generously (a complex sandboxed run shouldn't exceed ~200 steps).
+MAX_WORKFLOW_STEPS = 1000
+
+# A single node hit this many times in one run is treated as a soft cycle:
+# the loop aborts and a warning is reported. Counts re-entries, not edge fires.
+MAX_NODE_VISITS = 50
+
 
 def _json_safe(value: Any, max_depth: int = 6, max_str: int = 8000) -> Any:
     """将上下文快照转为可 JSON 序列化的结构（沙盒报告用）。"""
@@ -72,6 +81,8 @@ class WorkflowEngine:
             "cron_trigger": self._execute_cron_trigger_node,
             "variable_set": self._execute_variable_set_node,
             "eskill": self._execute_eskill_node,
+            "vibe_skill": self._execute_vibe_skill_node,
+            "vibe_workflow": self._execute_vibe_workflow_node,
         }
 
     def register_executor(self, node_type: str, executor):
@@ -192,8 +203,37 @@ class WorkflowEngine:
         steps: List[Dict[str, Any]] = []
         run_warnings: List[str] = []
         order = 0
+        # Cycle / runaway protection: bound total steps and per-node revisits.
+        # See module-level ``MAX_WORKFLOW_STEPS`` / ``MAX_NODE_VISITS``.
+        total_steps = 0
+        visit_count: Dict[int, int] = {}
 
         while current_node:
+            total_steps += 1
+            if total_steps > MAX_WORKFLOW_STEPS:
+                run_warnings.append(
+                    f"工作流步数超过上限 {MAX_WORKFLOW_STEPS}，疑似存在死循环，已强制中止"
+                )
+                logger.warning(
+                    "workflow %s exceeded MAX_WORKFLOW_STEPS=%s; aborting at node %s",
+                    workflow.id,
+                    MAX_WORKFLOW_STEPS,
+                    current_node.id,
+                )
+                break
+            visit_count[current_node.id] = visit_count.get(current_node.id, 0) + 1
+            if visit_count[current_node.id] > MAX_NODE_VISITS:
+                run_warnings.append(
+                    f"节点「{current_node.name}」被重入超过 {MAX_NODE_VISITS} 次，"
+                    "疑似循环边导致死循环，已强制中止"
+                )
+                logger.warning(
+                    "workflow %s node %s revisited %s times; aborting (cycle)",
+                    workflow.id,
+                    current_node.id,
+                    visit_count[current_node.id],
+                )
+                break
             t0 = time.perf_counter()
             data_before = _json_safe(current_data) if collect_trace else {}
             config = json.loads(current_node.config) if current_node.config else {}
@@ -323,6 +363,8 @@ class WorkflowEngine:
             return self._execute_knowledge_search_mock(node, data, config)
         if node.node_type == "eskill" and mock_employee:
             return self._execute_eskill_node_mock(node, data, config)
+        if node.node_type in ("vibe_skill", "vibe_workflow") and mock_employee:
+            return self._execute_vibe_node_mock(node, data, config)
         if node.node_type in ("employee", "openapi_operation", "knowledge_search"):
             return executor(node, data, config, user_id=user_id)
         if node.node_type == "eskill":
@@ -334,6 +376,8 @@ class WorkflowEngine:
                 workflow_id=workflow_id,
                 user_id=user_id,
             )
+        if node.node_type in ("vibe_skill", "vibe_workflow"):
+            return executor(node, data, config, user_id=user_id)
         return executor(node, data, config)
 
     def _execute_employee_node_mock(
@@ -400,6 +444,115 @@ class WorkflowEngine:
             "eskill_id": config.get("skill_id"),
             "execution_time": datetime.utcnow().isoformat(),
         }
+
+    def _execute_vibe_node_mock(
+        self, node: WorkflowNode, data: Dict[str, Any], config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        out_var = str(config.get("output_var") or (
+            "vibe_result" if node.node_type == "vibe_skill" else "vibe_workflow_result"
+        ))
+        return {
+            out_var: {
+                "sandbox": True,
+                "message": f"沙盒 Mock：未调用真实 vibe-coding（{node.node_type}）",
+                "brief": str(config.get("brief") or "")[:240],
+                "echo_keys": list(data.keys())[:24],
+            },
+            "execution_time": datetime.utcnow().isoformat(),
+        }
+
+    def _execute_vibe_skill_node(
+        self,
+        node: WorkflowNode,
+        data: Dict[str, Any],
+        config: Dict[str, Any],
+        *,
+        user_id: int = 0,
+    ) -> Dict[str, Any]:
+        """``vibe_skill`` 节点:NL → CodeSkill → 用 input 跑一次。
+
+        节点配置:
+            brief: str (required)
+            skill_id: str (optional, 同名复用 PatchLedger)
+            mode: "brief_first"|"direct"
+            run_immediately: bool (default True)
+            run_input_mapping: dict (可选,把 data 抽子集)
+            output_var: str (default "vibe_result")
+            provider/model: str (可选覆盖)
+        """
+        logger.info("执行 vibe_skill 节点: %s", node.name)
+        try:
+            from modstore_server.integrations.vibe_eskill_adapter import execute_vibe_code_kind
+        except ImportError as exc:
+            raise RuntimeError(f"integrations 未导入: {exc}") from exc
+
+        brief = str(config.get("brief") or "").strip()
+        if not brief:
+            raise ValueError("vibe_skill 节点缺少 brief")
+        nodes_ctx = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
+        ctx = {"nodes": nodes_ctx, "global": data, "result": data}
+        run_input_mapping = config.get("run_input_mapping") or {}
+        run_input = (
+            resolve_value(run_input_mapping, ctx)
+            if isinstance(run_input_mapping, dict) and run_input_mapping
+            else dict(data)
+        )
+        if not isinstance(run_input, dict):
+            run_input = {"value": run_input}
+        logic = {
+            "type": "vibe_code",
+            "brief": brief,
+            "skill_id": config.get("skill_id"),
+            "mode": str(config.get("mode") or "brief_first"),
+            "run_immediately": bool(config.get("run_immediately", True)),
+            "output_var": str(config.get("output_var") or "vibe_result"),
+            "provider": config.get("provider") or "",
+            "model": config.get("model") or "",
+        }
+        result = execute_vibe_code_kind(logic, run_input, user_id=int(user_id or 0))
+        if not result.get("ok") and result.get("error"):
+            raise RuntimeError(result.get("error"))
+        result.setdefault("execution_time", datetime.utcnow().isoformat())
+        return result
+
+    def _execute_vibe_workflow_node(
+        self,
+        node: WorkflowNode,
+        data: Dict[str, Any],
+        config: Dict[str, Any],
+        *,
+        user_id: int = 0,
+    ) -> Dict[str, Any]:
+        """``vibe_workflow`` 节点:NL → VibeWorkflowGraph → execute。
+
+        节点配置:
+            brief: str (required)
+            output_var: str (default "vibe_workflow_result")
+            provider/model: str (可选覆盖)
+        """
+        logger.info("执行 vibe_workflow 节点: %s", node.name)
+        try:
+            from modstore_server.integrations.vibe_eskill_adapter import (
+                execute_vibe_workflow_kind,
+            )
+        except ImportError as exc:
+            raise RuntimeError(f"integrations 未导入: {exc}") from exc
+
+        brief = str(config.get("brief") or "").strip()
+        if not brief:
+            raise ValueError("vibe_workflow 节点缺少 brief")
+        logic = {
+            "type": "vibe_workflow",
+            "brief": brief,
+            "output_var": str(config.get("output_var") or "vibe_workflow_result"),
+            "provider": config.get("provider") or "",
+            "model": config.get("model") or "",
+        }
+        result = execute_vibe_workflow_kind(logic, dict(data), user_id=int(user_id or 0))
+        if not result.get("ok") and result.get("error"):
+            raise RuntimeError(result.get("error"))
+        result.setdefault("execution_time", datetime.utcnow().isoformat())
+        return result
 
     def _execute_knowledge_search_node(
         self,
@@ -753,7 +906,58 @@ def _topology_warnings(session: Session, workflow_id: int) -> List[str]:
         if n.id not in reachable and n.node_type != "start":
             warnings.append(f"孤立节点（从开始不可达）: {n.name} (id={n.id})")
             break
+
+    # Static cycle detection (DFS three-coloring). Surface cycles as warnings
+    # rather than errors — some users may intentionally loop with break
+    # conditions; the runtime ``MAX_NODE_VISITS`` guard caps damage.
+    cycle = _detect_cycle(adj, start_ids[0])
+    if cycle:
+        path = " -> ".join(_format_node(nid, nodes) for nid in cycle)
+        warnings.append(f"工作流存在循环路径: {path}（运行时会触发死循环保护）")
     return warnings
+
+
+def _detect_cycle(adj: Dict[int, List[int]], start: int) -> List[int]:
+    """Return one cycle (as a list of node ids ending at the re-entry point)
+    if the graph reachable from ``start`` contains any cycle, else ``[]``.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: Dict[int, int] = {nid: WHITE for nid in adj}
+    parent: Dict[int, int] = {}
+    cycle: List[int] = []
+
+    def dfs(u: int) -> bool:
+        color[u] = GRAY
+        for v in adj.get(u, []):
+            if v not in color:
+                continue
+            if color[v] == GRAY:
+                # Found a back-edge u -> v; reconstruct cycle.
+                node = u
+                while node != v and node in parent:
+                    cycle.append(node)
+                    node = parent[node]
+                cycle.append(v)
+                cycle.reverse()
+                cycle.append(v)
+                return True
+            if color[v] == WHITE:
+                parent[v] = u
+                if dfs(v):
+                    return True
+        color[u] = BLACK
+        return False
+
+    if start in color:
+        dfs(start)
+    return cycle
+
+
+def _format_node(nid: int, nodes: List[WorkflowNode]) -> str:
+    for n in nodes:
+        if n.id == nid:
+            return f"{n.name or '?'}#{nid}"
+    return f"#{nid}"
 
 
 class WorkflowValidator:
@@ -822,6 +1026,13 @@ class WorkflowValidator:
                     config = {}
                 if not str(config.get("skill_id") or config.get("eskill_id") or "").strip():
                     errors.append(f"ESkill 节点 {node.name} 缺少 skill_id 配置")
+            elif node.node_type in ("vibe_skill", "vibe_workflow"):
+                try:
+                    config = json.loads(node.config) if node.config else {}
+                except (TypeError, ValueError):
+                    config = {}
+                if not str(config.get("brief") or "").strip():
+                    errors.append(f"vibe-coding 节点 {node.name} 缺少 brief 配置")
             elif node.node_type == "cron_trigger":
                 try:
                     config = json.loads(node.config) if node.config else {}

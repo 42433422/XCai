@@ -17,11 +17,11 @@ from modstore_server.api.deps import get_current_user, require_admin
 from modstore_server.models import (
     CatalogItem,
     Entitlement,
-    LandingContactSubmission,
     User,
     VerificationCode,
     get_session_factory,
 )
+from modstore_server.models_user import LandingContactSubmission
 
 _get_current_user = get_current_user
 _require_admin = require_admin

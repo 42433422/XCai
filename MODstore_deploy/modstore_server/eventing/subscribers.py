@@ -18,7 +18,11 @@ from typing import Any
 
 from prometheus_client import Counter
 
-from modstore_server.eventing.contracts import WORKFLOW_EVENT_TRIGGER, canonical_event_name
+from modstore_server.eventing.contracts import (
+    WALLET_BALANCE_CHANGED,
+    WORKFLOW_EVENT_TRIGGER,
+    canonical_event_name,
+)
 from modstore_server.eventing.events import DomainEvent
 from modstore_server.eventing.global_bus import neuro_bus
 
@@ -111,6 +115,116 @@ def _on_payment_paid(event: DomainEvent) -> None:
     except Exception:
         logger.exception("payment.paid notification handler failed")
         EVENT_PUBLISHED_TOTAL.labels(event.event_name, "subscriber_error").inc()
+
+
+def _on_payment_paid_entitlement(event: DomainEvent) -> None:
+    """Activate entitlements after a payment.paid event (Java-fulfilled orders excluded)."""
+    if canonical_event_name(event.event_name) != "payment.paid":
+        return
+    payload = event.payload or {}
+    out_trade_no = str(payload.get("out_trade_no") or event.subject_id or "")
+    if not out_trade_no:
+        return
+    try:
+        from modstore_server.payment_fulfilment import FulfilContext, select_strategy
+        from modstore_server.models import get_session_factory
+        from modstore_server import payment_orders
+    except Exception:
+        logger.exception("payment.paid entitlement subscriber failed to import")
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "subscriber_error").inc()
+        return
+
+    try:
+        user_id = int(payload.get("user_id") or 0)
+        total_amount = float(payload.get("total_amount") or 0)
+        item_id = int(payload.get("item_id") or 0)
+        plan_id = str(payload.get("plan_id") or "").strip()
+        order_kind = str(payload.get("order_kind") or "").strip()
+    except (TypeError, ValueError):
+        logger.warning("payment.paid entitlement subscriber got malformed payload for %s", out_trade_no)
+        return
+
+    ctx = FulfilContext(
+        out_trade_no=out_trade_no,
+        user_id=user_id,
+        total_amount=total_amount,
+        item_id=item_id,
+        plan_id=plan_id,
+        kind=order_kind,
+        order=dict(payload),
+    )
+    strategy = select_strategy(ctx)
+    sf = get_session_factory()
+    try:
+        with sf() as session:
+            if strategy.is_already_fulfilled(session, ctx):
+                logger.debug("entitlement already fulfilled for %s, skipping", out_trade_no)
+                return
+            from datetime import datetime, timezone
+            description, txn_type = strategy.description_and_txn_type(ctx)
+            strategy.fulfill(session, ctx, now=datetime.now(timezone.utc), description=description, txn_type=txn_type)
+            payment_orders.merge_fields(out_trade_no, fulfilled=True)
+            session.commit()
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "entitlement_granted").inc()
+        logger.info("Entitlement granted via NeuroBus subscriber for order %s", out_trade_no)
+    except Exception:
+        logger.exception("payment.paid entitlement subscriber failed for %s", out_trade_no)
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "subscriber_error").inc()
+
+
+def _on_payment_paid_invoice(event: DomainEvent) -> None:
+    """Trigger invoice creation after a payment.paid event."""
+    if canonical_event_name(event.event_name) != "payment.paid":
+        return
+    payload = event.payload or {}
+    out_trade_no = str(payload.get("out_trade_no") or event.subject_id or "")
+    user_id_raw = payload.get("user_id")
+    try:
+        user_id = int(user_id_raw) if user_id_raw is not None else 0
+    except (TypeError, ValueError):
+        user_id = 0
+    if not out_trade_no or not user_id:
+        return
+    try:
+        from modstore_server.invoice_api import create_invoice_for_order
+    except ImportError:
+        return
+    except Exception:
+        logger.exception("payment.paid invoice subscriber failed to import invoice_api")
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "subscriber_error").inc()
+        return
+    try:
+        create_invoice_for_order(
+            out_trade_no=out_trade_no,
+            user_id=user_id,
+            amount=float(payload.get("total_amount") or 0),
+            subject=str(payload.get("subject") or ""),
+        )
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "invoice_created").inc()
+    except Exception:
+        logger.exception("payment.paid invoice creation failed for %s", out_trade_no)
+        EVENT_PUBLISHED_TOTAL.labels(event.event_name, "subscriber_error").inc()
+
+
+def _on_wallet_balance_changed(event: DomainEvent) -> None:
+    """Analytics aggregation stub for wallet.balance_changed events."""
+    if canonical_event_name(event.event_name) != WALLET_BALANCE_CHANGED:
+        return
+    payload = event.payload or {}
+    user_id_raw = payload.get("user_id")
+    try:
+        user_id = int(user_id_raw) if user_id_raw is not None else 0
+    except (TypeError, ValueError):
+        user_id = 0
+    if not user_id:
+        return
+    logger.debug(
+        "wallet.balance_changed user=%s amount=%s source=%s",
+        user_id,
+        payload.get("amount"),
+        payload.get("source_order_id"),
+    )
+    EVENT_PUBLISHED_TOTAL.labels(event.event_name, "received").inc()
 
 
 def _on_workflow_event_trigger(event: DomainEvent) -> None:
@@ -209,6 +323,9 @@ def install_default_subscribers(bus=None) -> None:
     target_bus.subscribe("*", _on_event_metric)
     target_bus.subscribe("*", _on_event_audit)
     target_bus.subscribe("payment.paid", _on_payment_paid)
+    target_bus.subscribe("payment.paid", _on_payment_paid_entitlement)
+    target_bus.subscribe("payment.paid", _on_payment_paid_invoice)
+    target_bus.subscribe(WALLET_BALANCE_CHANGED, _on_wallet_balance_changed)
     target_bus.subscribe("refund.approved", _on_refund_outcome)
     target_bus.subscribe("refund.rejected", _on_refund_outcome)
     target_bus.subscribe("refund.failed", _on_refund_outcome)

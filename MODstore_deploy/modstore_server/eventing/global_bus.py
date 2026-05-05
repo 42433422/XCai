@@ -1,4 +1,18 @@
-"""Process-local NeuroBus instance (memory | rabbitmq) + optional shadow dual-write."""
+"""Process-local NeuroBus instance (memory | rabbitmq) + optional shadow dual-write.
+
+Bus backend is controlled by ``MODSTORE_BUS``:
+  - ``memory`` (default): in-process, synchronous — suitable for single-instance dev/test.
+  - ``rabbitmq`` / ``rmq`` / ``amqp``: durable async via RabbitMQ — recommended for production.
+
+Shadow bus (for greyscale cutover):
+  - Set ``MODSTORE_BUS_SHADOW=rabbitmq`` to dual-write events to a secondary RabbitMQ bus
+    while keeping memory as the primary.
+
+Dead-letter alerting:
+  - The ``OutboxDeadLetter`` table receives rows when the outbox worker exhausts retries.
+  - ``_alert_dead_letters()`` is called at startup and logs an error if the table is non-empty,
+    enabling log-based alerts or health-check scrapers to surface stuck events.
+"""
 
 from __future__ import annotations
 
@@ -64,3 +78,28 @@ def _build_bus() -> NeuroBus:
 neuro_bus: NeuroBus = _build_bus()
 event_outbox = FileEventOutbox()
 neuro_bus.subscribe("*", event_outbox.append)
+
+
+def _alert_dead_letters() -> None:
+    """Log an error if OutboxDeadLetter contains unprocessed rows.
+
+    Call this at application startup so log-based monitors or health-check
+    scrapers surface stuck events without a dedicated polling job.
+    """
+    try:
+        from modstore_server.models import OutboxDeadLetter, get_session_factory
+
+        sf = get_session_factory()
+        with sf() as session:
+            count = session.query(OutboxDeadLetter).count()
+        if count > 0:
+            logger.error(
+                "DEAD_LETTER_ALERT: %d unprocessed dead-letter events in OutboxDeadLetter table. "
+                "Investigate and replay or purge via admin API.",
+                count,
+            )
+    except Exception:
+        logger.debug("dead-letter check skipped (db not ready or table missing)", exc_info=True)
+
+
+_alert_dead_letters()

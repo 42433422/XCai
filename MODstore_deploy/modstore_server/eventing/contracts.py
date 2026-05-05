@@ -34,6 +34,10 @@ EMPLOYEE_PACK_REGISTERED = "employee.pack_registered"
 WORKFLOW_SANDBOX_COMPLETED = "workflow.sandbox_completed"
 WORKFLOW_EVENT_TRIGGER = "workflow.event_trigger"
 LLM_QUOTA_CONSUMED = "llm.quota_consumed"
+SUBSCRIPTION_RENEWED = "subscription.renewed"
+SUBSCRIPTION_RENEWAL_FAILED = "subscription.renewal_failed"
+INVOICE_CREATED = "invoice.created"
+CATALOG_ITEM_PUBLISHED = "catalog.item_published"
 
 EVENT_CONTRACTS: dict[str, EventContract] = {
     PAYMENT_PAID: EventContract(
@@ -126,6 +130,34 @@ EVENT_CONTRACTS: dict[str, EventContract] = {
         aggregate="user_llm_credential",
         required_payload=("user_id", "provider", "model", "tokens", "cost"),
         description="LLM quota was consumed for a user request.",
+    ),
+    SUBSCRIPTION_RENEWED: EventContract(
+        name=SUBSCRIPTION_RENEWED,
+        version=1,
+        aggregate="user_plan",
+        required_payload=("user_id", "plan_id", "out_trade_no", "amount", "expires_at"),
+        description="A subscription plan was automatically renewed and payment deducted from wallet.",
+    ),
+    SUBSCRIPTION_RENEWAL_FAILED: EventContract(
+        name=SUBSCRIPTION_RENEWAL_FAILED,
+        version=1,
+        aggregate="user_plan",
+        required_payload=("user_id", "plan_id", "reason"),
+        description="A subscription auto-renewal failed (e.g. insufficient wallet balance).",
+    ),
+    INVOICE_CREATED: EventContract(
+        name=INVOICE_CREATED,
+        version=1,
+        aggregate="invoice",
+        required_payload=("invoice_id", "user_id", "order_no", "amount"),
+        description="An invoice was created for a completed payment order.",
+    ),
+    CATALOG_ITEM_PUBLISHED: EventContract(
+        name=CATALOG_ITEM_PUBLISHED,
+        version=1,
+        aggregate="catalog_item",
+        required_payload=("item_id", "author_id", "name", "artifact"),
+        description="A catalog item was published or made publicly available in the store.",
     ),
 }
 

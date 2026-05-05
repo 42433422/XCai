@@ -73,6 +73,28 @@
             <p v-if="modSandboxChecks.length">{{ modSandboxChecks.map((c) => c.message).join('；') }}</p>
             <p v-else>暂无 Mod 沙箱报告。</p>
           </div>
+          <div v-if="vibeHealReport" class="ai-blueprint-card">
+            <span class="ai-blueprint-kicker">vibe-coding 自愈</span>
+            <strong>
+              {{
+                vibeHealReport.enabled === false
+                  ? '未启用'
+                  : (vibeHealReport.ok === false ? '存在告警' : `已尝试 ${vibeHealReport.rounds || 0} 轮`)
+              }}
+            </strong>
+            <p v-if="vibeHealReport.reason" class="muted small">{{ vibeHealReport.reason }}</p>
+            <p v-else-if="vibeHealReport.enabled !== false">
+              已对 backend/employees 调 ProjectVibeCoder.heal_project；补丁链可在 PatchLedger 查看。
+            </p>
+          </div>
+          <div v-if="vibeIndexReport" class="ai-blueprint-card">
+            <span class="ai-blueprint-kicker">vibe-coding 索引</span>
+            <strong>{{ vibeIndexReport.ok === false ? '失败' : '已缓存' }}</strong>
+            <p v-if="vibeIndexReport.reason" class="muted small">{{ vibeIndexReport.reason }}</p>
+            <p v-else-if="vibeIndexReport.summary?.files != null" class="muted small">
+              已索引 {{ vibeIndexReport.summary.files }} 个文件，可供 vibe_edit/heal 复用。
+            </p>
+          </div>
         </div>
 
         <div v-if="employeeReadiness" class="readiness-panel">
@@ -113,10 +135,10 @@
         </p>
         <p v-if="scaffoldEnvHint" class="muted small emp-env-hint">{{ scaffoldEnvHint }}</p>
         <div class="emp-toolbar">
-          <button type="button" class="btn btn-primary btn-sm" @click="openEmployeeModal('add')">添加员工名片</button>
+          <button type="button" class="btn btn-primary btn-sm" @click="openEmployeePickModal">添加员工名片</button>
         </div>
         <p v-if="!workflowEmployeesRows.length" class="muted small emp-empty">
-          还没有声明任何员工。点「添加员工名片」即可从零增加；也可在「配置 (JSON)」里批量编辑 <code class="mono">workflow_employees</code>。
+          还没有声明任何员工。点「添加员工名片」从已有员工中选择；也可在「配置 (JSON)」里批量编辑 <code class="mono">workflow_employees</code>。
         </p>
         <div v-else class="emp-table-wrap">
           <table class="emp-table">
@@ -383,6 +405,35 @@
       </section>
     </template>
 
+    <!-- 从已有员工中选择（添加名片） -->
+    <div v-if="empPickOpen" class="modal-overlay" @click.self="closeEmployeePickModal">
+      <div class="modal modal-wide">
+        <h2 class="modal-title">从已有员工中选择</h2>
+        <p v-if="empPickLoading" class="muted small">加载中…</p>
+        <p v-else-if="empPickError" class="flash flash-err">{{ empPickError }}</p>
+        <div v-else-if="!empPickRows.length" class="emp-pick-empty">
+          <p>暂无可用员工。请先登录并在「我的员工」或员工制作中登记员工包。</p>
+          <button type="button" class="btn btn-primary btn-sm" @click="goMyEmployees">打开我的员工</button>
+        </div>
+        <ul v-else class="emp-pick-list">
+          <li v-for="row in empPickRows" :key="row.pickKey">
+            <button
+              type="button"
+              class="emp-pick-row"
+              :disabled="empPickSaving"
+              @click="confirmPickEmployee(row)"
+            >
+              <span class="emp-pick-name">{{ row.name }}</span>
+              <span class="emp-pick-meta muted small">{{ row.id }} · {{ row.sourceLabel }}</span>
+            </button>
+          </li>
+        </ul>
+        <div class="modal-actions">
+          <button type="button" class="btn" :disabled="empPickSaving" @click="closeEmployeePickModal">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 员工名片 添加/编辑 -->
     <div v-if="empModalOpen" class="modal-overlay" @click.self="closeEmployeeModal">
       <div class="modal modal-wide">
@@ -644,6 +695,18 @@ const modSandboxOk = computed(() => {
   return src.ok !== false
 })
 
+const vibeHealReport = computed(() => {
+  const src = aiBlueprint.value?.vibe_heal
+  if (!src || typeof src !== 'object') return null
+  return src as Record<string, any>
+})
+
+const vibeIndexReport = computed(() => {
+  const src = aiBlueprint.value?.vibe_index
+  if (!src || typeof src !== 'object') return null
+  return src as Record<string, any>
+})
+
 const linkableWorkflows = ref([])
 const linkPick = reactive({})
 const linkWorkflowBusy = ref(false)
@@ -662,7 +725,150 @@ const empModalError = ref('')
 const empModalMergeHint = ref('')
 const empScaffoldDone = ref(false)
 
+const empPickOpen = ref(false)
+const empPickRows = ref<
+  { pickKey: string; id: string; name: string; version: string; description: string; sourceLabel: string }[]
+>([])
+const empPickLoading = ref(false)
+const empPickError = ref('')
+const empPickSaving = ref(false)
+
 const EMP_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
+
+function slugWorkflowEmpId(raw: string): string {
+  let x = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\./g, '_')
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  if (!x || !/^[a-z]/.test(x)) {
+    x = `emp${Date.now().toString(36)}`
+  }
+  x = x.slice(0, 64)
+  if (!EMP_ID_RE.test(x)) {
+    x = `e${Date.now().toString(36)}`.slice(0, 64)
+  }
+  return x
+}
+
+function allocateWorkflowEmployeeId(taken: Set<string>, preferredRaw: string): string {
+  const base = slugWorkflowEmpId(preferredRaw)
+  if (!taken.has(base)) return base
+  for (let i = 2; i < 200; i++) {
+    const suf = `x${i}`
+    const maxBase = Math.max(1, 64 - suf.length)
+    const candidate = `${base.slice(0, maxBase)}${suf}`
+    if (!taken.has(candidate) && EMP_ID_RE.test(candidate)) return candidate
+  }
+  return slugWorkflowEmpId(`emp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`)
+}
+
+async function openEmployeePickModal() {
+  empPickOpen.value = true
+  empPickError.value = ''
+  empPickRows.value = []
+  await loadEmpPickList()
+}
+
+function closeEmployeePickModal() {
+  empPickOpen.value = false
+  empPickError.value = ''
+  empPickLoading.value = false
+}
+
+async function loadEmpPickList() {
+  empPickLoading.value = true
+  empPickError.value = ''
+  try {
+    const [sqlRows, v1Rows] = await Promise.all([
+      api.listEmployees().catch(() => []),
+      api.listV1Packages('employee_pack', '', 120, 0).catch(() => ({ packages: [] })),
+    ])
+    const merged = new Map<
+      string,
+      { pickKey: string; id: string; name: string; version: string; description: string; sourceLabel: string }
+    >()
+    for (const e of Array.isArray(sqlRows) ? sqlRows : []) {
+      const ex = e as { id?: string; name?: string; version?: string; description?: string }
+      const id = String(ex?.id || '').trim()
+      if (!id) continue
+      merged.set(id, {
+        pickKey: id,
+        id,
+        name: String(ex?.name || id).trim() || id,
+        version: String(ex?.version || '').trim(),
+        description: typeof ex?.description === 'string' ? ex.description : '',
+        sourceLabel: '执行器目录',
+      })
+    }
+    for (const p of v1Rows?.packages || []) {
+      const pkg = p as { id?: string; name?: string; version?: string; description?: string }
+      const id = String(pkg?.id || '').trim()
+      if (!id || merged.has(id)) continue
+      merged.set(id, {
+        pickKey: id,
+        id,
+        name: String(pkg?.name || id).trim() || id,
+        version: String(pkg?.version || '').trim(),
+        description: typeof pkg?.description === 'string' ? pkg.description : '',
+        sourceLabel: '本地包目录',
+      })
+    }
+    empPickRows.value = [...merged.values()].sort((a, b) =>
+      String(a.name).localeCompare(String(b.name), 'zh-CN'),
+    )
+  } catch (e: unknown) {
+    empPickError.value = e instanceof Error ? e.message : String(e)
+    empPickRows.value = []
+  } finally {
+    empPickLoading.value = false
+  }
+}
+
+function goMyEmployees() {
+  closeEmployeePickModal()
+  router.push({ name: 'workbench-unified', query: { focus: 'employee', employeeView: 'list' } })
+}
+
+async function confirmPickEmployee(row: {
+  id: string
+  name: string
+  description: string
+  sourceLabel: string
+}) {
+  if (empPickSaving.value) return
+  empPickSaving.value = true
+  empPickError.value = ''
+  try {
+    const wf = getWorkflowEmployeesArray()
+    const taken = new Set<string>()
+    for (const x of wf) {
+      const id = String(x?.id || '').trim()
+      if (id) taken.add(id)
+    }
+    const internalId = allocateWorkflowEmployeeId(taken, row.id)
+    const label = String(row.name || '').trim() || row.id
+    const panel_title = String(row.name || '').trim() || row.id
+    const panel_summary =
+      typeof row.description === 'string' && row.description.trim()
+        ? row.description.trim().slice(0, 8000)
+        : `来自${row.sourceLabel}的员工包「${row.id}」。`
+    wf.push({
+      id: internalId,
+      label,
+      panel_title,
+      panel_summary,
+    })
+    await persistWorkflowEmployees(wf)
+    closeEmployeePickModal()
+  } catch (e: unknown) {
+    empPickError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    empPickSaving.value = false
+  }
+}
 
 async function patchWorkflowEmployeeNodesRetry() {
   if (!localStorage.getItem('modstore_token')) {
@@ -2074,6 +2280,65 @@ watch(
   word-break: break-word;
   max-height: 14rem;
   overflow: auto;
+}
+
+.emp-pick-empty {
+  padding: 0.5rem 0;
+}
+
+.emp-pick-empty p {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.5;
+}
+
+.emp-pick-list {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  max-height: min(60vh, 22rem);
+  overflow: auto;
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.emp-pick-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.65rem 0.85rem;
+  border: none;
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.emp-pick-row:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.emp-pick-row:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.emp-pick-list li:last-child .emp-pick-row {
+  border-bottom: none;
+}
+
+.emp-pick-name {
+  font-weight: 600;
+}
+
+.emp-pick-meta {
+  font-size: 0.75rem;
+  font-family: ui-monospace, monospace;
 }
 
 @media (max-width: 720px) {

@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 def is_local_source_of_truth() -> bool:
     """``PAYMENT_BACKEND`` 决定本地 JSON 是否仍为真实数据源。
 
+    Phase B：此函数将在 Java 稳定后被硬编码为 ``return False``，随后整个 JSON
+    写入路径（``create``、``merge_fields``、``update_status`` 等）将被删除。
+
+    目前取值：
     - ``java``：Java + PostgreSQL 拥有订单/钱包数据，本模块进入只读保护模式。
     - 其他取值（``python``、空、未识别）：仍把本地 JSON 视为权威来源，保持兼容。
     """

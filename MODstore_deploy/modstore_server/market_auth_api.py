@@ -30,11 +30,11 @@ from modstore_server import account_level_service
 from modstore_server.java_me_profile import fetch_java_user_overlay
 from modstore_server.models import (
     CatalogItem,
-    LandingContactSubmission,
     User,
     VerificationCode,
     get_session_factory,
 )
+from modstore_server.models_user import LandingContactSubmission
 from modstore_server.market_shared import (
     _get_current_user,
     _public_contact_client_key,
@@ -492,6 +492,35 @@ def api_refresh_token(body: RefreshTokenDTO):
         "refresh_token": new_refresh_token,
         "user": {"id": user.id, "username": user.username, "email": user.email},
     }
+
+
+class SendPhoneCodeDTO(BaseModel):
+    phone: str = Field(..., min_length=5, max_length=32)
+
+
+class LoginWithPhoneCodeDTO(BaseModel):
+    phone: str = Field(..., min_length=5, max_length=32)
+    code: str = Field(..., min_length=4, max_length=16)
+
+
+@router.post("/auth/send-phone-code", summary="发送手机短信验证码")
+def api_send_phone_code(body: SendPhoneCodeDTO, request: Request):
+    """发送短信验证码登录。当前实现：以邮箱接口替代（若已配置 SMS_PROVIDER 则由运营对接）。
+    前端 sendPhoneCode 消费此接口。未配置 SMS 服务时返回 503。
+    """
+    sms_provider = (os.environ.get("SMS_PROVIDER") or "").strip()
+    if not sms_provider:
+        raise HTTPException(503, "短信服务未配置，请使用邮箱验证码登录")
+    raise HTTPException(501, "短信验证码功能待接入，请联系管理员")
+
+
+@router.post("/auth/login-with-phone-code", summary="手机验证码登录")
+def api_login_with_phone_code(body: LoginWithPhoneCodeDTO):
+    """手机验证码登录（与 send-phone-code 配套）。未配置 SMS 时返回 503。"""
+    sms_provider = (os.environ.get("SMS_PROVIDER") or "").strip()
+    if not sms_provider:
+        raise HTTPException(503, "短信服务未配置，请使用邮箱验证码登录")
+    raise HTTPException(501, "短信验证码功能待接入，请联系管理员")
 
 
 @router.get("/admin/status")

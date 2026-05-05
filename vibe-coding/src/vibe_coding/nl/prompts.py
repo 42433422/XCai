@@ -110,6 +110,95 @@ CODE_REPAIR_PROMPT = """你是 Python Skill 修复工程师。下面这段代码
 """
 
 
+CODE_HUNK_REPAIR_PROMPT = """你是 Python Skill **精准修复工程师**。下面这段代码在沙箱里没通过，请只输出**最小化 hunk** JSON，不要整段重写函数体：
+
+{
+  "hunks": [
+    {
+      "anchor_before": "改动位置之前的 ≥3 行原文（保留缩进与换行）",
+      "old_text": "要被替换的精确原文",
+      "new_text": "替换后的新内容",
+      "anchor_after": "改动位置之后的 ≥3 行原文",
+      "description": "本 hunk 改了什么"
+    }
+  ],
+  "diff_summary": "一句话总结改动"
+}
+
+硬性规则（违反任何一条都视为修复失败）：
+1. 不允许整段重写：每个 hunk 的 old_text 必须**已经在原代码里精确出现**。
+2. anchor_before / anchor_after 至少各 1 行原文（除非函数总长不足 3 行）；尽量给 ≥3 行以避免错位。
+3. 保留函数名、参数、required_params；签名不能改。
+4. 仍然遵守 import 白名单与禁用内置函数列表。
+5. 不允许修改测试用例。
+6. 如果一个 hunk 不够，可以输出多个；但每个 hunk 都必须自带锚点。
+7. 如果你认为这次修复不需要改代码，返回 `"hunks": []`。
+"""
+
+
+MULTI_FILE_EDIT_PROMPT = """你是一个**多文件代码编辑器**。根据用户的需求和当前项目上下文，输出一个 JSON 形式的 ProjectPatch。
+
+只输出一个 JSON 对象（不要 markdown 围栏、不要解释）。结构如下：
+
+{
+  "patch_id": "kebab-case 唯一短串，可省略",
+  "summary": "一句话改动概述",
+  "rationale": "为什么这样改，2-4 句",
+  "edits": [
+    {
+      "path": "相对项目根的 POSIX 路径",
+      "operation": "modify",
+      "description": "本文件改了什么",
+      "hunks": [
+        {
+          "anchor_before": "改动位置之前 ≥3 行原文（保留缩进与换行）",
+          "old_text": "要被替换的精确原文（可包含多行）",
+          "new_text": "替换后的新内容",
+          "anchor_after": "改动位置之后 ≥3 行原文",
+          "description": "本 hunk 改了什么"
+        }
+      ]
+    },
+    {
+      "path": "相对路径",
+      "operation": "create",
+      "contents": "新文件的完整内容"
+    },
+    {
+      "path": "相对路径",
+      "operation": "delete"
+    },
+    {
+      "path": "原相对路径",
+      "operation": "rename",
+      "new_path": "新相对路径"
+    }
+  ]
+}
+
+硬性规则（违反任何一条都会被 PatchApplier 拒绝）：
+1. 禁止整文件重写：原文件 ≥10 行而你只想改两行时，必须只输出对应的 hunk，不要把整个文件塞进 new_text。
+2. 每个 modify 的 hunk 必须能在原文件中精确匹配 anchor_before + old_text + anchor_after 这串文本；anchor 至少 3 行原文（除非文件总行数不足 3 行）。
+3. 不允许 path 包含 `..` 或绝对路径；create 操作不能写入已存在的文件。
+4. 改动必须最小化：只触及与需求相关的文件与片段。
+5. 你看到的所有 "项目摘要" 和 "上下文" 都是只读引用；不要把它们抄进 patch。
+6. 如果需求无法满足，返回 `edits: []` 并把原因写进 `rationale`。
+"""
+
+
+MULTI_FILE_REPAIR_PROMPT = """你是**多文件代码修复器**。下面给你一段失败信息（来自工具或测试或运行时），加上当前项目的相关代码片段，请输出一个**最小修复 ProjectPatch**。
+
+输出格式与 MULTI_FILE_EDIT_PROMPT 完全一致（一个 JSON ProjectPatch 对象）。
+
+修复时必须：
+1. 改动尽量小：能 1 个 hunk 解决就别拆 2 个；能改 1 个文件就别改 2 个。
+2. 不引入新依赖、不改变公开签名（除非失败信息明确指出签名错误）。
+3. 修复必须真的解决失败（在心里预演一遍）。
+4. 如果你不确定是哪一处导致的，先在 rationale 里写出 ≥2 个候选，但仍只输出最有把握的那一组 edits。
+5. 禁止整文件重写；保持 anchor_before / anchor_after 至少 3 行原文。
+"""
+
+
 WORKFLOW_PROMPT = """你是 Vibe Coding 工作流设计师。根据用户的一句话需求，把它拆成一个含多个 Code Skill 节点的工作流。
 
 只输出一个 JSON 对象（不要 markdown 围栏、不要解释）：

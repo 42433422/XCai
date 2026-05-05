@@ -383,6 +383,11 @@ class ESkillRuntime:
         if logic_type == "pipeline":
             return self._execute_pipeline(logic, input_data, user_id=user_id)
 
+        if logic_type in ("vibe_code", "vibe_workflow"):
+            from modstore_server.integrations.vibe_eskill_adapter import execute_vibe_kind
+
+            return execute_vibe_kind(logic, input_data, user_id=user_id)
+
         raise ValueError(f"不支持的 ESkill 静态逻辑类型: {logic_type}")
 
     def _execute_pipeline(
@@ -414,6 +419,13 @@ class ESkillRuntime:
                     context,
                     user_id=user_id,
                 ).get("employee_result")
+            elif step_type in ("vibe_code", "vibe_workflow"):
+                vibe_out = self._execute_logic(
+                    {"type": step_type, **step},
+                    context,
+                    user_id=user_id,
+                )
+                value = vibe_out.get("vibe_run") or vibe_out.get("vibe_workflow_run") or vibe_out
             else:
                 raise ValueError(f"不支持的 pipeline step 类型: {step_type}")
             outputs[output_var] = value

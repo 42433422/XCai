@@ -24,7 +24,38 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $SshTarget) { throw "SshTarget is required. Example: -SshTarget root@your-server" }
+# 可选：在 MODstore_deploy 根目录放 deploy-target.local.ps1，仅本机使用（已 gitignore），用于设置 $env:DEPLOY_* 
+$_scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$_deployRoot = Split-Path -Parent $_scriptDir
+$_localTarget = Join-Path $_deployRoot "deploy-target.local.ps1"
+if (Test-Path $_localTarget) {
+  . $_localTarget
+  if (-not $SshTarget -and $env:DEPLOY_SSH) { $SshTarget = $env:DEPLOY_SSH }
+  if (-not $RemoteRepo -and $env:DEPLOY_REMOTE_REPO) { $RemoteRepo = $env:DEPLOY_REMOTE_REPO }
+  if (-not $Branch -and $env:DEPLOY_GIT_BRANCH) { $Branch = $env:DEPLOY_GIT_BRANCH }
+}
+
+# 进程级未设置时，读取 Windows「用户/系统」环境变量（图形界面里配置的 DEPLOY_SSH 在此）
+if (-not $SshTarget) {
+  $SshTarget = [Environment]::GetEnvironmentVariable('DEPLOY_SSH', 'User')
+}
+if (-not $SshTarget) {
+  $SshTarget = [Environment]::GetEnvironmentVariable('DEPLOY_SSH', 'Machine')
+}
+if (-not $RemoteRepo) {
+  $RemoteRepo = [Environment]::GetEnvironmentVariable('DEPLOY_REMOTE_REPO', 'User')
+}
+if (-not $RemoteRepo) {
+  $RemoteRepo = [Environment]::GetEnvironmentVariable('DEPLOY_REMOTE_REPO', 'Machine')
+}
+if (-not $Branch) {
+  $Branch = [Environment]::GetEnvironmentVariable('DEPLOY_GIT_BRANCH', 'User')
+}
+if (-not $Branch) {
+  $Branch = [Environment]::GetEnvironmentVariable('DEPLOY_GIT_BRANCH', 'Machine')
+}
+
+if (-not $SshTarget) { throw "SshTarget is required. Set user env DEPLOY_SSH or pass -SshTarget root@your-server" }
 if (-not $RemoteRepo) { $RemoteRepo = "/root/modstore-git" }
 if (-not $Branch) { $Branch = "main" }
 if (-not $ApiUrl) { $ApiUrl = "http://127.0.0.1:8765" }

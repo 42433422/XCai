@@ -391,6 +391,8 @@ class UserPlan(Base):
     expires_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    auto_renew = Column(Boolean, default=True, nullable=False)
+    renewal_fail_reason = Column(Text, default="")
 
 
 class Quota(Base):
@@ -936,6 +938,86 @@ class ScriptWorkflowRun(Base):
     completed_at = Column(DateTime, nullable=True)
 
 
+class AuthorEarning(Base):
+    """作者分润流水：每笔商品交易完成后写入一条，记录平台抽成后的净收益。
+
+    status 流转：pending → settled → withdrawn
+    """
+
+    __tablename__ = "author_earnings"
+    __table_args__ = (UniqueConstraint("order_id", name="uq_author_earning_order"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String(64), nullable=False, index=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    item_id = Column(Integer, ForeignKey("catalog_items.id"), nullable=True, index=True)
+    gross = Column(Float, nullable=False)
+    platform_fee_rate = Column(Float, nullable=False, default=0.30)
+    net = Column(Float, nullable=False)
+    status = Column(String(16), default="pending", index=True)  # pending/settled/withdrawn
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    settled_at = Column(DateTime, nullable=True)
+
+
+class AuthorWithdrawal(Base):
+    """作者提现申请。"""
+
+    __tablename__ = "author_withdrawals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    status = Column(String(16), default="pending", index=True)  # pending/processing/done/rejected
+    admin_note = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    processed_at = Column(DateTime, nullable=True)
+
+
+class Invoice(Base):
+    """发票申请：用户对已支付订单申请开具增值税电子发票（MVP 由管理员手工处理）。
+
+    status 流转：pending → issued / rejected
+    """
+
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    order_ids_json = Column(Text, nullable=False, default="[]")  # JSON array of out_trade_no
+    amount = Column(Float, nullable=False)
+    tax_rate = Column(Float, default=0.06)
+    invoice_type = Column(String(16), default="personal")  # personal/company
+    title = Column(String(256), default="")
+    tax_no = Column(String(64), default="")
+    status = Column(String(16), default="pending", index=True)  # pending/issued/rejected
+    reject_reason = Column(Text, default="")
+    pdf_url = Column(String(1024), default="")
+    issued_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ReconciliationReport(Base):
+    """平台对账报告快照：按时间段汇总 GMV、平台收益、作者应付。"""
+
+    __tablename__ = "reconciliation_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    period_start = Column(DateTime, nullable=False, index=True)
+    period_end = Column(DateTime, nullable=False, index=True)
+    total_orders = Column(Integer, default=0)
+    total_gmv = Column(Float, default=0.0)
+    platform_revenue = Column(Float, default=0.0)
+    author_payable = Column(Float, default=0.0)
+    refunds_count = Column(Integer, default=0)
+    refunds_amount = Column(Float, default=0.0)
+    wallet_top_ups = Column(Float, default=0.0)
+    alipay_income = Column(Float, default=0.0)
+    status = Column(String(16), default="draft", index=True)  # draft/confirmed
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    confirmed_at = Column(DateTime, nullable=True)
+
+
 # 客服 ORM 与主库共用 ``Base``/metadata，确保 ``init_db`` 建表且 ``users`` FK 可解析。
 import modstore_server.models_cs  # noqa: F401, E402
 
@@ -1061,6 +1143,14 @@ def init_db(db_path: Optional[Path] = None):
         pass
     try:
         _sqlite_add_column_if_missing(engine, "workflows", "kind", "TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        _sqlite_add_column_if_missing(engine, "user_plans", "auto_renew", "BOOLEAN NOT NULL DEFAULT 1")
+    except Exception:
+        pass
+    try:
+        _sqlite_add_column_if_missing(engine, "user_plans", "renewal_fail_reason", "TEXT DEFAULT ''")
     except Exception:
         pass
     init_default_plan_templates()

@@ -8,7 +8,7 @@
  * 渲染器属性）仍保留在 useWorkflowGraph.ts，以避免在 domain 层引入第三方类型依赖。
  */
 
-import type { NodeKind } from '../../views/workflow/v2/composables/useNodeRegistry'
+import type { NodeKind } from './nodeKinds'
 
 export interface BackendWorkflowMeta {
   id: number

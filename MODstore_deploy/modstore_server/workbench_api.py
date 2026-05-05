@@ -840,6 +840,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 blueprint["employee_impl_result"] = impl_result
                 blueprint["graph_patch_result"] = graph_patch_result
                 blueprint["pack_register_result"] = register_result
+                vibe_heal_report = impl_result.get("vibe_heal") if isinstance(impl_result, dict) else None
                 write_mod_suite_blueprint(
                     mod_dir,
                     blueprint,
@@ -849,6 +850,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                     api_summary=api_summary,
                     workflow_sandbox=workflow_sandbox,
                     employee_readiness=employee_readiness,
+                    vibe_heal=vibe_heal_report if isinstance(vibe_heal_report, dict) else None,
                 )
 
                 await _set_step(sid, "mod_sandbox", "running", "正在校验 Mod manifest、蓝图与路由骨架")
@@ -1451,6 +1453,205 @@ class WorkbenchEdgeTtsBody(BaseModel):
     text: str = Field(..., min_length=1, max_length=5000)
     voice: str = Field("zh-CN-XiaoxiaoNeural", max_length=120)
     rate: float = Field(1.0, ge=0.6, le=1.6, description="相对语速，约映射到 Edge 的 rate 百分比")
+
+
+class WorkbenchVibeCodeSkillBody(BaseModel):
+    """工作台「AI 代码技能」: NL → vibe-coding CodeSkill → 试跑 → 可选发布。"""
+
+    brief: str = Field(..., min_length=3, max_length=8000)
+    run_input: Dict[str, Any] = Field(default_factory=dict)
+    skill_id: Optional[str] = Field(None, max_length=128)
+    mode: Literal["brief_first", "direct"] = "brief_first"
+    dry_run: bool = Field(False, description="为 True 时只生成代码 + 试跑,不上架")
+    provider: Optional[str] = Field(None, max_length=64)
+    model: Optional[str] = Field(None, max_length=128)
+    publish: Optional[Dict[str, Any]] = Field(
+        None,
+        description="非空时在试跑通过后调 SkillPublisher 上架到本 MODstore",
+    )
+
+
+@router.post("/vibe-code-skill", summary="vibe-coding NL → CodeSkill 全闭环")
+async def workbench_vibe_code_skill(
+    body: WorkbenchVibeCodeSkillBody,
+    user: User = Depends(_get_current_user),
+):
+    """vibe-coding 端到端 API:生成代码、试跑、可选直接上架本 MODstore。
+
+    本接口同步返回(单次代码生成大约 5-30 秒,取决于 LLM 速度);
+    长时间任务请用「脚本工作流」。
+    """
+    from modstore_server.mod_scaffold_runner import resolve_llm_provider_model_auto
+
+    sf = get_session_factory()
+    with sf() as db:
+        prov, mdl, err = await resolve_llm_provider_model_auto(
+            db, user, body.provider, body.model
+        )
+        if err:
+            raise HTTPException(400, err)
+
+    def _do() -> Dict[str, Any]:
+        try:
+            from modstore_server.integrations.vibe_adapter import (
+                VibeIntegrationError,
+                get_vibe_coder,
+            )
+        except ImportError as exc:
+            return {"ok": False, "error": f"未启用 vibe-coding 集成: {exc}"}
+
+        sf2 = get_session_factory()
+        with sf2() as session:
+            try:
+                coder = get_vibe_coder(
+                    session=session,
+                    user_id=int(user.id or 0),
+                    provider=prov,
+                    model=mdl,
+                )
+            except VibeIntegrationError as exc:
+                return {"ok": False, "error": str(exc)}
+
+            try:
+                skill = coder.code(
+                    body.brief.strip(),
+                    mode=body.mode,
+                    skill_id=(body.skill_id or None),
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"vibe-coding 生成失败: {exc}"}
+
+            sid = getattr(skill, "skill_id", "") or ""
+            run_dict: Optional[Dict[str, Any]] = None
+            try:
+                run_obj = coder.run(sid, dict(body.run_input or {}))
+                run_dict = (
+                    run_obj.to_dict()
+                    if hasattr(run_obj, "to_dict") and callable(run_obj.to_dict)
+                    else {"output": getattr(run_obj, "output", None)}
+                )
+            except Exception as exc:  # noqa: BLE001
+                run_dict = {"ok": False, "error": f"试跑失败: {exc}"}
+
+            skill_dict: Dict[str, Any]
+            if hasattr(skill, "to_dict") and callable(skill.to_dict):
+                skill_dict = dict(skill.to_dict())
+            else:
+                skill_dict = {
+                    "skill_id": sid,
+                    "code": getattr(skill, "code", "") or "",
+                }
+
+            publish_dict: Optional[Dict[str, Any]] = None
+            if body.publish and not body.dry_run:
+                publish_dict = _publish_vibe_skill_via_local_modstore(
+                    coder, sid, body.publish, user_id=int(user.id or 0)
+                )
+
+            return {
+                "ok": True,
+                "provider": prov,
+                "model": mdl,
+                "skill": skill_dict,
+                "run": run_dict,
+                "publish": publish_dict,
+            }
+
+    out = await asyncio.to_thread(_do)
+    return out
+
+
+def _publish_vibe_skill_via_local_modstore(
+    coder: Any,
+    skill_id: str,
+    publish_cfg: Dict[str, Any],
+    *,
+    user_id: int,
+) -> Dict[str, Any]:
+    """直接调本 MODstore 的 catalog 上传接口,不用 HTTP 自调来回。
+
+    用 vibe-coding 的 ``SkillPackager`` 打包(它知道 .xcmod 内部结构),
+    再走 :func:`catalog_store.append_package` + ``CatalogItem`` 写库。
+    """
+    try:
+        from vibe_coding.agent.marketplace import (  # type: ignore[import-not-found]
+            PublishOptions,
+            SkillPackager,
+        )
+    except ImportError as exc:
+        return {"ok": False, "error": f"vibe-coding marketplace 未安装: {exc}"}
+
+    pkg_id = str(publish_cfg.get("pkg_id") or "").strip()
+    if not pkg_id:
+        return {"ok": False, "error": "publish.pkg_id 必填"}
+    artifact_kind = str(publish_cfg.get("artifact") or "mod").strip() or "mod"
+    if artifact_kind not in ("mod", "employee_pack"):
+        return {"ok": False, "error": f"不支持的 artifact: {artifact_kind}"}
+
+    try:
+        skill = coder.code_store.get_code_skill(skill_id)
+    except KeyError:
+        return {"ok": False, "error": f"skill_id 不存在: {skill_id}"}
+
+    options = PublishOptions(
+        pkg_id=pkg_id,
+        version=str(publish_cfg.get("version") or "1.0.0"),
+        name=str(publish_cfg.get("name") or pkg_id),
+        description=str(publish_cfg.get("description") or ""),
+        price=float(publish_cfg.get("price") or 0.0),
+        artifact=artifact_kind,
+        industry=str(publish_cfg.get("industry") or "通用"),
+        author=f"user-{user_id}",
+    )
+    try:
+        packager = SkillPackager()
+        artifact = packager.package_skill(skill, options=options)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"打包失败: {exc}"}
+
+    try:
+        from modstore_server.catalog_store import append_package
+        from modstore_server.models import CatalogItem
+
+        rec = {
+            "id": pkg_id,
+            "name": options.name,
+            "version": options.version,
+            "description": options.description,
+            "artifact": artifact_kind,
+            "industry": options.industry,
+            "release_channel": "stable",
+            "commerce": {"mode": "free" if options.price <= 0 else "paid", "price": options.price},
+            "license": {"type": "personal", "verify_url": None},
+        }
+        sf3 = get_session_factory()
+        with sf3() as session:
+            saved = append_package(rec, Path(artifact.archive_path))
+            row = session.query(CatalogItem).filter(CatalogItem.pkg_id == pkg_id).first()
+            if not row:
+                row = CatalogItem(pkg_id=pkg_id, author_id=user_id)
+                session.add(row)
+            row.version = saved.get("version") or rec["version"]
+            row.name = saved.get("name") or rec["name"]
+            row.description = saved.get("description") or rec["description"]
+            row.price = float(options.price)
+            row.artifact = artifact_kind
+            row.industry = saved.get("industry") or rec["industry"]
+            row.stored_filename = saved.get("stored_filename") or ""
+            row.sha256 = saved.get("sha256") or ""
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"上架到本地 MODstore 失败: {exc}",
+            "artifact": getattr(artifact, "to_dict", lambda: {})(),
+        }
+    return {
+        "ok": True,
+        "pkg_id": pkg_id,
+        "version": options.version,
+        "artifact": getattr(artifact, "to_dict", lambda: {})(),
+    }
 
 
 @router.post("/tts/edge", summary="微软在线神经 TTS（edge-tts，返回 MP3）")

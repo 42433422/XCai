@@ -105,6 +105,7 @@ from modman.store import (
     project_root,
     pull_from_xcagi,
     remove_mod,
+    remove_mod_by_manifest_id,
 )
 from modstore_server.employee_pack_export import build_employee_pack_zip_from_workflow
 from modstore_server.auth_service import decode_access_token, get_user_by_id
@@ -796,14 +797,15 @@ def api_mod_frontend_regenerate(
 
 @api_router.delete("/api/mods/{mod_id}", tags=["mods"])
 def api_delete_mod(mod_id: str, user: User = Depends(_require_user)):
-    _assert_user_owns_mod(user, mod_id)
+    mid = mod_id.strip()
+    _assert_user_owns_mod(user, mid)
     try:
-        remove_mod(_lib(), mod_id)
+        remove_mod_by_manifest_id(_lib(), mid)
     except FileNotFoundError:
         raise HTTPException(404, "不存在") from None
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    remove_user_mod(user.id, mod_id)
+    remove_user_mod(user.id, mid)
     return {"ok": True}
 
 

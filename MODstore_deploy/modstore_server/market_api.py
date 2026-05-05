@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from modstore_server.auth_service import (
@@ -49,11 +49,20 @@ from modstore_server.models import (
 router = APIRouter(prefix="/api", tags=["market"])
 
 # ── Auth helpers (legacy aliases) ───────────────────────────────
-# 共享认证依赖来自 ``api/deps``，这里仅保留模块级别的别名以避免大批量
-# Depends 重写。``test_neuro_ddd_boundaries`` 锁定本文件不再 *自己* 实现
-# auth helper，详见 ``application/auth.py``。
 _get_current_user = get_current_user
 _require_admin = require_admin
+
+
+def _get_optional_user(authorization: Optional[str] = Header(None)) -> Optional[User]:
+    """可选登录依赖：Authorization 头存在且有效则返回 User，否则返回 None。
+    使用 Depends(lambda) 无法让 FastAPI 注入 Header，必须用正式依赖函数。
+    """
+    if not authorization:
+        return None
+    try:
+        return _get_current_user(authorization)
+    except HTTPException:
+        return None
 
 
 # ── DTOs ─────────────────────────────────────────────────────
@@ -694,7 +703,7 @@ def api_market_catalog(
     security_level: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    user: Optional[User] = Depends(lambda authorization=None: _get_current_user(authorization) if authorization else None),
+    user: Optional[User] = Depends(_get_optional_user),
 ):
     sf = get_session_factory()
     with sf() as session:
@@ -745,7 +754,7 @@ def api_market_catalog(
 @router.get("/market/catalog/{item_id}")
 def api_market_catalog_detail(
     item_id: int,
-    user: Optional[User] = Depends(lambda authorization=None: _get_current_user(authorization) if authorization else None),
+    user: Optional[User] = Depends(_get_optional_user),
 ):
     sf = get_session_factory()
     with sf() as session:
@@ -1339,12 +1348,15 @@ def api_complete_upload(
 
 @router.delete("/admin/catalog/{item_id}")
 def api_admin_delete_catalog(item_id: int, user: User = Depends(_require_admin)):
+    from modstore_server import catalog_store
+
     sf = get_session_factory()
     with sf() as session:
         item = session.query(CatalogItem).filter(CatalogItem.id == item_id).first()
         if not item:
             raise HTTPException(404, "商品不存在")
 
+        pkg_id = item.pkg_id or ""
         if item.stored_filename:
             file_path = _catalog_files_dir() / item.stored_filename
             if file_path.is_file():
@@ -1352,7 +1364,46 @@ def api_admin_delete_catalog(item_id: int, user: User = Depends(_require_admin))
 
         session.delete(item)
         session.commit()
-        return {"ok": True, "deleted_id": item_id}
+
+    n_json = catalog_store.remove_package(pkg_id, version=None) if pkg_id else 0
+    return {"ok": True, "deleted_id": item_id, "removed_catalog_store": n_json}
+
+
+@router.delete("/admin/employee-packs/{pkg_id:path}")
+def api_admin_delete_employee_pack(pkg_id: str, user: User = Depends(_require_admin)):
+    """删除员工包：清掉本地 ``/v1`` catalog（``packages.json`` + ``files/``）中该 ``pkg_id`` 全部版本，并删除 ``catalog_items`` 中 ``artifact=employee_pack`` 的登记行。"""
+    from modstore_server import catalog_store
+
+    pid = catalog_store.norm_pkg_id(pkg_id)
+    if not pid:
+        raise HTTPException(400, "pkg_id 无效")
+
+    n_json = catalog_store.remove_package(pid, version=None)
+    removed_db = False
+    sf = get_session_factory()
+    with sf() as session:
+        rows = (
+            session.query(CatalogItem)
+            .filter(CatalogItem.artifact == "employee_pack")
+            .all()
+        )
+        to_delete = [x for x in rows if catalog_store.norm_pkg_id(x.pkg_id) == pid]
+        for item in to_delete:
+            if item.stored_filename:
+                file_path = _catalog_files_dir() / item.stored_filename
+                if file_path.is_file():
+                    file_path.unlink()
+            session.delete(item)
+        if to_delete:
+            session.commit()
+            removed_db = True
+    # 幂等：列表已刷新或重复点击删除时，本地与库可能均已无记录，不再报 404
+    return {
+        "ok": True,
+        "removed_catalog_store": n_json,
+        "removed_db": removed_db,
+        "already_absent": n_json == 0 and not removed_db,
+    }
 
 
 @router.get("/admin/users")
@@ -1451,6 +1502,69 @@ def api_admin_list_transactions(
             ],
             "total": total,
         }
+
+
+# ── Wallet overview ──────────────────────────────────────────
+
+@router.get("/wallet/overview")
+def api_wallet_overview(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(_get_current_user),
+):
+    """钱包概览：余额 + 最近交易流水（前端 walletOverview 消费此接口）。"""
+    sf = get_session_factory()
+    with sf() as session:
+        wallet = session.query(Wallet).filter(Wallet.user_id == user.id).first()
+        balance = wallet.balance if wallet else 0.0
+        total = session.query(Transaction).filter(Transaction.user_id == user.id).count()
+        rows = (
+            session.query(Transaction)
+            .filter(Transaction.user_id == user.id)
+            .order_by(Transaction.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return {
+            "balance": balance,
+            "transactions": [
+                {
+                    "id": r.id,
+                    "amount": r.amount,
+                    "type": r.txn_type,
+                    "status": r.status,
+                    "description": r.description,
+                    "created_at": r.created_at.isoformat() if r.created_at else "",
+                }
+                for r in rows
+            ],
+            "total": total,
+        }
+
+
+# ── Package audit (standalone) ────────────────────────────────
+
+
+@router.post("/package-audit")
+async def api_package_audit(
+    file: UploadFile = File(...),
+    metadata: Optional[str] = Form(None),
+    user: User = Depends(_get_current_user),
+):
+    """通用包审计接口（前端 auditPackage 消费此接口）。上传 .zip/.xcemp，返回五维审核结论。"""
+    import json as _json
+    from modstore_server.package_sandbox_audit import run_package_audit_async
+
+    raw = await file.read()
+    meta: dict = {}
+    if metadata:
+        try:
+            meta = _json.loads(metadata)
+        except Exception:
+            pass
+    result = await run_package_audit_async(raw, meta or None)
+    return result
 
 
 # ── Init on import ──────────────────────────────────────────

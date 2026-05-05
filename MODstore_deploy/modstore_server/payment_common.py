@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -25,7 +26,75 @@ from modstore_server.models import (
 logger = logging.getLogger(__name__)
 
 REPLAY_WINDOW = 300
-processed_requests: set[str] = set()
+
+
+class _ReplayGuard:
+    """进程内带 TTL 的防重放 nonce 集合。
+
+    多 worker 不共享：依赖 ``payment_contract`` 文档约定的"高并发场景必须用 Redis"。
+    本结构只解决单 worker 长时间运行的内存泄漏（旧实现 ``set()`` 永不淘汰）。
+
+    元素到期后在下一次 ``add`` / ``__contains__`` 时被惰性回收；当字典超过
+    ``soft_limit`` 时强制全量 prune，确保最坏情况下内存占用有界。
+    """
+
+    __slots__ = ("_data", "_lock", "_window", "_soft_limit", "_calls_since_prune")
+
+    def __init__(self, *, window_seconds: float = REPLAY_WINDOW, soft_limit: int = 50_000) -> None:
+        self._data: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._window = float(window_seconds)
+        self._soft_limit = int(soft_limit)
+        self._calls_since_prune = 0
+
+    def __contains__(self, key: str) -> bool:
+        now = time.time()
+        with self._lock:
+            expiry = self._data.get(key)
+            if expiry is None:
+                return False
+            if expiry <= now:
+                self._data.pop(key, None)
+                return False
+            return True
+
+    def add(self, key: str) -> None:
+        now = time.time()
+        with self._lock:
+            self._data[key] = now + self._window
+            self._calls_since_prune += 1
+            if self._calls_since_prune >= 100 or len(self._data) >= self._soft_limit:
+                self._prune_locked(now)
+                self._calls_since_prune = 0
+
+    def discard(self, key: str) -> None:
+        with self._lock:
+            self._data.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+            self._calls_since_prune = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+    # Phase B: compat shim — a few legacy spots / tests check
+    # ``request_id in processed_requests`` and ``processed_requests.add(request_id)``.
+    # Once all callers are updated to use ``contains()`` / ``mark_processed()`` directly,
+    # remove these aliases and the ``__iter__`` method below.
+    def __iter__(self):
+        with self._lock:
+            return iter(list(self._data.keys()))
+
+    def _prune_locked(self, now: float) -> None:
+        expired = [k for k, exp in self._data.items() if exp <= now]
+        for k in expired:
+            self._data.pop(k, None)
+
+
+processed_requests = _ReplayGuard()
 
 _AMOUNT_TOLERANCE = 0.01
 
@@ -108,9 +177,10 @@ def check_replay_attack(request_id: str, timestamp: int) -> bool:
         return True
     if request_id is None or not str(request_id).strip():
         return True
-    if request_id in processed_requests:
+    rid = str(request_id)
+    if rid in processed_requests:
         return True
-    processed_requests.add(request_id)
+    processed_requests.add(rid)
     return False
 
 

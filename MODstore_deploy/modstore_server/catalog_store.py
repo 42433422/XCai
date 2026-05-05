@@ -13,6 +13,30 @@ from typing import Any, Dict, List, Tuple
 _lock = threading.Lock()
 
 
+def norm_pkg_id(v: Any) -> str:
+    """与列表/登记接口对齐的包 id 规范化（去空白、int/float 与字符串统一）。"""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v).strip()
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        try:
+            if v.is_integer():
+                return str(int(v))
+        except (ValueError, OverflowError):
+            pass
+        return str(v).strip()
+    return str(v).strip()
+
+
+def norm_version(v: Any) -> str:
+    if v is None:
+        return ""
+    return str(v).strip()
+
+
 def default_catalog_dir() -> Path:
     raw = (os.environ.get("MODSTORE_CATALOG_DIR") or "").strip()
     if raw:
@@ -177,3 +201,39 @@ def append_package(record: Dict[str, Any], src_file: Path | None) -> Dict[str, A
         data["packages"] = pkgs
         save_store(data)
     return rec
+
+
+def remove_package(pkg_id: str, version: str | None = None) -> int:
+    """从 packages.json 移除记录；若 ``version`` 为 ``None`` 则移除该 ``pkg_id`` 下全部版本。
+
+    同时删除 ``stored_filename`` 指向的 ``files/`` 下本地文件（若存在）。
+    返回移除的记录条数。
+    """
+    pid = norm_pkg_id(pkg_id)
+    if not pid:
+        return 0
+    ver_filter = norm_version(version) if version is not None else None
+    removed = 0
+    with _lock:
+        data = load_store()
+        pkgs = list(data.get("packages") or [])
+        new_pkgs: List[Dict[str, Any]] = []
+        for r in pkgs:
+            if norm_pkg_id(r.get("id")) != pid:
+                new_pkgs.append(r)
+                continue
+            if ver_filter is not None and norm_version(r.get("version")) != ver_filter:
+                new_pkgs.append(r)
+                continue
+            fn = str(r.get("stored_filename") or "").strip()
+            if fn:
+                p = files_dir() / fn
+                if p.is_file():
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+            removed += 1
+        data["packages"] = new_pkgs
+        save_store(data)
+    return removed

@@ -32,14 +32,6 @@
       </div>
     </div>
 
-    <section class="path-sync-card remote-pull-card" aria-labelledby="remote-pull-title">
-      <h2 id="remote-pull-title" class="path-sync-title">密钥同步到 XCAGI</h2>
-      <pre class="remote-cmd-block" tabindex="0">{{ remoteDeployCmd }}</pre>
-      <div class="path-sync-actions">
-        <button type="button" class="btn btn-secondary" @click="copyRemoteDeployCmd">复制命令</button>
-      </div>
-    </section>
-
     <div v-if="message" :class="['flash', messageOk ? 'flash-ok' : 'flash-err']">{{ message }}</div>
 
     <div v-if="loading" class="loading">加载中...</div>
@@ -97,11 +89,11 @@
           <button
             type="button"
             class="btn btn-sm btn-danger"
-          :disabled="deleteModBusy === libraryFolderForDeleteApi(m)"
+          :disabled="deleteModBusy === modIdForDeleteApi(m)"
           title="从当前账号的 Mod 库中整包删除（需已登录）；不可恢复"
           @click="deleteModFromLibrary(m)"
         >
-          {{ deleteModBusy === libraryFolderForDeleteApi(m) ? '删除中…' : '删除 Mod' }}
+          {{ deleteModBusy === modIdForDeleteApi(m) ? '删除中…' : '删除 Mod' }}
           </button>
         </div>
       </div>
@@ -149,12 +141,8 @@
       <div class="modal">
         <h2 class="modal-title">新建 Mod</h2>
         <div class="form-group">
-          <label class="label">目录名 / manifest.id</label>
-          <input v-model="createId" class="input" placeholder="如 acme-pro" />
-        </div>
-        <div class="form-group">
-          <label class="label">显示名称</label>
-          <input v-model="createName" class="input" placeholder="客户或产品名" />
+          <label class="label">名称</label>
+          <input v-model="createName" class="input" placeholder="用作显示名；目录 id 将自动生成" />
         </div>
         <div class="modal-actions">
           <button class="btn" @click="showCreate = false">取消</button>
@@ -166,7 +154,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 
@@ -176,7 +164,6 @@ const loading = ref(true)
 const message = ref('')
 const messageOk = ref(true)
 const showCreate = ref(false)
-const createId = ref('')
 const createName = ref('')
 const showScaffold = ref(false)
 const scaffoldBrief = ref('')
@@ -190,23 +177,29 @@ const deleteModBusy = ref('')
 /** 一键清理：批量删库进行中 */
 const purgeLibraryBusy = ref(false)
 
-const remoteApiOrigin = ref('')
-
-const remoteDeployCmd = computed(() => {
-  const base = (remoteApiOrigin.value || 'https://xiu-ci.com').replace(/\/$/, '')
-  return `set MODSTORE_PAT=pat_你的令牌\npython -m modman remote-deploy --base-url ${base} --token %MODSTORE_PAT% --mods 你的mod_id\n# 全部包：将上一行末尾改为 --all；需显式 XCAGI 目录时追加 --xcagi \"路径\"`
-})
-
 const PREFILL_KEY = 'modstore_employee_prefill'
 
-async function copyRemoteDeployCmd() {
-  const t = remoteDeployCmd.value
-  try {
-    await navigator.clipboard.writeText(t)
-    flash('已复制到剪贴板', true)
-  } catch {
-    flash('复制失败，请手动全选复制', false)
+/** 由显示名生成 manifest / 目录 id（与后端 create_mod 约定一致） */
+function modIdFromDisplayName(name: string): string {
+  const raw = String(name || '')
+    .trim()
+    .toLowerCase()
+  let x = raw.replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+  if (!x) {
+    x = `mod-${Date.now().toString(36)}`
   }
+  if (!/^[a-z]/.test(x)) {
+    x = `m-${x.replace(/[^a-z0-9-]/g, '')}`.replace(/-+/g, '-').replace(/^-|-$/g, '')
+  }
+  if (!x || !/^[a-z]/.test(x)) {
+    x = `mod-${Date.now().toString(36)}`
+  }
+  return x.slice(0, 128)
+}
+
+function isCreateModConflictError(e: unknown): boolean {
+  const msg = (e as { message?: string })?.message || String(e)
+  return msg.includes('已存在') || msg.includes('409') || /FileExistsError/i.test(msg)
 }
 
 function flash(msg, ok = true) {
@@ -215,10 +208,7 @@ function flash(msg, ok = true) {
   setTimeout(() => { message.value = '' }, 5000)
 }
 
-/**
- * 删除 API 必须用磁盘上的库目录名（与 modman remove_mod 一致）。
- * list_mods 的 id 来自 manifest，可能与文件夹名不一致，故优先用 path 的末段目录名。
- */
+/** 磁盘目录末段名（仅用于提示文案；删除 API 须用 manifest id） */
 function libraryFolderForDeleteApi(m) {
   if (!m || typeof m !== 'object') return ''
   const rawPath = typeof m.path === 'string' ? m.path.trim() : ''
@@ -230,6 +220,14 @@ function libraryFolderForDeleteApi(m) {
   return String(m.id || '').trim()
 }
 
+/** DELETE /api/mods/:id 须传 manifest.id（与账号 user_mod 一致）；服务端再解析真实目录 */
+function modIdForDeleteApi(m) {
+  if (!m || typeof m !== 'object') return ''
+  const mid = String(m.id || '').trim()
+  if (mid) return mid
+  return libraryFolderForDeleteApi(m)
+}
+
 function clearRepoPageLocalOnly() {
   message.value = ''
   try {
@@ -238,6 +236,7 @@ function clearRepoPageLocalOnly() {
     /* ignore */
   }
   showCreate.value = false
+  createName.value = ''
   showScaffold.value = false
   scaffoldBrief.value = ''
   scaffoldIdHint.value = ''
@@ -252,7 +251,7 @@ async function purgeRepoLibraryAndLocalState() {
   }
 
   const list = Array.isArray(mods.value) ? mods.value : []
-  const folderKeys = list.map((m) => libraryFolderForDeleteApi(m)).filter(Boolean)
+  const folderKeys = [...new Set(list.map((m) => modIdForDeleteApi(m)).filter(Boolean))]
   const primaryCount = list.filter((m) => m && m.primary).length
   const primaryHint =
     primaryCount > 0
@@ -313,7 +312,8 @@ async function purgeRepoLibraryAndLocalState() {
 }
 
 async function deleteModFromLibrary(m) {
-  const folder = m && typeof m === 'object' ? libraryFolderForDeleteApi(m) : ''
+  const folder = m && typeof m === 'object' ? modIdForDeleteApi(m) : ''
+  const folderSeg = m && typeof m === 'object' ? libraryFolderForDeleteApi(m) : ''
   const displayId = m && typeof m === 'object' ? String(m.id || '').trim() : ''
   if (!folder) return
   if (!localStorage.getItem('modstore_token')) {
@@ -324,7 +324,10 @@ async function deleteModFromLibrary(m) {
   const prim = m.primary
     ? '\n\n注意：该包在 manifest 中标记为主扩展（primary），删除后请确认 XCAGI / 宿主侧不再依赖该 id。'
     : ''
-  const idNote = displayId && displayId !== folder ? `（manifest id：${displayId}；目录名：${folder}）` : `（${folder}）`
+  const idNote =
+    displayId && folderSeg && displayId !== folderSeg
+      ? `（manifest id：${displayId}；目录名：${folderSeg}）`
+      : `（${folder}）`
   if (
     !window.confirm(
       `确定从 Mod 源码库删除「${label}」${idNote}？\n本地库目录将整包删除，且会从你的账号关联中移除。此操作不可恢复。${prim}`,
@@ -337,7 +340,7 @@ async function deleteModFromLibrary(m) {
     await api.deleteMod(folder)
     flash(`已删除 Mod 目录：${folder}`, true)
     await load({ cacheBust: true })
-    if (Array.isArray(mods.value) && mods.value.some((row) => libraryFolderForDeleteApi(row) === folder)) {
+    if (Array.isArray(mods.value) && mods.value.some((row) => modIdForDeleteApi(row) === folder)) {
       flash(`删除已返回成功，但列表仍包含「${folder}」；请强制刷新或检查 GET /api/mods 是否被缓存。`, false)
     }
   } catch (e) {
@@ -469,18 +472,30 @@ async function load(opts?: { cacheBust?: boolean }) {
 }
 
 async function submitCreate() {
-  try {
-    const res = await api.createMod(createId.value, createName.value)
-    const newId = res.id
-    showCreate.value = false
-    createId.value = ''
-    createName.value = ''
-    flash(`已创建 ${newId}`)
-    await load()
-    router.push({ name: 'mod-authoring', params: { modId: newId } })
-  } catch (e) {
-    flash(e.message || String(e), false)
+  const displayName = createName.value.trim()
+  if (!displayName) {
+    flash('请填写名称', false)
+    return
   }
+  const baseId = modIdFromDisplayName(displayName)
+  for (let i = 0; i < 30; i++) {
+    const candidate = i === 0 ? baseId : `${baseId}-${i + 1}`.slice(0, 128)
+    try {
+      const res = await api.createMod(candidate, displayName)
+      const newId = res.id
+      showCreate.value = false
+      createName.value = ''
+      flash(`已创建 ${newId}`)
+      await load()
+      router.push({ name: 'mod-authoring', params: { modId: newId } })
+      return
+    } catch (e: unknown) {
+      if (isCreateModConflictError(e)) continue
+      flash((e as Error)?.message || String(e), false)
+      return
+    }
+  }
+  flash('无法生成可用目录名（重试次数过多）', false)
 }
 
 async function onImport(ev) {
@@ -497,9 +512,6 @@ async function onImport(ev) {
 }
 
 onMounted(() => {
-  if (typeof window !== 'undefined') {
-    remoteApiOrigin.value = window.location.origin || ''
-  }
   void load()
 })
 </script>
@@ -511,78 +523,6 @@ onMounted(() => {
   margin: 0 auto;
   padding: var(--page-pad-y) var(--layout-pad-x);
   box-sizing: border-box;
-}
-
-.path-sync-card {
-  margin-bottom: 1.5rem;
-  padding: 1rem 1.25rem;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.path-sync-title {
-  margin: 0 0 0.5rem;
-  font-size: 1.05rem;
-  color: #e5e7eb;
-}
-
-.path-sync-warn,
-.path-sync-ok {
-  margin: 0 0 0.75rem;
-  font-size: 0.82rem;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, 0.45);
-}
-
-.path-sync-warn {
-  color: #fbbf24;
-}
-
-.path-sync-ok {
-  color: #86efac;
-}
-
-.path-sync-card .mono {
-  font-size: 0.78rem;
-  background: rgba(0, 0, 0, 0.35);
-  padding: 0.12em 0.35em;
-  border-radius: 4px;
-}
-
-.path-sync-grid {
-  display: grid;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-
-@media (min-width: 720px) {
-  .path-sync-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-  .path-sync-grid .form-group:last-child {
-    grid-column: 1 / -1;
-  }
-}
-
-.path-sync-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.remote-cmd-block {
-  margin: 0 0 0.75rem;
-  padding: 12px 14px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(226, 232, 240, 0.92);
-  font-size: 0.78rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-all;
-  overflow-x: auto;
 }
 
 .page-header {

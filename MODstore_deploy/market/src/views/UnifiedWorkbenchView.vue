@@ -51,6 +51,7 @@
       </template>
       <WorkflowPanel v-else-if="viewMode === 'workflow'" />
       <OpenApiConnectorsPanel v-else-if="viewMode === 'integrations'" />
+      <VibeCodeSkillPanel v-else-if="viewMode === 'code_skill'" />
       <RepositoryPanel v-else />
     </section>
   </div>
@@ -63,16 +64,18 @@ import EmployeePanel from '../components/workbench/EmployeePanel.vue'
 import OpenApiConnectorsPanel from '../components/workbench/OpenApiConnectorsPanel.vue'
 import RepositoryPanel from '../components/workbench/RepositoryPanel.vue'
 import WorkflowPanel from '../components/workbench/WorkflowPanel.vue'
+import VibeCodeSkillPanel from '../components/workbench/VibeCodeSkillPanel.vue'
 import MyEmployeesChatView from './MyEmployeesChatView.vue'
 
 const route = useRoute()
 const router = useRouter()
 
-const allowed = new Set(['employee', 'workflow', 'skill', 'repository', 'integrations'])
+const allowed = new Set(['employee', 'workflow', 'skill', 'repository', 'integrations', 'code_skill'])
 
 const modeTabs = [
   { mode: 'employee' as const, label: '专注员工制作' },
   { mode: 'workflow' as const, label: '专注 Skill 组' },
+  { mode: 'code_skill' as const, label: 'AI 代码技能 (vibe)' },
   { mode: 'repository' as const, label: '专注 Mod 库' },
   { mode: 'integrations' as const, label: 'API 连接器' },
 ]
@@ -81,7 +84,7 @@ const routeFocus = computed(() => {
   const raw = String(route.query.focus || '').trim().toLowerCase()
   if (raw === 'hybrid') return 'employee'
   if (raw === 'skill') return 'workflow'
-  return allowed.has(raw) ? raw : 'employee'
+  return allowed.has(raw) ? raw : 'repository'
 })
 
 const employeeSubview = computed(() =>

@@ -31,14 +31,17 @@ from .runtime import CodeSandbox, CodeValidator, JsonCodeSkillStore
 from .runtime.validator import ALLOWED_IMPORT_MODULES
 from ._internals import TriggerPolicy
 from .nl.llm import LLMClient
+from .nl.parsing import JSONParseError, safe_parse_json_object
 from .nl.prompts import (
     BRIEF_FIRST_CODE_PROMPT,
     BRIEF_FIRST_SPEC_PROMPT,
     CODE_DIRECT_PROMPT,
+    CODE_HUNK_REPAIR_PROMPT,
     CODE_REPAIR_PROMPT,
 )
 
 GenerationMode = Literal["direct", "brief_first"]
+RepairMode = Literal["full_rewrite", "hunk"]
 
 
 class VibeCodingError(RuntimeError):
@@ -72,26 +75,49 @@ def _slug(value: str, fallback: str = "skill") -> str:
     return s or fallback
 
 
-def _strip_fence(text: str) -> str:
-    t = (text or "").strip()
-    if t.startswith("```"):
-        t = re.sub(r"^```(?:json|python)?\s*", "", t, flags=re.I)
-        t = re.sub(r"\s*```\s*$", "", t)
-    return t.strip()
+def _apply_hunks_inline(source: str, raw_hunks: list[Any]) -> str:
+    """Apply LLM-supplied hunks to ``source`` using the cascade in
+    :mod:`vibe_coding.agent.patch.repair`.
+
+    The cascade tries (in order) strict anchor + old_text + anchor match,
+    fuzzy anchors within ±10 lines, unique ``old_text`` replacement, and
+    leading-whitespace-tolerant ``old_text`` matching. This dramatically
+    increases the success rate when the LLM gets indentation slightly wrong
+    or anchors drift by a line or two — which it does often enough that
+    the previous strict-only behaviour was the #1 cause of "repair round
+    wasted" telemetry.
+
+    Raises :class:`VibeCodingError` on any unresolvable hunk so the outer
+    retry loop can decide whether to fall back to full-rewrite mode.
+    """
+    # Lazy import to avoid pulling the agent layer for users who only run
+    # the legacy single-skill flow but do nothing with hunks.
+    from .agent.patch.repair import HunkApplyError, apply_hunks_to_source
+
+    for idx, raw in enumerate(raw_hunks):
+        if not isinstance(raw, dict):
+            raise VibeCodingError(f"hunk[{idx}] is not an object")
+    try:
+        outcome = apply_hunks_to_source(source, raw_hunks, raise_on_failure=True)
+    except HunkApplyError as exc:
+        raise VibeCodingError(
+            f"hunk[{exc.hunk_index}] could not be located: {exc.reason}"
+        ) from exc
+    return outcome.source
 
 
 def _parse_json(text: str) -> dict[str, Any]:
-    raw = _strip_fence(text)
+    """Tolerant JSON parser shared with workflow_factory / facade.
+
+    Delegates to :func:`vibe_coding.nl.parsing.safe_parse_json_object` so
+    the same fence-strip / comment-strip / trailing-comma / truncation
+    recovery rules apply to every LLM round-trip in the package.
+    """
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        i, j = raw.find("{"), raw.rfind("}")
-        if i < 0 or j <= i:
-            raise VibeCodingError(f"LLM did not return JSON: {raw[:200]!r}")
-        data = json.loads(raw[i : j + 1])
-    if not isinstance(data, dict):
-        raise VibeCodingError(f"LLM JSON is not an object: {type(data).__name__}")
-    return data
+        return safe_parse_json_object(text)
+    except JSONParseError as exc:
+        snippet = exc.snippet or str(text or "")[:200]
+        raise VibeCodingError(f"LLM did not return JSON: {snippet!r}") from exc
 
 
 class NLCodeSkillFactory:
@@ -116,12 +142,16 @@ class NLCodeSkillFactory:
         validator: CodeValidator | None = None,
         sandbox: CodeSandbox | None = None,
         max_repair_rounds: int = 3,
+        repair_mode: RepairMode = "hunk",
     ):
         self.llm = llm
         self.store = store
         self.validator = validator or CodeValidator()
         self.sandbox = sandbox or CodeSandbox()
         self.max_repair_rounds = int(max_repair_rounds)
+        if repair_mode not in ("full_rewrite", "hunk"):
+            raise ValueError(f"invalid repair_mode {repair_mode!r}")
+        self.repair_mode: RepairMode = repair_mode
 
     # ------------------------------------------------------------------ public
 
@@ -251,6 +281,16 @@ class NLCodeSkillFactory:
         return issues
 
     def _repair_round(self, spec: _Spec, issues: list[str]) -> _Spec:
+        if self.repair_mode == "hunk":
+            # Hunk-mode is tolerant: it accepts both ``hunks`` and a
+            # ``source_code`` field on the same response. We do NOT fall
+            # back to a second LLM call on parse failure — that would
+            # double-spend prompts (and break MockLLM's deterministic
+            # queue). The outer retry loop already gives us another shot.
+            return self._repair_round_hunk(spec, issues)
+        return self._repair_round_full(spec, issues)
+
+    def _repair_round_full(self, spec: _Spec, issues: list[str]) -> _Spec:
         user_msg = (
             "原代码：\n"
             f"```python\n{spec.source_code}\n```\n\n"
@@ -266,6 +306,57 @@ class NLCodeSkillFactory:
         if not new_code:
             raise VibeCodingError("Repair round returned no source_code")
         spec.source_code = new_code
+        return spec
+
+    def _repair_round_hunk(self, spec: _Spec, issues: list[str]) -> _Spec:
+        """Hunk-mode repair: ask the LLM for minimal anchored hunks.
+
+        Tolerant cascade (in order, first that yields valid code wins):
+
+        1. The response contains ``hunks`` and they all locate via the
+           shared :mod:`vibe_coding.agent.patch.repair` cascade (strict
+           anchor → fuzzy anchor → unique old_text → stripped old_text → …).
+        2. The response contains ``hunks`` but they fail to locate AND the
+           LLM also supplied a ``source_code`` field — fall back to that
+           full rewrite (wider blast radius, but still better than wasting
+           the round entirely).
+        3. The response contains only ``source_code`` (no hunks). Use it.
+        4. Nothing parseable: leave ``spec`` unchanged so the outer retry
+           loop can decide whether to give up — this avoids double-spending
+           an LLM call on bad responses.
+        """
+        user_msg = (
+            "原代码：\n"
+            f"```python\n{spec.source_code}\n```\n\n"
+            "测试用例：\n"
+            f"{json.dumps([tc.to_dict() for tc in spec.test_cases], ensure_ascii=False, indent=2)}\n\n"
+            "失败信息：\n"
+            f"{json.dumps(issues, ensure_ascii=False, indent=2)}\n\n"
+            "请只输出最小化的 hunk JSON。"
+        )
+        raw = self.llm.chat(CODE_HUNK_REPAIR_PROMPT, user_msg, json_mode=True)
+        try:
+            payload = _parse_json(raw)
+        except VibeCodingError:
+            return spec
+        raw_hunks = payload.get("hunks")
+        full_rewrite = str(payload.get("source_code") or "").strip()
+
+        if isinstance(raw_hunks, list) and raw_hunks:
+            try:
+                new_code = _apply_hunks_inline(spec.source_code, raw_hunks)
+            except VibeCodingError:
+                # Fallback: if LLM also sent a full source_code, accept it
+                # as a last-resort recovery instead of wasting the round.
+                if full_rewrite:
+                    spec.source_code = full_rewrite
+                return spec
+            if new_code.strip():
+                spec.source_code = new_code
+            return spec
+
+        if full_rewrite:
+            spec.source_code = full_rewrite
         return spec
 
     # -------------------------------------------------------------- persistence

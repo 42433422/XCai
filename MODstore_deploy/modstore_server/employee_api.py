@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from modstore_server.api.deps import _get_current_user
@@ -65,12 +65,14 @@ def _user_may_execute_employee_pack(db: Session, user_id: int, pack_id: str) -> 
 
 @router.get("/", summary="获取员工列表")
 async def list_employees(
+    response: Response,
     db: Session = Depends(get_db),
     user: User = Depends(_get_current_user),
 ):
-    """获取所有可用的AI员工"""
+    """获取所有可用的 AI 员工（数据库 ``catalog_items`` 与本地 ``packages.json`` 已合并去重）。"""
     try:
         employees = list_employees_exec()
+        response.headers["Cache-Control"] = "private, no-store"
         return employees
     except Exception as e:
         raise HTTPException(500, f"获取员工列表失败: {e}")
