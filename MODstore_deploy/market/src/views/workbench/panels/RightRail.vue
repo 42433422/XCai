@@ -368,6 +368,13 @@ function formatDiffVal(val: unknown): string {
         <label class="field-label">工作流 ID *</label>
         <select v-model="workflowId" class="field-select">
           <option :value="0">— 请选择 —</option>
+          <!-- Fallback: manifest has a workflow_id that hasn't passed full sandbox yet -->
+          <option
+            v-if="workflowId > 0 && !store.allWorkflowOptions.some((wf: any) => Number((wf as any).id) === workflowId)"
+            :value="workflowId"
+          >
+            #{{ workflowId }}（生成工作流，待沙箱验证）
+          </option>
           <option
             v-for="wf in store.allWorkflowOptions"
             :key="(wf as Record<string, unknown>).id as number"

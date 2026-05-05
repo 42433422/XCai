@@ -81,10 +81,26 @@ async function loadTarget(kind: TargetKind, id: string | null) {
       const packs = Array.isArray(res?.packages) ? res.packages : (Array.isArray(res) ? res : [])
       const pack = packs.find((p: Record<string, unknown>) => String(p.pack_id ?? p.id ?? '') === id)
       if (pack) {
-        const manifest = upgradeLegacyToV2(
-          (pack as Record<string, unknown>).manifest ?? pack,
+        const rawManifest = (pack as Record<string, unknown>).manifest ?? pack
+        const raw = rawManifest && typeof rawManifest === 'object' ? rawManifest as Record<string, unknown> : {}
+        // Pack manifest can have three shapes:
+        //   1. { employee_config_v2: { identity, cognition, ... } }  ← generated packs
+        //   2. { identity, cognition, ... }                           ← already V2 at root
+        //   3. { panel_summary, workflow_employees, ... }             ← legacy V1
+        const manifest: Record<string, unknown> = (
+          raw.employee_config_v2 && typeof raw.employee_config_v2 === 'object'
+            ? raw.employee_config_v2
+            : raw.identity && typeof raw.identity === 'object'
+              ? raw
+              : upgradeLegacyToV2(raw)
         ) as Record<string, unknown>
-        store.setTarget(kind, id, manifest, String((pack as Record<string, unknown>).name ?? id))
+        const displayName = String(
+          (manifest.identity as Record<string, unknown> | undefined)?.name
+          ?? raw.name
+          ?? (pack as Record<string, unknown>).name
+          ?? id,
+        )
+        store.setTarget(kind, id, manifest, displayName)
         _snapshotBaseline(id, manifest)
       } else {
         const empty = createEmptyEmployeeConfigV2() as Record<string, unknown>
@@ -112,6 +128,17 @@ async function loadTarget(kind: TargetKind, id: string | null) {
 
 onMounted(async () => {
   await loadTarget(resolveKind(), resolveId())
+  // If coming from wb-home generation and manifest has no workflow linked, apply the generated wfId
+  const wfId = Number(route.query.wfId ?? 0)
+  if (wfId > 0) {
+    const curWfId = Number(
+      (store.target.manifest as Record<string, unknown>)
+        ?.collaboration?.workflow?.workflow_id ?? 0,
+    )
+    if (curWfId === 0) {
+      store.patchManifest('collaboration.workflow.workflow_id', wfId)
+    }
+  }
   setTimeout(() => canvasRef.value?.fitView(), 200)
 })
 

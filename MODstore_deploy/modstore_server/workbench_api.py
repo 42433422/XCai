@@ -1217,6 +1217,7 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         "manifest_employee_id": emp.get("id") or res["id"],
                         "name": (res.get("manifest") or {}).get("name"),
                         "description": (res.get("manifest") or {}).get("description"),
+                        "workflow_id": wid,
                         "package": res.get("package") or {},
                         "workflow_sandbox": workflow_sandbox,
                         "mod_sandbox": emp_mod_sandbox,

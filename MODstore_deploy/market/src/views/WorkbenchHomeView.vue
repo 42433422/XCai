@@ -5381,12 +5381,14 @@ async function runOrchestration() {
       return
     }
     if (finIntent === 'employee') {
-      const q = {
+      const q: Record<string, string> = {
         fromAi: '1',
         packId: art.pack_id != null ? String(art.pack_id) : '',
         name: art.name != null ? String(art.name) : '',
         desc: art.description != null ? String(art.description) : '',
       }
+      const wfId = art.workflow_id ?? art.workflow_attachment?.workflow_id
+      if (wfId != null && Number(wfId) > 0) q.wfId = String(wfId)
       // 让用户先看到 8/8 完成状态，再跳转到员工页
       await nextTick()
       await new Promise((r) => setTimeout(r, 1200))
