@@ -18,8 +18,14 @@ vi.mock('./api', () => ({
     walletAdminSelfCredit: vi.fn(),
     notificationsList: vi.fn(),
     paymentMyPlan: vi.fn(),
+    listButlerSkills: vi.fn().mockResolvedValue([]),
+    agentButlerChat: vi.fn().mockResolvedValue({ text: '', tool_calls: [], conversation_id: null }),
   },
   clearAuthTokens: vi.fn(),
+}))
+
+vi.mock('./components/floating-agent/FloatingAgentRoot.vue', () => ({
+  default: { template: '<div class="butler-stub" />' },
 }))
 
 import { api } from './api'
@@ -42,6 +48,10 @@ function createTestRouter() {
       { path: '/register', name: 'register', component: Stub },
       { path: '/admin/database', name: 'admin-database', component: Stub },
       { path: '/admin/customer-service', name: 'admin-customer-service', component: Stub },
+      { path: '/admin/butler-skills', name: 'admin-butler-skills', component: Stub },
+      { path: '/sandbox', name: 'sandbox', component: Stub },
+      { path: '/recharge', name: 'recharge', component: Stub },
+      { path: '/workbench/shell/:target?/:id?', name: 'workbench-shell', component: Stub },
     ],
   })
 }

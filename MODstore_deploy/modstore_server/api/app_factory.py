@@ -168,6 +168,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     _optional = (
         "modstore_server.llm_api",
+        "modstore_server.agent_butler_api",
         "modstore_server.notification_api",
         "modstore_server.knowledge_vector_api",
         "modstore_server.knowledge_v2_api",

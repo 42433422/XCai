@@ -649,6 +649,40 @@ export const api = {
     return req('/api/workbench/script-sessions', { method: 'POST', body: fd })
   },
   workbenchGetSession: (sessionId: string) => req(`/api/workbench/sessions/${encodeURIComponent(sessionId)}`),
+
+  /**
+   * 启动 6 阶段 AI 员工生成流水线（SSE）。
+   * 返回原生 Response 对象，调用方通过 `useEmployeeAiDraft` composable 消费。
+   * 与 workbenchStartSession/workbenchGetSession（轮询）完全独立，不互相干扰。
+   */
+  streamEmployeeAiDraft: (
+    brief: string,
+    opts?: { provider?: string; model?: string; suggestedId?: string },
+  ): Promise<Response> =>
+    fetch('/api/workbench/employee-ai/draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        brief,
+        provider: opts?.provider || undefined,
+        model: opts?.model || undefined,
+        suggested_id: opts?.suggestedId || undefined,
+      }),
+    }),
+
+  /** LLM 优化 system prompt，返回 {improved_prompt, diff_explanation}。 */
+  refineSystemPrompt: (body: {
+    current_prompt: string
+    instruction: string
+    role_context?: string
+    provider?: string
+    model?: string
+  }) =>
+    req('/api/workbench/employee-ai/refine-prompt', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   /** 微软在线神经 TTS（服务端 edge-tts），返回 MP3 Blob */
   workbenchEdgeTts: (text: string, voice?: string, rate?: number) =>
     requestBlob('/api/workbench/tts/edge', {
@@ -814,6 +848,61 @@ export const api = {
     req(`/api/customer-service/integrations/${encodeURIComponent(String(id))}`, {
       method: 'PUT',
       body: JSON.stringify(payload || {}),
+    }),
+
+  // ─── AI 数字管家 Butler ─────────────────────────────────────────────
+  /** POST /api/agent/butler/chat — 发送对话（非流式） */
+  agentButlerChat: (payload: {
+    messages: unknown[]
+    conversation_id?: number | null
+    page_context?: string
+  }) =>
+    req('/api/agent/butler/chat', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** POST /api/agent/butler/chat/stream — SSE 流式对话 */
+  agentButlerChatStream: (
+    payload: {
+      messages: unknown[]
+      conversation_id?: number | null
+      page_context?: string
+    },
+    signal?: AbortSignal,
+  ) => {
+    const headers = new Headers(authHeaders())
+    headers.set('Content-Type', 'application/json')
+    headers.set('Accept', 'text/event-stream')
+    return fetch('/api/agent/butler/chat/stream', {
+      method: 'POST',
+      headers,
+      signal,
+      body: JSON.stringify(payload),
+    })
+  },
+
+  /** GET /api/agent/butler/skills — 获取 butler 类型的技能列表 */
+  listButlerSkills: () => req('/api/agent/butler/skills'),
+
+  /** POST /api/agent/butler/actions — 记录操作审计 */
+  recordButlerAction: (payload: {
+    route: string
+    action: string
+    args?: Record<string, unknown>
+    risk: string
+    status: 'success' | 'failed' | 'cancelled'
+  }) =>
+    req('/api/agent/butler/actions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** PATCH /api/agent/butler/skills/:id — 更新技能激活状态 */
+  updateButlerSkillActive: (id: number | string, isActive: boolean) =>
+    req(`/api/agent/butler/skills/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_active: isActive }),
     }),
 }
 

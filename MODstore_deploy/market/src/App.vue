@@ -158,6 +158,7 @@
       </div>
     </main>
     <Teleport to="body">
+      <FloatingAgentRoot v-if="shouldShowButler" />
       <div
         v-if="selfCreditOpen"
         class="nav-self-credit-overlay"
@@ -209,6 +210,7 @@ import { useNotificationStore } from './stores/notifications'
 import { useWalletStore } from './stores/wallet'
 import { connectRealtime, disconnectRealtime } from './realtimeClient'
 import { api } from './api'
+import FloatingAgentRoot from './components/floating-agent/FloatingAgentRoot.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -245,6 +247,13 @@ const { unreadCount: unreadNotifications, badgeText: unreadBadgeText } = storeTo
 const initialPath = String(router.currentRoute.value.path || '/')
 const isHome = ref(initialPath === '/about')
 const isEmployeeWorkbench = ref(initialPath.startsWith('/workbench/employee'))
+
+const BUTLER_EXCLUDED_PATHS = ['/about', '/login', '/login-email', '/forgot-password', '/register']
+const shouldShowButler = computed(() => {
+  const p = route.path || ''
+  if (!isLoggedIn.value) return false
+  return !BUTLER_EXCLUDED_PATHS.some((ep) => p === ep || p.startsWith(ep + '/'))
+})
 
 const selfCreditOpen = ref(false)
 const selfCreditAmount = ref('')
