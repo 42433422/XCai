@@ -370,6 +370,20 @@ export const api = {
   patchModWorkflowEmployeeNodes: (modId: string) =>
     req(`/api/mods/${encodeURIComponent(modId)}/patch-workflow-employee-nodes`, { method: 'POST' }),
 
+  /** 员工上架：LLM 生成 1-5 级测试任务 → 执行 → 量化打分 → 五维审核 */
+  employeeBenchTest: (employeeId: string, provider?: string, model?: string) =>
+    req('/api/workbench/employee-bench-test', {
+      method: 'POST',
+      body: JSON.stringify({ employee_id: employeeId, provider: provider || null, model: model || null }),
+    }),
+
+  /** 员工上架：bench 通过后写入 catalog_store + catalog_items */
+  employeePublish: (employeeId: string, opts?: { price?: number; industry?: string; release_channel?: string }) =>
+    req('/api/workbench/employee-publish', {
+      method: 'POST',
+      body: JSON.stringify({ employee_id: employeeId, ...(opts || {}) }),
+    }),
+
   // ----- 脚本即工作流（替代节点图）-----
   listScriptWorkflows: (status: string = '') =>
     req(`/api/script-workflows${status ? `?status=${encodeURIComponent(status)}` : ''}`),

@@ -3770,6 +3770,10 @@ const handoffFootNote = computed(() => {
     return '生成成功后进入 Mod 制作页。页面会区分“名片已生成”和“员工可工作”：未登记员工包、未绑定工作流或未真实执行都会列为缺口。'
   }
   if (k === 'employee') {
+    const isRealSkill = pendingHandoff.value?.employee_target === 'pack_plus_workflow'
+    if (isRealSkill) {
+      return '员工包已生成真实 Python 脚本并注册为可执行 Skill，画布每个节点都对应已沙箱校验的代码；上架请到「员工制作」。'
+    }
     return '员工包写入你的本地库；上架请到「员工制作」上传。商店执行器以已上架包为准。'
   }
   if (Array.isArray(pendingHandoff.value?.files) && pendingHandoff.value.files.length > 0) {

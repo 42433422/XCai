@@ -233,7 +233,142 @@ function dragModuleStart(kind: EmployeeModuleKind, event: DragEvent) {
 // Watch for run mode from store
 watch(() => store.inspectorMode, (m) => {
   if (m === 'run') runResult.value = null
+  if (m === 'publish') {
+    // 切换到上架 tab 时重置动画状态
+    auditAnimPhase.value = 'idle'
+    auditAnimScores.value = {}
+  }
 })
+
+// ── Publish / listing section ──────────────────────────────────────────────
+
+type PublishState = 'idle' | 'testing' | 'done' | 'publishing' | 'published' | 'error'
+
+const publishState = ref<PublishState>('idle')
+const publishError = ref<string | null>(null)
+
+interface BenchResult {
+  tasks_result: Array<{
+    level: number; task_id: string; task_desc: string
+    ok: boolean; cost_tokens: number; duration_ms: number; score: number
+  }>
+  level_scores: Record<number, number>
+  overall_score: number
+  audit: {
+    ok: boolean
+    dimensions?: Record<string, { score: number; reasons: string[] }>
+    summary?: { average: number; pass: boolean }
+    error?: string
+  }
+  passed: boolean
+}
+
+const benchResult = ref<BenchResult | null>(null)
+
+// 五维审核动画状态
+type AuditAnimPhase = 'idle' | 'running' | 'done'
+const auditAnimPhase = ref<AuditAnimPhase>('idle')
+// 显示中的分数（从 0 动画滚动到真实分数）
+const auditAnimScores = ref<Record<string, number>>({})
+
+const DIM_LABELS: Record<string, string> = {
+  manifest_compliance: '清单合规',
+  declaration_completeness: '声明完整',
+  api_testability_static: 'API 可测',
+  security_and_size: '安全尺寸',
+  metadata_quality: '元数据质量',
+}
+
+function _animateAuditScores(dims: Record<string, { score: number }>) {
+  auditAnimPhase.value = 'running'
+  const keys = Object.keys(dims)
+  auditAnimScores.value = Object.fromEntries(keys.map((k) => [k, 0]))
+
+  // 依次点亮每个维度，每个维度数字从 0 滚动到目标值
+  const STEP_DELAY = 260   // 每个维度间隔 ms
+  const COUNT_STEPS = 20   // 滚动帧数
+
+  keys.forEach((key, i) => {
+    const target = dims[key]?.score ?? 0
+    const startAt = i * STEP_DELAY
+    let step = 0
+    const interval = setInterval(() => {
+      step++
+      auditAnimScores.value = {
+        ...auditAnimScores.value,
+        [key]: Math.round(target * Math.min(step / COUNT_STEPS, 1)),
+      }
+      if (step >= COUNT_STEPS) {
+        clearInterval(interval)
+        if (i === keys.length - 1) {
+          // 最后一个维度完成 → 动画结束
+          setTimeout(() => { auditAnimPhase.value = 'done' }, 300)
+        }
+      }
+    }, (startAt + 50) / COUNT_STEPS)  // 每帧间隔
+  })
+}
+
+async function startBenchTest() {
+  const eid = store.target.id as string | undefined
+  if (!eid) {
+    publishError.value = '请先保存员工（需要 ID）'
+    return
+  }
+  publishState.value = 'testing'
+  publishError.value = null
+  benchResult.value = null
+  auditAnimPhase.value = 'idle'
+  auditAnimScores.value = {}
+
+  try {
+    const res = await api.employeeBenchTest(eid) as BenchResult & { ok: boolean; error?: string }
+    if (!res.ok) throw new Error(res.error || '测试失败')
+    benchResult.value = res
+    publishState.value = 'done'
+    // 启动五维动画
+    const dims = res.audit?.dimensions
+    if (dims && Object.keys(dims).length > 0) {
+      _animateAuditScores(dims)
+    }
+  } catch (e: unknown) {
+    publishError.value = (e as Error)?.message || String(e)
+    publishState.value = 'error'
+  }
+}
+
+async function publishEmployee() {
+  const eid = store.target.id as string | undefined
+  if (!eid || !benchResult.value?.passed) return
+  publishState.value = 'publishing'
+  publishError.value = null
+  try {
+    const res = await api.employeePublish(eid) as { ok: boolean; error?: string; pkg_id?: string }
+    if (!res.ok) throw new Error(res.error || '上架失败')
+    publishState.value = 'published'
+  } catch (e: unknown) {
+    publishError.value = (e as Error)?.message || String(e)
+    publishState.value = 'error'
+  }
+}
+
+async function downloadPack() {
+  const eid = store.target.id as string | undefined
+  if (!eid) return
+  // 先尝试从 mod context 导出，否则直接用 employee_id 当 mod_id
+  const modId = (store.target as Record<string, unknown>).mod_id as string | undefined || eid
+  try {
+    const blob = await api.exportEmployeePackZip(modId, 0)
+    const url = URL.createObjectURL(blob as Blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${eid}.xcemp`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    publishError.value = '下载失败，请确认员工已保存'
+  }
+}
 
 function formatDiffVal(val: unknown): string {
   if (val === undefined || val === null || val === '') return '(空)'
@@ -269,6 +404,13 @@ function formatDiffVal(val: unknown): string {
         @click="store.inspectorMode = 'run'"
       >
         运行
+      </button>
+      <button
+        class="rr-tab rr-tab--publish"
+        :class="{ 'rr-tab--active': mode === 'publish' }"
+        @click="store.inspectorMode = 'publish'"
+      >
+        上架
       </button>
       <button
         v-if="manifestDiff.hasBaseline.value"
@@ -510,6 +652,137 @@ function formatDiffVal(val: unknown): string {
         </span>
         <p class="run-brief">{{ store.currentRun.brief }}</p>
       </div>
+    </div>
+
+    <!-- ── Publish / listing panel ───────────────────────────────── -->
+    <div v-else-if="mode === 'publish'" class="rr-pane publish-pane">
+
+      <!-- ① 本地调试：下载员工包 -->
+      <section class="pub-section">
+        <h4 class="pub-section-title">本地调试</h4>
+        <p class="pub-hint">下载员工包到本地，用 modman CLI 验证或集成到其它系统。</p>
+        <button class="pub-btn pub-btn--secondary" :disabled="!store.target.id" @click="downloadPack">
+          ↓ 下载员工包 (.xcemp)
+        </button>
+      </section>
+
+      <!-- ② 上架测试区 -->
+      <section class="pub-section">
+        <h4 class="pub-section-title">上架测试</h4>
+        <p class="pub-hint">大模型将生成 1–5 级共 15 项测试任务，根据完成率与消耗量量化打分，再进行五维审核。</p>
+
+        <button
+          class="pub-btn"
+          :disabled="publishState === 'testing' || !store.target.id"
+          @click="startBenchTest"
+        >
+          <span v-if="publishState === 'testing'" class="pub-spinner" />
+          {{ publishState === 'testing' ? '测试中，请稍候…' : '开始测试' }}
+        </button>
+
+        <!-- 错误提示 -->
+        <p v-if="publishState === 'error' && publishError" class="pub-error">{{ publishError }}</p>
+
+        <!-- 任务完成后显示结果 -->
+        <div v-if="benchResult" class="pub-result">
+
+          <!-- 1-5 级得分条 -->
+          <div class="pub-levels">
+            <div v-for="lv in 5" :key="lv" class="pub-level">
+              <span class="pub-level-label">Lv{{ lv }}</span>
+              <div class="pub-level-bar">
+                <div
+                  class="pub-level-fill"
+                  :style="{
+                    width: (benchResult.level_scores[lv] ?? 0) + '%',
+                    background: (benchResult.level_scores[lv] ?? 0) >= 60 ? '#22c55e' : '#f97316',
+                  }"
+                />
+              </div>
+              <span class="pub-level-score">{{ (benchResult.level_scores[lv] ?? 0).toFixed(0) }}</span>
+            </div>
+          </div>
+
+          <!-- 五维审核动画 -->
+          <div class="pub-audit">
+            <p class="pub-audit-title">五维审核</p>
+
+            <!-- 测试步骤流 -->
+            <div class="pub-audit-stages">
+              <div class="pub-stage" :class="{ 'pub-stage--done': auditAnimPhase !== 'idle' }">生成测试任务</div>
+              <div class="pub-stage-arrow">→</div>
+              <div class="pub-stage" :class="{ 'pub-stage--done': auditAnimPhase !== 'idle' }">执行任务</div>
+              <div class="pub-stage-arrow">→</div>
+              <div class="pub-stage" :class="{ 'pub-stage--done': auditAnimPhase !== 'idle' }">统计消耗</div>
+              <div class="pub-stage-arrow">→</div>
+              <div class="pub-stage" :class="{ 'pub-stage--done': auditAnimPhase !== 'idle' }">五维审核</div>
+              <div class="pub-stage-arrow">→</div>
+              <div class="pub-stage" :class="{ 'pub-stage--done': auditAnimPhase === 'done' }">
+                {{ benchResult.passed ? '可上架' : '未通过' }}
+              </div>
+            </div>
+
+            <!-- 五维卡片网格 -->
+            <div v-if="benchResult.audit?.dimensions" class="pub-dim-grid">
+              <div
+                v-for="(dim, key, idx) in benchResult.audit.dimensions"
+                :key="key"
+                class="pub-dim-card"
+                :class="{
+                  'pub-dim-card--active': auditAnimPhase !== 'idle',
+                  'pub-dim-card--pass': dim.score >= 60,
+                  'pub-dim-card--fail': dim.score < 60,
+                }"
+                :style="{ animationDelay: `${(idx as number) * 260}ms` }"
+              >
+                <!-- 环形进度 SVG -->
+                <svg class="pub-ring" viewBox="0 0 44 44">
+                  <circle class="pub-ring-bg" cx="22" cy="22" r="18" />
+                  <circle
+                    class="pub-ring-fill"
+                    cx="22" cy="22" r="18"
+                    :stroke="dim.score >= 60 ? '#4ade80' : '#f87171'"
+                    :stroke-dasharray="`${(auditAnimScores[key] ?? 0) * 1.131} 113.1`"
+                  />
+                </svg>
+                <span class="pub-dim-score">{{ auditAnimScores[key] ?? 0 }}</span>
+                <span class="pub-dim-label">{{ DIM_LABELS[key] ?? key }}</span>
+                <!-- 第一条 reason 作为 tooltip -->
+                <span v-if="dim.reasons?.[0]" class="pub-dim-reason">{{ dim.reasons[0] }}</span>
+              </div>
+            </div>
+
+            <!-- 审核失败兜底文字 -->
+            <p v-if="benchResult.audit?.error" class="pub-audit-err">
+              审核异常：{{ benchResult.audit.error }}
+            </p>
+          </div>
+
+          <!-- 综合得分总结 -->
+          <div class="pub-overall" :class="benchResult.passed ? 'pub-overall--pass' : 'pub-overall--fail'">
+            <span class="pub-overall-score">{{ benchResult.overall_score.toFixed(1) }}</span>
+            <span class="pub-overall-label">
+              {{ benchResult.passed ? '通过测试，可提交上架' : '未达标，请完善员工能力后重试' }}
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ③ 上架区（仅测试通过后显示） -->
+      <section v-if="benchResult?.passed" class="pub-section pub-section--publish">
+        <h4 class="pub-section-title">提交上架</h4>
+        <button
+          class="pub-btn pub-btn--primary"
+          :disabled="publishState === 'publishing' || publishState === 'published'"
+          @click="publishEmployee"
+        >
+          <span v-if="publishState === 'publishing'" class="pub-spinner" />
+          {{ publishState === 'published' ? '✓ 已上架' : publishState === 'publishing' ? '上架中…' : '提交上架到目录' }}
+        </button>
+        <p v-if="publishState === 'published'" class="pub-ok">员工包已写入商店目录，可在「员工制作」页查看和分发。</p>
+        <p v-if="publishState === 'error' && publishError" class="pub-error">{{ publishError }}</p>
+      </section>
+
     </div>
 
     <!-- Empty state when no node selected in node mode -->
@@ -1114,5 +1387,303 @@ function formatDiffVal(val: unknown): string {
   color: #475569;
   flex-shrink: 0;
   margin-top: 16px;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   上架 Tab — publish pane
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* Tab 按钮高亮色 —「上架」用绿色 */
+.rr-tab.rr-tab--publish.rr-tab--active {
+  color: #4ade80;
+  border-bottom: 2px solid #22c55e;
+}
+
+.publish-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 卡片区块 */
+.pub-section {
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 10px;
+  padding: 14px;
+  background: rgba(15, 23, 42, 0.6);
+}
+.pub-section--publish {
+  border-color: rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.04);
+}
+
+.pub-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  margin: 0 0 8px;
+}
+
+.pub-hint {
+  font-size: 11px;
+  color: #475569;
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+/* 通用按钮 */
+.pub-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  padding: 9px 14px;
+  border-radius: 8px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  background: rgba(99, 102, 241, 0.18);
+  color: #a5b4fc;
+}
+.pub-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.32);
+  color: #c7d2fe;
+}
+.pub-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.pub-btn--secondary {
+  background: transparent;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #818cf8;
+}
+.pub-btn--secondary:hover:not(:disabled) {
+  border-color: rgba(99, 102, 241, 0.6);
+  background: rgba(99, 102, 241, 0.08);
+}
+.pub-btn--primary {
+  background: rgba(34, 197, 94, 0.2);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.pub-btn--primary:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.32);
+}
+
+/* Loading spinner */
+.pub-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(165, 180, 252, 0.3);
+  border-top-color: #a5b4fc;
+  border-radius: 50%;
+  animation: pub-spin 0.7s linear infinite;
+}
+@keyframes pub-spin { to { transform: rotate(360deg); } }
+
+/* 结果区 */
+.pub-result { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+
+/* 级别进度条 */
+.pub-levels { display: flex; flex-direction: column; gap: 6px; }
+.pub-level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pub-level-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  width: 26px;
+  flex-shrink: 0;
+}
+.pub-level-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.1);
+  overflow: hidden;
+}
+.pub-level-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pub-level-score {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  width: 26px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* ── 五维审核 ─────────────────────────────────────────── */
+.pub-audit { display: flex; flex-direction: column; gap: 12px; }
+.pub-audit-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+  letter-spacing: 0.07em;
+}
+
+/* 步骤流 */
+.pub-audit-stages {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pub-stage {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 99px;
+  background: rgba(148, 163, 184, 0.08);
+  color: #475569;
+  transition: all 0.4s ease;
+  white-space: nowrap;
+}
+.pub-stage--done {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.25);
+}
+.pub-stage-arrow { font-size: 10px; color: #334155; }
+
+/* 五维卡片网格 */
+.pub-dim-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.pub-dim-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  background: rgba(15, 23, 42, 0.8);
+  opacity: 0;
+  transform: translateY(8px) scale(0.95);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+.pub-dim-card--active {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  animation: pub-card-in 0.38s ease both;
+}
+@keyframes pub-card-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.93); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.pub-dim-card--pass { border-color: rgba(74, 222, 128, 0.2); }
+.pub-dim-card--fail { border-color: rgba(248, 113, 113, 0.2); }
+
+/* 环形进度 */
+.pub-ring {
+  width: 40px;
+  height: 40px;
+  transform: rotate(-90deg);
+}
+.pub-ring-bg {
+  fill: none;
+  stroke: rgba(148, 163, 184, 0.1);
+  stroke-width: 4;
+}
+.pub-ring-fill {
+  fill: none;
+  stroke-width: 4;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pub-dim-score {
+  font-size: 14px;
+  font-weight: 800;
+  color: #f1f5f9;
+  margin-top: -6px;  /* 叠在环形上 */
+  line-height: 1;
+}
+.pub-dim-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  text-align: center;
+  line-height: 1.3;
+}
+.pub-dim-reason {
+  font-size: 9px;
+  color: #475569;
+  text-align: center;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pub-audit-err {
+  font-size: 11px;
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+/* 综合得分 */
+.pub-overall {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+}
+.pub-overall--pass {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+.pub-overall--fail {
+  background: rgba(248, 113, 113, 0.07);
+  border: 1px solid rgba(248, 113, 113, 0.18);
+}
+.pub-overall-score {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.pub-overall--pass .pub-overall-score { color: #4ade80; }
+.pub-overall--fail .pub-overall-score { color: #f87171; }
+.pub-overall-label {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+/* 成功/失败文字 */
+.pub-ok {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #4ade80;
+  line-height: 1.4;
+}
+.pub-error {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #f87171;
+  line-height: 1.4;
 }
 </style>

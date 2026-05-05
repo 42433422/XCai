@@ -1237,10 +1237,46 @@ async def attach_nl_workflow_to_employee_pack_dir(
     model: Optional[str],
     status_hook: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
-    """在已落盘的员工包目录上创建画布工作流、NL 生图，并把 ``workflow_id`` 写回 manifest。"""
+    """在已落盘的员工包目录上创建画布工作流、NL 生图，并把 ``workflow_id`` 写回 manifest。
+
+    改进：在调用 apply_nl_workflow_graph 之前，先把员工包 .py 注册为真实可执行 ESkill，
+    生成的 preset_eskill_nodes 传给 NL 图生成器，画布节点将直接引用真脚本 Skill。
+    若注册失败（vibe-coding 未安装/无脚本），自动退化为旧行为。
+    """
     from modstore_server.workflow_nl_graph import apply_nl_workflow_graph
 
     name = ((workflow_name or "").strip() or f"员工包工作流 {pack_dir.name}")[:256]
+
+    # ── 读取 panel_summary（用于 LLM 拆分） ──────────────────────────────
+    panel_summary = ""
+    mf_path = pack_dir / "manifest.json"
+    if mf_path.is_file():
+        try:
+            _mf_raw = json.loads(mf_path.read_text(encoding="utf-8"))
+            rows = _mf_raw.get("workflow_employees")
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                panel_summary = str(rows[0].get("panel_summary") or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ── Step 1: 注册员工脚本为真实 ESkill ────────────────────────────────
+    eskill_specs: list[dict] = []
+    try:
+        from modstore_server.employee_skill_register import register_employee_pack_as_eskills
+
+        eskill_specs = await register_employee_pack_as_eskills(
+            db,
+            user,
+            pack_dir=pack_dir,
+            brief=(brief or "").strip(),
+            panel_summary=panel_summary,
+            provider=provider,
+            model=model,
+            status_hook=status_hook,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("员工 Skill 注册失败，退化为旧 NL 图行为: %s", exc)
+
     wf = Workflow(
         user_id=user.id,
         name=name,
@@ -1250,6 +1286,7 @@ async def attach_nl_workflow_to_employee_pack_dir(
     db.add(wf)
     db.commit()
     db.refresh(wf)
+
     nl = await apply_nl_workflow_graph(
         db,
         user,
@@ -1258,6 +1295,7 @@ async def attach_nl_workflow_to_employee_pack_dir(
         provider=provider,
         model=model,
         status_hook=status_hook,
+        preset_eskill_nodes=eskill_specs or None,
     )
     mf = pack_dir / "manifest.json"
     if not mf.is_file():
@@ -1267,10 +1305,10 @@ async def attach_nl_workflow_to_employee_pack_dir(
     except (OSError, json.JSONDecodeError) as e:
         return {"ok": False, "error": str(e), "workflow_id": wf.id}
     rows = raw.get("workflow_employees")
-    panel_summary = ""
+    panel_summary = panel_summary or ""
     if isinstance(rows, list) and rows and isinstance(rows[0], dict):
         rows[0] = {**rows[0], "workflow_id": wf.id}
-        panel_summary = str(rows[0].get("panel_summary") or "").strip()
+        panel_summary = panel_summary or str(rows[0].get("panel_summary") or "").strip()
         raw["workflow_employees"] = rows
     v2 = raw.get("employee_config_v2")
     if isinstance(v2, dict):
@@ -1289,9 +1327,13 @@ async def attach_nl_workflow_to_employee_pack_dir(
         "workflow_id": wf.id,
         "nl_graph_ok": bool(nl.get("ok")),
         "nodes_created": int(nl.get("nodes_created") or 0),
+        "eskills": [
+            {"eskill_id": s["eskill_id"], "name": s["name"], "vibe_skill_id": s["vibe_skill_id"]}
+            for s in eskill_specs
+        ],
     }
     mf.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {"ok": True, "workflow_id": wf.id, "nl": nl}
+    return {"ok": True, "workflow_id": wf.id, "nl": nl, "eskill_count": len(eskill_specs)}
 
 
 async def run_employee_ai_scaffold_async(

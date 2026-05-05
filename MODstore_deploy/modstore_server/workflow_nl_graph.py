@@ -668,11 +668,16 @@ async def apply_nl_workflow_graph(
     target_employee_pack_id: Optional[str] = None,
     target_employee_label: Optional[str] = None,
     status_hook: Optional[Callable[[str], Any]] = None,
+    preset_eskill_nodes: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     为已存在且属于当前用户的工作流生成节点与边。
     成功: ok=True, nodes_created, edges_created, sandbox_ok, validation_errors, llm_warnings
     失败: ok=False, error=...
+
+    preset_eskill_nodes: 可选，由 employee_skill_register 预先注册的真脚本 ESkill 列表，
+        格式 [{eskill_id: int, name: str, output_var: str}, ...]。
+        传入后会在 system prompt 追加约束让 LLM 串接这些节点，并在落库时强制补齐漏掉的节点。
     """
     wf = (
         db.query(Workflow)
@@ -698,13 +703,40 @@ async def apply_nl_workflow_graph(
             "- employee 节点表示真实可执行员工包入口；业务前后处理仍可用 eskill 节点表达。\n"
             "- 推荐链路：start -> 若干 eskill/condition -> employee -> 若干 eskill/condition -> end。\n"
         )
+
+    # ── preset_eskill_nodes 约束注入 ───────────────────────────────────────
+    preset_nodes: List[Dict[str, Any]] = []
+    preset_requirements = ""
+    if preset_eskill_nodes:
+        preset_nodes = [
+            p for p in preset_eskill_nodes
+            if isinstance(p, dict) and p.get("eskill_id") and p.get("name")
+        ]
+    if preset_nodes:
+        lines = "\n".join(
+            f"  {i+1}. skill_id={p['eskill_id']} name={p['name']!r} output_var={p.get('output_var','result')!r}"
+            for i, p in enumerate(preset_nodes)
+        )
+        preset_requirements = (
+            "\n\n【重要约束】本次员工工作流已预先生成了以下真实可执行 ESkill（Python 脚本），"
+            "你必须在画布中按顺序串接它们：\n"
+            f"{lines}\n"
+            "规则：\n"
+            "- 对每个预置 Skill，在 workflow.nodes 中生成一个 node_type=\"eskill\" 节点，"
+            "config.skill_id 填写对应数字，config.output_var 填写对应 output_var。\n"
+            "- 这些节点已在数据库中，不需要在 skill_blueprints 中重复定义。\n"
+            "- 可在这些节点前后增加 condition / variable_set / start / end，但不得删除任何预置节点。\n"
+            "- 推荐链路：start -> eskill(1) -> eskill(2) -> … -> end。\n"
+        )
+
     user_msg = (
         f"工作流名称: {wf.name}\n\n"
         f"工作流说明与需求:\n{brief.strip()}\n\n"
         f"{_eskill_catalog_lines(db, user)}\n\n"
         f"{_catalog_lines()}\n\n"
         f"{employee_node_requirements}"
-        "请先生成 skill_blueprints，再生成 workflow.nodes 与 workflow.edges JSON。"
+        f"{preset_requirements}"
+        "请先生成 skill_blueprints（仅新增不在上面「重要约束」中的 Skill），再生成 workflow.nodes 与 workflow.edges JSON。"
     )
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -802,6 +834,70 @@ async def apply_nl_workflow_graph(
                 }
             )
             warnings.append("模型未生成 employee 节点，已自动插入目标员工包节点")
+
+    # ── 强制补齐漏掉的 preset eskill 节点 ────────────────────────────────
+    if preset_nodes:
+        existing_skill_ids = {
+            str(n.get("config", {}).get("skill_id") or "")
+            for n in nodes_in
+            if n.get("node_type") == "eskill"
+        }
+        missing_presets = [
+            p for p in preset_nodes
+            if str(p["eskill_id"]) not in existing_skill_ids
+        ]
+        if missing_presets:
+            warnings.append(
+                f"LLM 漏掉 {len(missing_presets)} 个预置 ESkill 节点，已自动插入"
+            )
+            for idx_p, p in enumerate(missing_presets):
+                tid = f"preset_eskill_{p['eskill_id']}"
+                if tid in seen_tid:
+                    continue
+                seen_tid.add(tid)
+                nodes_in.append(
+                    {
+                        "temp_id": tid,
+                        "node_type": "eskill",
+                        "name": str(p["name"])[:120],
+                        "config": {
+                            "skill_id": str(p["eskill_id"]),
+                            "output_var": str(p.get("output_var") or "vibe_result"),
+                            "task": str(p.get("name") or "")[:200],
+                            "input_mapping": {},
+                            "quality_gate": {},
+                            "trigger_policy": {},
+                            "force_dynamic": False,
+                            "solidify": True,
+                        },
+                        "position_x": 260.0 + idx_p * 240.0,
+                        "position_y": 240.0,
+                    }
+                )
+
+        # 若有插入的 preset 节点，把它们串进 start → preset(s) → end 链
+        inserted_preset_tids = [
+            f"preset_eskill_{p['eskill_id']}"
+            for p in missing_presets
+            if f"preset_eskill_{p['eskill_id']}" in seen_tid
+        ]
+        if inserted_preset_tids:
+            start_tid = next((n["temp_id"] for n in nodes_in if n["node_type"] == "start"), "")
+            end_tid = next((n["temp_id"] for n in nodes_in if n["node_type"] == "end"), "")
+            if start_tid and end_tid:
+                # 移除原先直连 start→end 的边
+                edges_in = [
+                    e for e in edges_in
+                    if not (e["source_temp_id"] == start_tid and e["target_temp_id"] == end_tid)
+                ]
+                chain = inserted_preset_tids
+                prev = start_tid
+                for tid in chain:
+                    if not any(e["target_temp_id"] == tid for e in edges_in):
+                        edges_in.append({"source_temp_id": prev, "target_temp_id": tid, "condition": ""})
+                    prev = tid
+                if not any(e["source_temp_id"] == prev and e["target_temp_id"] == end_tid for e in edges_in):
+                    edges_in.append({"source_temp_id": prev, "target_temp_id": end_tid, "condition": ""})
 
     starts = [n for n in nodes_in if n["node_type"] == "start"]
     ends = [n for n in nodes_in if n["node_type"] == "end"]

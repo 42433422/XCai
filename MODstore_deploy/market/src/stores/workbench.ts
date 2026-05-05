@@ -57,7 +57,7 @@ export interface AgentRun {
 
 // ─── Inspector ───────────────────────────────────────────────────────────────
 
-export type InspectorMode = 'node' | 'library' | 'run' | 'diff'
+export type InspectorMode = 'node' | 'library' | 'run' | 'diff' | 'publish'
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
