@@ -1,5 +1,4 @@
 import { serializeVisibleDom } from '../../utils/agent/pageSerializer'
-import { captureViewport } from '../../utils/agent/screenshotCapture'
 import { useRoute } from 'vue-router'
 
 export function usePageAnalyzer() {
@@ -15,6 +14,7 @@ export function usePageAnalyzer() {
     screenshotDataUrl: string | null
   }> {
     const textSummary = getPageContext()
+    const { captureViewport } = await import('../../utils/agent/screenshotCapture')
     const screenshotDataUrl = await captureViewport()
     return { textSummary, screenshotDataUrl }
   }

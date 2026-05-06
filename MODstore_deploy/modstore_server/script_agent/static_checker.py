@@ -19,6 +19,49 @@ from typing import Iterable, List, Optional, Set
 from modstore_server.script_agent.package_allowlist import allowed_packages
 
 
+def _syntax_error_is_llm_prose_not_python(code: str, exc: SyntaxError) -> bool:
+    """``ast.parse`` 把模型返回的中文说明当成源码时，常见报错为 invalid character + 全角句号。"""
+    msg_l = str(exc).lower()
+    if "invalid character" not in msg_l:
+        return False
+    raw = (code or "").lstrip()
+    if not raw:
+        return False
+    line1 = raw.split("\n", 1)[0]
+    # 句末中文句号「。」常与自然语言首句一起出现
+    if "。" in line1 and any("\u4e00" <= c <= "\u9fff" for c in line1):
+        code_starts = (
+            "#",
+            '"',
+            "'",
+            "import ",
+            "from ",
+            "def ",
+            "class ",
+            "@",
+            "if ",
+            "for ",
+            "while ",
+            "try:",
+            "with ",
+            "async ",
+            "pass",
+            "return",
+            "print(",
+            "raise ",
+            "yield ",
+            "lambda ",
+        )
+        if any(line1.startswith(p) for p in code_starts):
+            return False
+        if line1.startswith(("r'", 'r"', "f'", 'f"', "b'", 'b"', "u'", 'u"')):
+            return False
+        return True
+    if "U+3002" in str(exc) or "U+ff0c" in str(exc):
+        return any("\u4e00" <= c <= "\u9fff" for c in raw[:400])
+    return False
+
+
 ALWAYS_DENY_TOP: Set[str] = {
     # 进程系：必须走 modstore_runtime 的受控 SDK
     "subprocess",
@@ -28,6 +71,26 @@ ALWAYS_DENY_TOP: Set[str] = {
     # 原生 C 接口：可绕过任何 Python 层防护
     "ctypes",
     "_ctypes",
+    # 网络 stdlib bedrock：脚本如需联网必须走 modstore_runtime SDK
+    # （统一计费 / 审计 / 策略）。第三方网络包（requests/httpx/aiohttp/urllib3）
+    # 留给管理员 ``runtime_allowlist`` 决定，但实际建连仍由 sandbox preamble 在
+    # ``socket`` 层拦下（除 127.0.0.1:MODSTORE_RUNTIME_PORT 给 SDK RPC 回调外）。
+    # ``urllib`` / ``http`` 整包不禁——``urllib.parse`` 是纯字符串操作。
+    "socket",
+    "_socket",
+    "ssl",
+    "_ssl",
+    "ftplib",
+    "smtplib",
+    "poplib",
+    "imaplib",
+    "nntplib",
+    "telnetlib",
+    "xmlrpc",
+    "webbrowser",
+    "socketserver",
+    "asyncore",
+    "asynchat",
 }
 
 DANGEROUS_BUILTIN_CALLS: Set[str] = {
@@ -100,6 +163,11 @@ def validate_script(
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
+        if _syntax_error_is_llm_prose_not_python(code, e):
+            return [
+                "脚本内容不是合法 Python：返回内容像中文说明而非可执行代码；"
+                "请仅输出 Python（可用 ```python 代码块包裹整段）。"
+            ]
         return [f"Python 语法错误: {e}"]
 
     stdlib = _stdlib_top_modules()

@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import threading
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -83,6 +84,65 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def read_package_manifest_from_zip(path: Path) -> Dict[str, Any] | None:
+    """Return the first top-level ``*/manifest.json`` found in a package zip.
+
+    ``.xcemp`` / ``.xcmod`` packages are zip files.  The catalog row metadata is
+    only safe if it matches the manifest embedded in the archive; otherwise the
+    UI may show one employee while the downloaded package runs another one.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            manifest_names = [
+                n for n in zf.namelist()
+                if n.count("/") == 1 and n.endswith("/manifest.json")
+            ]
+            if not manifest_names:
+                return None
+            data = json.loads(zf.read(manifest_names[0]).decode("utf-8"))
+            return data if isinstance(data, dict) else None
+    except (OSError, zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def package_manifest_alignment_errors(record: Dict[str, Any], archive_path: Path) -> List[str]:
+    """Validate catalog metadata against the manifest embedded in the archive."""
+    if not archive_path.is_file():
+        return ["包文件不存在，无法校验 manifest 对齐"]
+    inner = read_package_manifest_from_zip(archive_path)
+    if inner is None:
+        return ["包内未找到顶层 manifest.json 或 manifest 无法解析"]
+
+    errors: List[str] = []
+    expected_id = norm_pkg_id(record.get("id"))
+    inner_id = norm_pkg_id(inner.get("id"))
+    if expected_id and inner_id and expected_id != inner_id:
+        errors.append(f"metadata.id={expected_id} 与包内 manifest.id={inner_id} 不一致")
+
+    expected_ver = norm_version(record.get("version"))
+    inner_ver = norm_version(inner.get("version"))
+    if expected_ver and inner_ver and expected_ver != inner_ver:
+        errors.append(f"metadata.version={expected_ver} 与包内 manifest.version={inner_ver} 不一致")
+
+    if str(record.get("artifact") or "").strip().lower() == "employee_pack":
+        emp = inner.get("employee") if isinstance(inner.get("employee"), dict) else {}
+        emp_id = norm_pkg_id(emp.get("id"))
+        if expected_id and emp_id and expected_id != emp_id:
+            errors.append(f"metadata.id={expected_id} 与包内 employee.id={emp_id} 不一致")
+        wf_rows = inner.get("workflow_employees")
+        if isinstance(wf_rows, list):
+            for idx, row in enumerate(wf_rows):
+                if not isinstance(row, dict):
+                    continue
+                wf_id = norm_pkg_id(row.get("id"))
+                if expected_id and wf_id and expected_id != wf_id:
+                    errors.append(
+                        f"metadata.id={expected_id} 与 workflow_employees[{idx}].id={wf_id} 不一致"
+                    )
+
+    return errors
 
 
 def list_packages(

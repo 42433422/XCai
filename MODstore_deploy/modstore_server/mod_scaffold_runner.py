@@ -7,6 +7,7 @@ import json
 import py_compile
 import re
 import tempfile
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -44,7 +45,15 @@ from modstore_server.mod_ai_scaffold import (
     _normalize_frontend_menu,
     _sanitize_industry,
 )
-from modstore_server.models import User, Workflow, WorkflowNode, add_user_mod
+from modstore_server.models import (
+    CatalogItem,
+    User,
+    Workflow,
+    WorkflowEdge,
+    WorkflowNode,
+    add_user_mod,
+    get_session_factory,
+)
 
 
 def _parse_positive_int(value: Any) -> int:
@@ -71,6 +80,66 @@ def _employee_node_ids_for_workflow(db: Session, workflow_id: int) -> List[str]:
         if eid:
             out.append(eid)
     return out
+
+
+def _ensure_minimal_employee_workflow_graph(
+    db: Session,
+    workflow_id: int,
+    *,
+    employee_id: str,
+    employee_label: str,
+    task: str,
+) -> Dict[str, Any]:
+    """Ensure a workflow has at least start → employee → end nodes.
+
+    The NL graph generator can fail or return zero usable nodes, while the
+    workbench has already created the Workflow row and then opens the canvas.
+    Without a fallback graph the user sees an empty Vue Flow canvas.  This
+    helper creates the smallest executable skeleton and is idempotent: if any
+    nodes already exist for the workflow it does nothing.
+    """
+    wid = int(workflow_id or 0)
+    eid = (employee_id or "").strip()
+    if not wid or not eid:
+        return {"created": False, "reason": "workflow_id/employee_id missing"}
+    existing = db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wid).count()
+    if existing:
+        return {"created": False, "reason": "workflow already has nodes", "existing_nodes": int(existing)}
+
+    label = (employee_label or "执行员工").strip() or "执行员工"
+    task_text = (task or "根据工作流输入完成员工任务").strip()[:400] or "根据工作流输入完成员工任务"
+    start = WorkflowNode(
+        workflow_id=wid,
+        node_type="start",
+        name="开始",
+        config=json.dumps({}, ensure_ascii=False),
+        position_x=80,
+        position_y=140,
+    )
+    employee = WorkflowNode(
+        workflow_id=wid,
+        node_type="employee",
+        name=label[:120],
+        config=json.dumps({"employee_id": eid, "task": task_text}, ensure_ascii=False),
+        position_x=340,
+        position_y=140,
+    )
+    end_node = WorkflowNode(
+        workflow_id=wid,
+        node_type="end",
+        name="结束",
+        config=json.dumps({}, ensure_ascii=False),
+        position_x=620,
+        position_y=140,
+    )
+    db.add_all([start, employee, end_node])
+    db.flush()
+    db.add_all([
+        WorkflowEdge(workflow_id=wid, source_node_id=start.id, target_node_id=employee.id, condition=""),
+        WorkflowEdge(workflow_id=wid, source_node_id=employee.id, target_node_id=end_node.id, condition=""),
+    ])
+    db.commit()
+    return {"created": True, "nodes_created": 3, "edges_created": 2}
 
 
 def analyze_mod_employee_readiness(
@@ -213,6 +282,168 @@ def modstore_library_path() -> Path:
     p = resolved_library(load_config())
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _pick_employee_pack_catalog_record(pkg_id: str) -> Optional[Dict[str, Any]]:
+    """最新一条登记在 catalog（JSON 或 DB）的 employee_pack，含 ``stored_filename``。"""
+    from modstore_server import catalog_store as cs
+
+    pid = (pkg_id or "").strip()
+    if not pid:
+        return None
+
+    rows = [r for r in cs.list_versions(pid) if str(r.get("artifact") or "") == "employee_pack"]
+    if rows:
+        top = rows[0]
+        if str(top.get("stored_filename") or "").strip():
+            return dict(top)
+
+    norm = cs.norm_pkg_id(pid)
+    sf = get_session_factory()
+    with sf() as db:
+        q = (
+            db.query(CatalogItem)
+            .filter(CatalogItem.artifact == "employee_pack")
+            .order_by(CatalogItem.created_at.desc())
+        )
+        for row in q.all():
+            if cs.norm_pkg_id(row.pkg_id) != norm:
+                continue
+            fn = str(row.stored_filename or "").strip()
+            if not fn:
+                continue
+            return {
+                "id": row.pkg_id,
+                "version": row.version or "",
+                "artifact": row.artifact or "employee_pack",
+                "stored_filename": fn,
+            }
+    return None
+
+
+def materialize_employee_pack_if_missing(employee_id: str) -> bool:
+    """若 ``<library>/<employee_id>/manifest.json`` 缺失，从 catalog 解压 .xcemp/.xcmod 到该目录。
+
+    解压布局与 ``workbench_api.employee_save`` 一致（丢弃 zip 顶层目录段）。
+    用于「目录里已有包登记，但本地 library 尚未落盘」的场景（如同步测试读取员工）。
+    """
+    from modstore_server import catalog_store as cs
+
+    eid = (employee_id or "").strip()
+    if not eid:
+        return False
+
+    lib = modstore_library_path()
+    pack_dir = lib / eid
+    if (pack_dir / "manifest.json").is_file():
+        return True
+
+    rec = _pick_employee_pack_catalog_record(eid)
+    if not rec:
+        return False
+
+    fn = str(rec.get("stored_filename") or "").strip()
+    if not fn:
+        return False
+
+    zip_path = cs.files_dir() / fn
+    if not zip_path.is_file():
+        return False
+
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=zip_path.suffix or ".zip") as tmp:
+            tmp.write(zip_path.read_bytes())
+            tmp_path = Path(tmp.name)
+        with zipfile.ZipFile(tmp_path, "r") as zf:
+            for member in zf.namelist():
+                parts = member.split("/", 1)
+                if len(parts) == 2 and parts[1]:
+                    dest = pack_dir / Path(parts[1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if not member.endswith("/"):
+                        dest.write_bytes(zf.read(member))
+    except (OSError, zipfile.BadZipFile):
+        return (pack_dir / "manifest.json").is_file()
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+    if not (pack_dir / "manifest.json").is_file():
+        return False
+
+    # ── Rehydrate bundled workflow definitions into a target DB/user ──────────
+    # Callers that have a live DB session and user object should call
+    # ``rehydrate_employee_pack_bundles`` directly.  Here we attempt it if the
+    # module-level session factory is available, but swallow every error so the
+    # extraction result is never degraded.
+    try:
+        from modstore_server.employee_pack_workflow_bundle import rehydrate_workflow_bundles
+        from modstore_server.models import get_session_factory
+
+        mf_path = pack_dir / "manifest.json"
+        raw = json.loads(mf_path.read_text(encoding="utf-8"))
+        if raw.get("workflow_bundles") or raw.get("script_workflow_bundles"):
+            sf = get_session_factory()
+            with sf() as _db:
+                # Rehydration needs a User; use the manifest's author hint or skip.
+                from modstore_server.models import User as _User
+                author_id_raw = raw.get("author_id") or raw.get("employee_author_id")
+                _user_row = None
+                if author_id_raw:
+                    try:
+                        _user_row = _db.query(_User).filter(_User.id == int(author_id_raw)).first()
+                    except Exception:
+                        pass
+                if _user_row is None:
+                    # Fallback: use the first admin/any user (safest for single-tenant deploys)
+                    _user_row = _db.query(_User).order_by(_User.id).first()
+                if _user_row is not None:
+                    raw = rehydrate_workflow_bundles(_db, _user_row, raw, commit=True)
+                    mf_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception as _rh_exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "materialize_employee_pack: rehydrate bundles failed eid=%s: %s", eid, _rh_exc
+        )
+
+    return (pack_dir / "manifest.json").is_file()
+
+
+def rehydrate_employee_pack_bundles(
+    employee_id: str,
+    *,
+    db: "Session",
+    user: "User",
+) -> bool:
+    """Rehydrate bundled workflow definitions for an already-materialized pack.
+
+    Call this after ``materialize_employee_pack_if_missing`` when you have the
+    target ``db`` session and ``user`` objects available (e.g. in request
+    context).  Safe to call multiple times — bundles track their own
+    ``rehydrated_*_id`` markers to avoid creating duplicate rows.
+
+    Returns ``True`` if the pack directory and manifest exist (regardless of
+    whether there were any bundles to rehydrate).
+    """
+    lib = modstore_library_path()
+    pack_dir = lib / (employee_id or "").strip()
+    mf_path = pack_dir / "manifest.json"
+    if not mf_path.is_file():
+        return False
+    try:
+        from modstore_server.employee_pack_workflow_bundle import rehydrate_workflow_bundles
+        raw = json.loads(mf_path.read_text(encoding="utf-8"))
+        if raw.get("workflow_bundles") or raw.get("script_workflow_bundles"):
+            raw = rehydrate_workflow_bundles(db, user, raw, commit=True)
+            mf_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception as _exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "rehydrate_employee_pack_bundles failed eid=%s: %s", employee_id, _exc
+        )
+    return mf_path.is_file()
 
 
 def mod_compileall_warnings(mod_dir: Path) -> List[str]:
@@ -1380,6 +1611,16 @@ async def attach_nl_workflow_to_employee_pack_dir(
     db.commit()
     db.refresh(wf)
 
+    target_pack_id = pack_dir.name
+    target_label = pack_dir.name
+    try:
+        mf_for_target = json.loads(mf_path.read_text(encoding="utf-8")) if mf_path.is_file() else {}
+        target_pack_id = str(mf_for_target.get("id") or pack_dir.name).strip() or pack_dir.name
+        emp_obj = mf_for_target.get("employee") if isinstance(mf_for_target.get("employee"), dict) else {}
+        target_label = str(emp_obj.get("label") or mf_for_target.get("name") or target_pack_id).strip() or target_pack_id
+    except Exception:  # noqa: BLE001
+        pass
+
     nl = await apply_nl_workflow_graph(
         db,
         user,
@@ -1389,6 +1630,15 @@ async def attach_nl_workflow_to_employee_pack_dir(
         model=model,
         status_hook=status_hook,
         preset_eskill_nodes=eskill_specs or None,
+        target_employee_pack_id=target_pack_id,
+        target_employee_label=target_label,
+    )
+    fallback_graph = _ensure_minimal_employee_workflow_graph(
+        db,
+        wf.id,
+        employee_id=target_pack_id,
+        employee_label=target_label,
+        task=brief or "根据工作流输入完成员工任务",
     )
     mf = pack_dir / "manifest.json"
     if not mf.is_file():
@@ -1420,11 +1670,17 @@ async def attach_nl_workflow_to_employee_pack_dir(
         "workflow_id": wf.id,
         "nl_graph_ok": bool(nl.get("ok")),
         "nodes_created": int(nl.get("nodes_created") or 0),
+        "fallback_graph": fallback_graph,
         "eskills": [
             {"eskill_id": s["eskill_id"], "name": s["name"], "vibe_skill_id": s["vibe_skill_id"]}
             for s in eskill_specs
         ],
     }
+    try:
+        from modstore_server.employee_pack_workflow_bundle import embed_workflow_bundles_in_manifest
+        embed_workflow_bundles_in_manifest(db, raw)
+    except Exception as _bundle_exc:  # noqa: BLE001
+        logger.warning("attach_nl_workflow: embed bundles failed wf_id=%d: %s", wf.id, _bundle_exc)
     mf.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"ok": True, "workflow_id": wf.id, "nl": nl, "eskill_count": len(eskill_specs)}
 

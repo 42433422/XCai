@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import {
+  LLM_CATEGORY_ORDER,
+  categoryLabel,
+  modelOptionLabel,
+  modelsForCategory,
+  type LlmProviderBlock,
+} from '../../../composables/llmCatalogModelHelpers'
 import { useWorkbenchStore } from '../../../stores/workbench'
 import { useFieldAi } from '../../../composables/useFieldAi'
 import { useManifestDiff } from '../../../composables/useManifestDiff'
@@ -11,6 +18,7 @@ import {
 } from '../../../composables/useWorkbenchManifest'
 import type { EmployeeNodeData } from '../../../composables/useWorkbenchManifest'
 import { api } from '../../../api'
+import { ApiError } from '../../../infrastructure/http/client'
 
 const store = useWorkbenchStore()
 const fieldAi = useFieldAi()
@@ -98,6 +106,107 @@ const modelName = computed({
 const temperature = computed({
   get: () => Number(getPath('cognition.agent.model.temperature') ?? 0.7),
   set: (v) => setPath('cognition.agent.model.temperature', Number(v)),
+})
+
+/** 与钱包页「大模型 API」同源：`GET /api/llm/catalog` */
+const llmCatalog = ref<Record<string, unknown> | null>(null)
+const llmCatalogLoading = ref(false)
+
+const employeeProviderBlock = computed((): LlmProviderBlock | null => {
+  const c = llmCatalog.value as { providers?: LlmProviderBlock[] } | undefined
+  const provs = c?.providers
+  if (!provs?.length) return null
+  return provs.find((p) => p.provider === modelProvider.value) ?? null
+})
+
+const providerPickerRows = computed(() => {
+  const c = llmCatalog.value as { providers?: LlmProviderBlock[] } | undefined
+  const cur = modelProvider.value
+  if (c?.providers?.length) {
+    const rows = c.providers.map((p) => ({
+      provider: p.provider,
+      label: p.label || p.provider,
+    }))
+    if (cur && !rows.some((r) => r.provider === cur)) {
+      return [{ provider: cur, label: `${cur}（当前 manifest）` }, ...rows]
+    }
+    return rows
+  }
+  const fb = [
+    { provider: 'deepseek', label: 'DeepSeek' },
+    { provider: 'openai', label: 'OpenAI' },
+    { provider: 'anthropic', label: 'Anthropic' },
+    { provider: 'local', label: 'Local' },
+  ]
+  if (cur && !fb.some((r) => r.provider === cur)) {
+    return [{ provider: cur, label: `${cur}（当前 manifest）` }, ...fb]
+  }
+  return fb
+})
+
+const employeeHasStructuredModels = computed(() => {
+  const b = employeeProviderBlock.value
+  if (!b) return false
+  if (b.models_detailed?.length) return true
+  return !!(b.models?.length)
+})
+
+function employeeCategoryLabel(cat: string) {
+  return categoryLabel(llmCatalog.value, cat)
+}
+
+function employeeModelsForCategory(cat: string) {
+  return modelsForCategory(employeeProviderBlock.value, cat)
+}
+
+function employeeModelOptionLabel(row: { id: string; capability?: Record<string, unknown> }) {
+  return modelOptionLabel(row)
+}
+
+function syncEmployeeModelAfterCatalog() {
+  const block = employeeProviderBlock.value
+  const models = block?.models || []
+  if (!models.length) return
+  if (!modelName.value || !models.includes(modelName.value)) {
+    modelName.value = models[0] || ''
+  }
+}
+
+function onEmployeeLlmProviderPicked() {
+  syncEmployeeModelAfterCatalog()
+}
+
+async function loadWorkbenchLlmCatalog(manualRefresh: boolean) {
+  if (!localStorage.getItem('modstore_token')) return
+  llmCatalogLoading.value = true
+  try {
+    llmCatalog.value = (await api.llmCatalog(manualRefresh)) as Record<string, unknown>
+    syncEmployeeModelAfterCatalog()
+  } catch {
+    // 保留本地回退厂商列表，不阻断编辑
+  } finally {
+    llmCatalogLoading.value = false
+  }
+}
+
+async function refreshWorkbenchLlmCatalog() {
+  await loadWorkbenchLlmCatalog(true)
+}
+
+const hasAuthToken = computed(
+  () => typeof localStorage !== 'undefined' && !!localStorage.getItem('modstore_token'),
+)
+
+watch(
+  () => selectedNodeData.value?.moduleKind,
+  (kind) => {
+    if (kind === 'prompt') void loadWorkbenchLlmCatalog(false)
+  },
+  { immediate: true },
+)
+
+watch(llmCatalog, (c) => {
+  if (c) syncEmployeeModelAfterCatalog()
 })
 
 // ── Workflow heart field ────────────────────────────────────────────────────
@@ -354,19 +463,27 @@ async function publishEmployee() {
 
 async function downloadPack() {
   const eid = store.target.id as string | undefined
-  if (!eid) return
-  // 先尝试从 mod context 导出，否则直接用 employee_id 当 mod_id
-  const modId = (store.target as Record<string, unknown>).mod_id as string | undefined || eid
+  const manifest = store.target.manifest
   try {
-    const blob = await api.exportEmployeePackZip(modId, 0)
-    const url = URL.createObjectURL(blob as Blob)
+    // Use backend export endpoint to get a full .xcemp (with blueprints.py + employee.py)
+    const blob = await api.employeeExportZip(manifest, eid || undefined)
+    if (blob.size === 0) {
+      publishError.value = '下载失败：服务端返回空包，请检查登录状态与 manifest（identity.id 是否为空）'
+      return
+    }
+    const filename = `${eid || 'employee'}.xcemp`
+    const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${eid}.xcemp`
+    a.download = filename
+    a.style.display = 'none'
+    document.body.appendChild(a)
     a.click()
-    URL.revokeObjectURL(url)
-  } catch {
-    publishError.value = '下载失败，请确认员工已保存'
+    a.remove()
+    // 必须在浏览器完成下载读流之后再 revoke；立即 revoke 会导致保存为 0 字节
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (e: unknown) {
+    publishError.value = '下载失败: ' + ((e as Error)?.message || String(e))
   }
 }
 
@@ -391,6 +508,57 @@ const syncResult = ref<SyncResult | null>(null)
 // 同步步骤动画（7步）
 const SYNC_STEPS = ['读取员工', '生成任务', '执行测试', '量化评分', '发布目录', '推送宿主', '完成'] as const
 const syncCurrentStep = ref(-1)
+/** 已等待秒数（单请求期间由定时器递增，用于步骤推演与右侧元信息） */
+const syncElapsedSec = ref(0)
+let syncProgressTimer: ReturnType<typeof setInterval> | null = null
+
+function clearSyncProgressTimer() {
+  if (syncProgressTimer != null) {
+    clearInterval(syncProgressTimer)
+    syncProgressTimer = null
+  }
+}
+
+/**
+ * 后端为单次长连接，无流式阶段回调；按已等待时间推演当前大步骤，避免一直停在「读取员工」。
+ * 时间片与 employee_sync_test 中「读 manifest → LLM 生成任务 → bench → 发布 → 推送」大致对齐。
+ */
+function syncStepFromElapsed(sec: number): number {
+  if (sec < 2) return 0
+  if (sec < 22) return 1
+  if (sec < 100) return 2
+  if (sec < 130) return 3
+  if (sec < 160) return 4
+  if (sec < 190) return 5
+  return 5
+}
+
+/** 整体粗估进度（0–99），仅作等待反馈，非服务端精确百分比 */
+function syncRoughOverallPct(sec: number): number {
+  return Math.min(99, Math.round((sec / 420) * 100))
+}
+
+function syncStepMeta(i: number): string {
+  if (syncState.value === 'idle') return ''
+  if (syncState.value === 'running') {
+    if (i < syncCurrentStep.value) return ''
+    if (i > syncCurrentStep.value) return ''
+    const sec = syncElapsedSec.value
+    const pct = syncRoughOverallPct(sec)
+    return `~${pct}% · ${sec}s`
+  }
+  if (syncState.value === 'done') {
+    return ''
+  }
+  if (syncState.value === 'error') {
+    if (i < syncCurrentStep.value) return ''
+    if (i === syncCurrentStep.value) return '×'
+    return ''
+  }
+  return ''
+}
+
+onUnmounted(() => clearSyncProgressTimer())
 
 async function startSyncTest() {
   const eid = store.target.id as string | undefined
@@ -398,23 +566,27 @@ async function startSyncTest() {
     syncError.value = '请先保存员工（需要 ID）'
     return
   }
+  clearSyncProgressTimer()
   syncState.value = 'running'
   syncError.value = null
   syncResult.value = null
+  syncElapsedSec.value = 0
   syncCurrentStep.value = 0
 
-  // 模拟步骤进度（真实进度由后端耗时决定，这里做视觉动画）
-  const stepTimer = setInterval(() => {
-    if (syncCurrentStep.value < SYNC_STEPS.length - 2) {
-      syncCurrentStep.value++
+  syncProgressTimer = window.setInterval(() => {
+    if (syncState.value !== 'running') {
+      clearSyncProgressTimer()
+      return
     }
-  }, 1800)
+    syncElapsedSec.value += 1
+    syncCurrentStep.value = syncStepFromElapsed(syncElapsedSec.value)
+  }, 1000)
 
   try {
     // 读取宿主 URL（从 store.target 或环境）
     const fhdBase = (store.target as Record<string, unknown>).fhd_base_url as string | undefined || ''
     const res = await api.employeeSyncTest(eid, fhdBase) as SyncResult & { ok: boolean }
-    clearInterval(stepTimer)
+    clearSyncProgressTimer()
     syncCurrentStep.value = SYNC_STEPS.length - 1
     syncResult.value = res
     if (res.ok) {
@@ -426,9 +598,19 @@ async function startSyncTest() {
       syncError.value = res.reason || '同步测试失败'
     }
   } catch (e: unknown) {
-    clearInterval(stepTimer)
+    clearSyncProgressTimer()
     syncState.value = 'error'
-    syncError.value = (e as Error)?.message || String(e)
+    let msg = (e as Error)?.message || String(e)
+    if (e instanceof ApiError && e.status === 504) {
+      msg =
+        'HTTP 504：网关在等待上游时超时。同步测试含 LLM 基准，常需数分钟。请将前置 nginx 的 /api/ 段设为 proxy_read_timeout 3600s（参见仓库根目录 nginx-xiu-ci.conf）。'
+    } else if (/^HTTP 504|504 Gateway|Gateway Time-out/i.test(msg)) {
+      msg =
+        'HTTP 504：网关在等待上游时超时。请将前置 nginx 的 /api/ 段设为 proxy_read_timeout 3600s（参见仓库根目录 nginx-xiu-ci.conf）。'
+    } else if (msg.length > 320) {
+      msg = `${msg.slice(0, 260)}…`
+    }
+    syncError.value = msg
   }
 }
 
@@ -552,16 +734,56 @@ function formatDiffVal(val: unknown): string {
         <label class="field-label">优化指令</label>
         <input v-model="refineInstruction" class="field-input" placeholder="例如：让语气更友好" />
 
-        <label class="field-label">模型</label>
-        <div class="field-row">
-          <select v-model="modelProvider" class="field-select" style="flex:1">
-            <option value="deepseek">DeepSeek</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="local">Local</option>
+        <label class="field-label">
+          <span>模型（与资金页模型目录一致）</span>
+          <button
+            type="button"
+            class="field-llm-refresh"
+            :disabled="llmCatalogLoading"
+            title="重新拉取各厂商 /models 缓存"
+            @click="refreshWorkbenchLlmCatalog"
+          >
+            {{ llmCatalogLoading ? '…' : '刷新目录' }}
+          </button>
+        </label>
+        <div class="field-row field-row--model">
+          <select
+            v-model="modelProvider"
+            class="field-select"
+            style="flex: 1; min-width: 0"
+            :disabled="llmCatalogLoading"
+            @change="onEmployeeLlmProviderPicked"
+          >
+            <option v-for="row in providerPickerRows" :key="row.provider" :value="row.provider">
+              {{ row.label }}
+            </option>
           </select>
-          <input v-model="modelName" class="field-input" style="flex:2" placeholder="model_name" />
+          <select
+            v-if="employeeHasStructuredModels"
+            v-model="modelName"
+            class="field-select field-select--model"
+            style="flex: 2; min-width: 0"
+          >
+            <template v-for="cat in LLM_CATEGORY_ORDER" :key="cat">
+              <optgroup v-if="employeeModelsForCategory(cat).length" :label="employeeCategoryLabel(cat)">
+                <option v-for="row in employeeModelsForCategory(cat)" :key="row.id" :value="row.id">
+                  {{ employeeModelOptionLabel(row) }}
+                </option>
+              </optgroup>
+            </template>
+          </select>
+          <input
+            v-else
+            v-model="modelName"
+            class="field-input"
+            style="flex: 2; min-width: 0"
+            placeholder="model_name（目录未加载或未返回列表时手填）"
+          />
         </div>
+        <p v-if="llmCatalogLoading" class="field-hint">正在加载模型目录…</p>
+        <p v-else-if="!llmCatalog && hasAuthToken" class="field-hint">
+          未加载到目录：请点击「刷新目录」，或在「资金与记录」页先打开大模型区块完成加载。
+        </p>
 
         <label class="field-label">温度 ({{ temperature }})</label>
         <input v-model="temperature" type="range" min="0" max="1" step="0.05" class="field-range" />
@@ -722,7 +944,13 @@ function formatDiffVal(val: unknown): string {
       <!-- ① 本地调试：下载员工包 -->
       <section class="pub-section">
         <h4 class="pub-section-title">本地调试</h4>
-        <p class="pub-hint">下载员工包到本地，用 modman CLI 验证或集成到其它系统。</p>
+        <p class="pub-hint">下载即得「平台员工包 + 独立 CLI」单文件，本地可直接运行：</p>
+        <p class="pub-hint pub-hint--dim">
+          <code>python xxx.xcemp validate</code> — 零依赖校验包结构<br>
+          <code>python xxx.xcemp run</code> — 无 LLM 机械检查<br>
+          <code>python xxx.xcemp run --llm</code> — 需设置 <code>OPENAI_API_KEY</code> 或 <code>DEEPSEEK_API_KEY</code>
+        </p>
+        <p class="pub-hint pub-hint--dim">下载前服务端会自动将画布结构补全为登记级格式（补 artifact、employee、employee_config_v2 等），与「保存」后的产物一致。</p>
         <button class="pub-btn pub-btn--secondary" :disabled="!store.target.id" @click="downloadPack">
           ↓ 下载员工包 (.xcemp)
         </button>
@@ -756,7 +984,10 @@ function formatDiffVal(val: unknown): string {
             }"
           >
             <span class="sync-step-dot" />
-            <span class="sync-step-label">{{ step }}</span>
+            <div class="sync-step-main">
+              <span class="sync-step-label">{{ step }}</span>
+              <span v-if="syncStepMeta(i)" class="sync-step-meta">{{ syncStepMeta(i) }}</span>
+            </div>
           </div>
         </div>
 
@@ -1082,6 +1313,35 @@ function formatDiffVal(val: unknown): string {
 .field-row {
   display: flex;
   gap: 6px;
+}
+
+.field-row--model {
+  align-items: stretch;
+}
+
+.field-select--model {
+  max-height: 240px;
+}
+
+.field-llm-refresh {
+  background: transparent;
+  border: none;
+  color: #818cf8;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.field-llm-refresh:hover:not(:disabled) {
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.08);
+}
+.field-llm-refresh:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .field-btn {
@@ -1555,6 +1815,12 @@ function formatDiffVal(val: unknown): string {
   line-height: 1.5;
 }
 
+.pub-hint--dim {
+  color: #64748b;
+  font-style: italic;
+  margin-top: -6px;
+}
+
 /* 通用按钮 */
 .pub-btn {
   display: flex;
@@ -1852,6 +2118,39 @@ function formatDiffVal(val: unknown): string {
   gap: 10px;
   padding: 5px 0;
   position: relative;
+}
+
+.sync-step-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sync-step-meta {
+  font-size: 10px;
+  color: rgba(148, 163, 184, 0.82);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-step--active .sync-step-meta {
+  color: rgba(125, 211, 252, 0.78);
+}
+
+.sync-step--done .sync-step-meta,
+.sync-step--finish .sync-step-meta {
+  color: rgba(74, 222, 128, 0.72);
+}
+
+.sync-step--error .sync-step-meta {
+  color: rgba(248, 113, 113, 0.85);
 }
 
 .sync-step-dot {

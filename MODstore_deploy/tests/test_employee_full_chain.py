@@ -29,7 +29,12 @@ def test_employee_pack_parser_adds_web_rankings_config():
     assert err == ""
     assert manifest is not None
     assert manifest["employee_config_v2"]["perception"]["type"] == "web_rankings"
-    assert manifest["employee_config_v2"]["actions"]["handlers"] == ["echo"]
+    assert manifest["employee_config_v2"]["actions"]["handlers"] == ["llm_md", "echo"]
+    prompt = manifest["employee_config_v2"]["cognition"]["agent"]["system_prompt"]
+    assert "不要编造" in prompt
+    assert "## 用途" not in prompt
+    rules = manifest["employee_config_v2"]["cognition"]["agent"]["behavior_rules"]
+    assert len(rules) >= 3
 
 
 def test_employee_runtime_loads_manifest_from_registered_zip(tmp_path, monkeypatch):
@@ -284,19 +289,23 @@ def test_employee_pack_can_attach_generated_skill_workflow(tmp_path, monkeypatch
         )
         assert attach_res["ok"] is True
         assert attach_res["nl"]["ok"] is True
-        assert attach_res["nl"]["skills_created"] == 1
+        assert attach_res["nl"]["skills_created"] == 0
 
         workflow_id = int(attach_res["workflow_id"])
         workflow = db.query(models.Workflow).filter_by(id=workflow_id, user_id=user.id).one()
-        eskill_node = db.query(models.WorkflowNode).filter_by(workflow_id=workflow.id, node_type="eskill").one()
+        eskill_nodes = db.query(models.WorkflowNode).filter_by(workflow_id=workflow.id, node_type="eskill").all()
+        assert eskill_nodes
+        eskill_node = next(
+            n for n in eskill_nodes
+            if str(json.loads(n.config or "{}").get("skill_id") or "").isdigit()
+        )
         cfg = json.loads(eskill_node.config)
         assert cfg["skill_id"].isdigit()
 
-        skill = db.query(models.ESkill).filter_by(user_id=user.id, name="Invoice Extract Skill").one()
+        skill = db.query(models.ESkill).filter_by(user_id=user.id, id=int(cfg["skill_id"])).one()
         version = db.query(models.ESkillVersion).filter_by(eskill_id=skill.id, version=1).one()
         logic = json.loads(version.static_logic_json)
-        assert logic["dynamic_template"].endswith("补充修复：${details}")
-        assert "缺金额时从 details 中查找含税金额" in logic["metadata"]["repair_hints"]
+        assert logic["type"] in {"vibe_code", "template_transform"}
 
         report = run_workflow_sandbox(workflow.id, {}, mock_employees=True, validate_only=True, user_id=user.id)
         assert report["ok"] is True

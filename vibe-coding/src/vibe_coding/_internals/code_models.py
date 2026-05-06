@@ -35,11 +35,16 @@ class CodeFunctionSignature:
 
 @dataclass(slots=True)
 class CodeTestCase:
-    """Built-in tests — patched code must pass all."""
+    """Built-in tests — patched code must pass all.
+
+    ``expected_output`` accepts any JSON-serializable value (dict, list,
+    str, int, float, bool) or ``None``.  ``None`` means "assert no
+    exception" — the actual return value is not checked.
+    """
 
     case_id: str
     input_data: dict[str, Any]
-    expected_output: dict[str, Any] | None = None
+    expected_output: Any = None
     assert_fn: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -51,7 +56,8 @@ class CodeTestCase:
         return cls(
             case_id=str(raw.get("case_id") or raw.get("id") or "case"),
             input_data=dict(raw.get("input_data") or {}),
-            expected_output=dict(eo) if isinstance(eo, dict) else None,
+            # Accept any JSON value; None → "no-crash" assertion only
+            expected_output=eo,
             assert_fn=str(raw["assert_fn"]) if raw.get("assert_fn") else None,
         )
 

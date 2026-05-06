@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 # LLM 拆分最多几步
 _MAX_STEPS = 6
 
+
+def get_vibe_coder(**kwargs: Any) -> Any:
+    """Patchable shim around the shared vibe adapter."""
+    from modstore_server.integrations.vibe_adapter import get_vibe_coder as _get_vibe_coder
+
+    return _get_vibe_coder(**kwargs)
+
 # ────────────────────────────────────────────────────────────────────────────
 # 内部 helpers
 # ────────────────────────────────────────────────────────────────────────────
@@ -38,6 +45,11 @@ def _sanitize_identifier(text: str, fallback: str = "skill") -> str:
     raw = re.sub(r"[^a-z0-9_]+", "_", (text or "").lower())
     raw = re.sub(r"_+", "_", raw).strip("_")
     return raw[:48] or fallback
+
+
+def _dedupe_key(text: str) -> str:
+    raw = re.sub(r"\s+", "", str(text or "").strip().lower())
+    return raw or _sanitize_identifier(text, "skill")
 
 
 def _extract_function_name(source: str) -> str:
@@ -302,6 +314,104 @@ def _fallback_whole_script(source: str, name: str, out_var: str = "result") -> s
     return source + f"\n\ndef {fn}_entry(**kwargs):\n    return {fn}(**kwargs)\n"
 
 
+def _manifest_skill_steps(manifest: Dict[str, Any], brief: str, panel_summary: str) -> List[Dict[str, Any]]:
+    """Deterministically derive composable Skill steps from employee metadata."""
+    raw_items: List[Dict[str, Any]] = []
+    v2 = manifest.get("employee_config_v2") if isinstance(manifest.get("employee_config_v2"), dict) else {}
+    cognition = v2.get("cognition") if isinstance(v2.get("cognition"), dict) else {}
+    skills = cognition.get("skills") if isinstance(cognition.get("skills"), list) else []
+    for item in skills:
+        if isinstance(item, dict):
+            raw_items.append(
+                {
+                    "name": str(item.get("name") or "").strip(),
+                    "brief": str(item.get("brief") or item.get("description") or "").strip(),
+                    "domain": str(item.get("domain") or "").strip(),
+                }
+            )
+    metadata = v2.get("metadata") if isinstance(v2.get("metadata"), dict) else {}
+    suggested = metadata.get("suggested_skills") if isinstance(metadata.get("suggested_skills"), list) else []
+    for item in suggested:
+        if isinstance(item, dict):
+            raw_items.append(
+                {
+                    "name": str(item.get("name") or "").strip(),
+                    "brief": str(item.get("brief") or item.get("description") or "").strip(),
+                    "domain": str(item.get("domain") or "").strip(),
+                }
+            )
+    emp = manifest.get("employee") if isinstance(manifest.get("employee"), dict) else {}
+    caps = emp.get("capabilities") if isinstance(emp.get("capabilities"), list) else []
+    for cap in caps:
+        cap_text = str(cap or "").strip()
+        if cap_text:
+            raw_items.append({"name": cap_text, "brief": cap_text, "domain": cap_text})
+
+    seen: set[str] = set()
+    steps: List[Dict[str, Any]] = []
+    context = panel_summary or brief
+    for item in raw_items:
+        name = item["name"] or item["brief"]
+        if not name:
+            continue
+        key = _dedupe_key(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        desc = item["brief"] or name
+        steps.append(
+            {
+                "name": name[:64],
+                "sub_brief": (
+                    f"实现员工能力「{name}」：{desc}。员工整体任务背景：{context[:500]}。"
+                    "输入为 dict payload，返回 dict，包含处理结果、依据和错误信息。"
+                )[:600],
+                "input_keys": ["payload"],
+                "output_var": _sanitize_identifier(name, "skill_result")[:40],
+                "domain": item["domain"] or name,
+            }
+        )
+        if len(steps) >= _MAX_STEPS:
+            break
+    return steps
+
+
+def _brief_skill_steps(brief: str, panel_summary: str) -> List[Dict[str, Any]]:
+    text = "。".join(x for x in [brief, panel_summary] if x)
+    parts = [
+        p.strip(" ，,;；。")
+        for p in re.split(r"[；;。\n]+", text)
+        if p.strip(" ，,;；。")
+    ]
+    keywords = ("并", "和", "、", "，")
+    if len(parts) <= 1 and any(k in text for k in keywords):
+        parts = [p.strip(" ，,;；。") for p in re.split(r"[、，,]|并|和", text) if p.strip(" ，,;；。")]
+    steps: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for part in parts:
+        if len(part) < 4:
+            continue
+        key = _dedupe_key(part)
+        if key in seen:
+            continue
+        seen.add(key)
+        steps.append(
+            {
+                "name": part[:24],
+                "sub_brief": (
+                    f"实现员工子能力：{part}。输入为 dict payload，返回 dict，"
+                    "包含处理结果、依据、错误信息和下一步建议。"
+                )[:500],
+                "input_keys": ["payload"],
+                "output_var": _sanitize_identifier(part, "skill_result")[:40],
+                "domain": part[:80],
+            }
+        )
+        if len(steps) >= _MAX_STEPS:
+            break
+    return steps if len(steps) >= 2 else []
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 公开 API
 # ────────────────────────────────────────────────────────────────────────────
@@ -328,7 +438,6 @@ async def register_employee_pack_as_eskills(
     try:
         from modstore_server.integrations.vibe_adapter import (
             VibeIntegrationError,
-            get_vibe_coder,
         )
     except ImportError:
         logger.warning("vibe_adapter 未导入，跳过员工 Skill 注册")
@@ -358,7 +467,22 @@ async def register_employee_pack_as_eskills(
         except Exception:
             pass
 
-    # ---------- 第一步：尝试 LLM 拆分 ----------
+    # ---------- 读取员工主脚本 ----------
+    main_py = py_files[0]
+    source_code = main_py.read_text(encoding="utf-8", errors="replace")
+    employee_fn = _extract_function_name(source_code)
+    pack_name = pack_dir.name
+    manifest: Dict[str, Any] = {}
+    mf_path = pack_dir / "manifest.json"
+    if mf_path.is_file():
+        try:
+            raw_manifest = json.loads(mf_path.read_text(encoding="utf-8"))
+            if isinstance(raw_manifest, dict):
+                manifest = raw_manifest
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+
+    # ---------- 第一步：尝试 LLM 拆分；失败时用 manifest/brief 确定性拆分 ----------
     steps = await _llm_split_steps(
         brief,
         panel_summary,
@@ -367,12 +491,10 @@ async def register_employee_pack_as_eskills(
         provider=provider,
         model=model,
     )
-
-    # ---------- 读取员工主脚本 ----------
-    main_py = py_files[0]
-    source_code = main_py.read_text(encoding="utf-8", errors="replace")
-    employee_fn = _extract_function_name(source_code)
-    pack_name = pack_dir.name
+    if not steps:
+        steps = _manifest_skill_steps(manifest, brief, panel_summary)
+    if not steps:
+        steps = _brief_skill_steps(brief, panel_summary)
 
     eskill_specs: List[Dict[str, Any]] = []
 

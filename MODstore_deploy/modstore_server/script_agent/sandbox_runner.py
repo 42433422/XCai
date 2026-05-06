@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -24,11 +25,30 @@ from modstore_server.script_agent.sandbox_host import (
     SandboxHostContext,
     SandboxRpcServer,
 )
+from modstore_server.script_agent.sandbox_preamble import PREAMBLE_SOURCE
+
+
+logger = logging.getLogger(__name__)
+_DEGRADED_WARNED = False
+
+
+def _warn_degraded_once() -> None:
+    """非 POSIX（如 Windows 开发机）上 RLIMIT 不生效，整机部署应走 Linux。"""
+    global _DEGRADED_WARNED
+    if _DEGRADED_WARNED or os.name == "posix":
+        return
+    _DEGRADED_WARNED = True
+    logger.warning(
+        "[sandbox] running on non-POSIX (%s) — RLIMIT_CPU/AS/FSIZE 不可用，"
+        "仅靠 wall-clock timeout + AST 拦截 + preamble FS/网络边界。"
+        "生产请部署到 Linux 以启用资源限制。",
+        os.name,
+    )
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parent.parent / "workbench_script_runs"
 
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS = 45
 DEFAULT_OUTPUT_FILE_LIMIT_BYTES = 50 * 1024 * 1024
 DEFAULT_TOTAL_OUTPUT_LIMIT_BYTES = 200 * 1024 * 1024
 STDOUT_TAIL_BYTES = 16_000
@@ -155,7 +175,29 @@ async def run_in_sandbox(
 
     ``script_text`` 必须事先通过 ``static_checker.validate_script`` 校验，
     否则可能让 RPC 主机被滥用（虽然身份仍受 ``user_id`` 约束）。
+
+    后端切换：``MODSTORE_SANDBOX_BACKEND=docker`` 时改走
+    :func:`modstore_server.script_agent.docker_runner.run_in_docker`，
+    用 docker-per-run 提供 namespace + cgroup 强隔离；默认仍是 subprocess。
     """
+    backend = (os.environ.get("MODSTORE_SANDBOX_BACKEND") or "subprocess").strip().lower()
+    if backend == "docker":
+        from modstore_server.script_agent.docker_runner import run_in_docker
+
+        return await run_in_docker(
+            user_id=user_id,
+            session_id=session_id,
+            script_text=script_text,
+            files=files,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            extra_env=extra_env,
+            script_root=script_root,
+        )
+    _warn_degraded_once()
     root = script_root or SCRIPT_ROOT
     work_dir = _prepare_work_dir(session_id, script_root=root)
     input_dir = work_dir / "inputs"
@@ -163,8 +205,10 @@ async def run_in_sandbox(
         name = _safe_name(str(item.get("filename") or "upload.bin"))
         (input_dir / name).write_bytes(item.get("content") or b"")
 
+    # 在用户脚本前注入 preamble，把 open / os.* / socket 锁到 work_dir 内并禁网。
+    # preamble 自包含、读取 MODSTORE_SANDBOX_WORK_DIR 决定边界。
     script_path = work_dir / "script.py"
-    script_path.write_text(script_text, encoding="utf-8")
+    script_path.write_text(PREAMBLE_SOURCE + script_text, encoding="utf-8")
 
     ctx = SandboxHostContext(
         user_id=int(user_id),
@@ -184,6 +228,7 @@ async def run_in_sandbox(
         env["PYTHONUNBUFFERED"] = "1"
         env["MODSTORE_RUNTIME_PORT"] = str(port)
         env["MODSTORE_RUNTIME_TOKEN"] = rpc.token
+        env["MODSTORE_SANDBOX_WORK_DIR"] = str(work_dir.resolve())
         # 子进程默认不应继承 LLM key 等敏感 env
         for sensitive in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
             env.pop(sensitive, None)

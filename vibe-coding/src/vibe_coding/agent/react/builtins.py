@@ -524,8 +524,312 @@ def register_project_tools(reg: ToolRegistry, project_coder: Any) -> None:
         reg.register(t)
 
 
+# ---------------------------------------------------------------- fast search tools (v2)
+
+
+def make_fast_search_tools(root: Path | str) -> list[Tool]:
+    """High-speed search tools with ripgrep + offset/limit reads.
+
+    Provides:
+    - ``ripgrep_search`` — uses ``rg`` when available, falls back to Python grep.
+    - ``glob_files`` — mtime-desc sorted with ``head_limit`` / ``offset``.
+    - ``read_file_v2`` — ``offset``/``limit`` line-range, line-number prefix.
+
+    The old ``grep`` / ``find_files`` / ``read_file`` names are preserved as
+    aliases to avoid breaking existing prompts and tests.
+    """
+    safe_root = Path(root).resolve()
+    _rg_available = shutil.which("rg") is not None
+
+    @tool(
+        "ripgrep_search",
+        description=(
+            "Search files for a regex pattern.  Uses ripgrep (`rg`) when available "
+            "for much faster results; falls back to pure-Python otherwise.  "
+            "Returns list of {file, line, snippet} matches."
+        ),
+        arguments=[
+            {"name": "pattern", "type": "string", "required": True, "description": "regex pattern"},
+            {
+                "name": "path",
+                "type": "string",
+                "required": False,
+                "description": "subdir or file to search; default: project root",
+            },
+            {
+                "name": "include",
+                "type": "string",
+                "required": False,
+                "description": "glob filter e.g. '*.py', '*.{ts,vue}'",
+            },
+            {
+                "name": "case_insensitive",
+                "type": "boolean",
+                "required": False,
+                "description": "case-insensitive search (default false)",
+            },
+            {
+                "name": "max_results",
+                "type": "integer",
+                "required": False,
+                "description": "cap on results (default 120)",
+            },
+            {
+                "name": "context_lines",
+                "type": "integer",
+                "required": False,
+                "description": "lines of context before/after each match (default 0)",
+            },
+        ],
+    )
+    def ripgrep_search(
+        pattern: str,
+        *,
+        path: str = ".",
+        include: str = "",
+        case_insensitive: bool = False,
+        max_results: int = 120,
+        context_lines: int = 0,
+    ) -> dict[str, Any]:
+        target = _resolve(safe_root, path)
+        if _rg_available:
+            return _rg_search(
+                safe_root, target, pattern,
+                include=include,
+                case_insensitive=case_insensitive,
+                max_results=max_results,
+                context_lines=context_lines,
+            )
+        # fallback
+        matches = _py_grep(safe_root, target, pattern, include=include,
+                           case_insensitive=case_insensitive, max_results=max_results)
+        return {"pattern": pattern, "matches": matches, "truncated": len(matches) >= max_results}
+
+    @tool(
+        "glob_files",
+        description=(
+            "Find project files matching a glob pattern, sorted by modification time "
+            "(newest first).  Supports offset/limit for pagination."
+        ),
+        arguments=[
+            {"name": "pattern", "type": "string", "required": True,
+             "description": "glob e.g. '**/*.py', 'src/**/*.vue'"},
+            {"name": "head_limit", "type": "integer", "required": False,
+             "description": "max files to return (default 200)"},
+            {"name": "offset", "type": "integer", "required": False,
+             "description": "skip first N results (for pagination, default 0)"},
+        ],
+    )
+    def glob_files(
+        pattern: str,
+        *,
+        head_limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        found: list[tuple[float, str]] = []
+        for fp in safe_root.glob(pattern):
+            if fp.is_file():
+                try:
+                    mtime = fp.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                found.append((mtime, fp.relative_to(safe_root).as_posix()))
+        found.sort(key=lambda x: x[0], reverse=True)
+        page = found[offset: offset + head_limit]
+        return {
+            "pattern": pattern,
+            "total": len(found),
+            "offset": offset,
+            "files": [f for _, f in page],
+        }
+
+    @tool(
+        "read_file_v2",
+        description=(
+            "Read a project-relative text file (≤ 512 KiB). "
+            "Use `offset` and `limit` to read a specific line range.  "
+            "Output lines are prefixed with `LINE_NUMBER|` for easy citation."
+        ),
+        arguments=[
+            {"name": "path", "type": "string", "required": True,
+             "description": "project-relative file path"},
+            {"name": "offset", "type": "integer", "required": False,
+             "description": "1-based first line to return (default 1)"},
+            {"name": "limit", "type": "integer", "required": False,
+             "description": "max lines to return (default: all)"},
+            {"name": "max_bytes", "type": "integer", "required": False,
+             "description": "byte cap (default 512 KiB)"},
+        ],
+    )
+    def read_file_v2(
+        path: str,
+        *,
+        offset: int = 1,
+        limit: int = 0,
+        max_bytes: int = 512 * 1024,
+    ) -> str:
+        target = _resolve(safe_root, path)
+        if not target.is_file():
+            raise ToolError(f"{path!r} is not a file")
+        stat = target.stat()
+        if stat.st_size > max_bytes:
+            raise ToolError(f"{path!r} too large ({stat.st_size} bytes)")
+        # Detect binary
+        raw = target.read_bytes()
+        if b"\x00" in raw[:8192]:
+            raise ToolError(f"{path!r} appears to be a binary file; refusing to read")
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        start = max(0, int(offset) - 1)  # 1-based → 0-based
+        end = start + int(limit) if limit > 0 else len(lines)
+        selected = lines[start:end]
+        numbered = "\n".join(
+            f"{i + start + 1:>6}|{line}" for i, line in enumerate(selected)
+        )
+        omitted_before = start
+        omitted_after = max(0, len(lines) - end)
+        header = ""
+        if omitted_before:
+            header = f"... {omitted_before} lines not shown ...\n"
+        footer = f"\n... {omitted_after} lines not shown ..." if omitted_after else ""
+        return header + numbered + footer
+
+    # aliases: old names point at new implementations
+    read_file_v2.aliases = ("read_file",)  # type: ignore[attr-defined]
+    ripgrep_search.aliases = ("grep",)      # type: ignore[attr-defined]
+    glob_files.aliases = ("find_files",)    # type: ignore[attr-defined]
+
+    return [ripgrep_search, glob_files, read_file_v2]
+
+
+def _rg_search(
+    safe_root: Path,
+    target: Path,
+    pattern: str,
+    *,
+    include: str = "",
+    case_insensitive: bool = False,
+    max_results: int = 120,
+    context_lines: int = 0,
+) -> dict[str, Any]:
+    import subprocess
+    cmd = ["rg", "--line-number", "--no-heading", "--color=never"]
+    if case_insensitive:
+        cmd.append("-i")
+    if include:
+        cmd += ["--glob", include]
+    if context_lines > 0:
+        cmd += ["-C", str(context_lines)]
+    cmd += ["--", pattern, str(target)]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15.0,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # rg not available / timed out — fall back
+        matches = _py_grep(safe_root, target, pattern, include=include,
+                           case_insensitive=case_insensitive, max_results=max_results)
+        return {"pattern": pattern, "matches": matches, "truncated": len(matches) >= max_results}
+
+    matches: list[dict[str, Any]] = []
+    for line in (proc.stdout or "").splitlines():
+        if len(matches) >= max_results:
+            break
+        # rg format: path:lineno:content
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        fpath, lineno_str, snippet = parts[0], parts[1], parts[2]
+        try:
+            lineno = int(lineno_str)
+        except ValueError:
+            continue
+        try:
+            rel = Path(fpath).relative_to(safe_root).as_posix()
+        except ValueError:
+            rel = fpath
+        matches.append({"file": rel, "line": lineno, "snippet": snippet.strip()[:240]})
+    return {"pattern": pattern, "matches": matches, "truncated": len(matches) >= max_results}
+
+
+def _py_grep(
+    safe_root: Path,
+    target: Path,
+    pattern: str,
+    *,
+    include: str = "",
+    case_insensitive: bool = False,
+    max_results: int = 120,
+) -> list[dict[str, Any]]:
+    flags = re.IGNORECASE if case_insensitive else 0
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as exc:
+        raise ToolError(f"invalid regex: {exc}") from exc
+    matches: list[dict[str, Any]] = []
+    files = [target] if target.is_file() else _iter_files(target, max_files=20_000)
+    for fp in files:
+        if include and not fnmatch.fnmatch(fp.name, include):
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for ln, line in enumerate(text.splitlines(), start=1):
+            if regex.search(line):
+                try:
+                    rel = fp.relative_to(safe_root).as_posix()
+                except ValueError:
+                    rel = str(fp)
+                matches.append({"file": rel, "line": ln, "snippet": line.strip()[:240]})
+                if len(matches) >= max_results:
+                    return matches
+    return matches
+
+
+def builtin_tools_v2(
+    *,
+    root: Path | str,
+    sandbox: SandboxDriver | None = None,
+    policy: SandboxPolicy | None = None,
+    allow_network: bool = False,
+    project_coder: Any = None,
+    shell_allowlist: tuple[str, ...] | None = None,
+) -> ToolRegistry:
+    """Like :func:`builtin_tools` but replaces search/read tools with fast v2 variants.
+
+    Old ``grep`` / ``find_files`` / ``read_file`` names are preserved as
+    aliases so existing prompts continue to work.
+    """
+    reg = ToolRegistry()
+    for t in make_filesystem_tools(root):
+        # skip read_file — superseded by read_file_v2
+        if t.name != "read_file":
+            reg.register(t)
+    reg.register(make_shell_tool(root, sandbox=sandbox, policy=policy, allowlist=shell_allowlist))
+    for t in make_fast_search_tools(root):
+        reg.register(t)
+    for t in make_git_tools(root):
+        reg.register(t)
+    if project_coder is not None:
+        for t in make_project_tools(project_coder):
+            reg.register(t)
+    if allow_network:
+        for t in make_web_tools(allow_network=True):
+            reg.register(t)
+    return reg
+
+
 __all__ = [
     "builtin_tools",
+    "builtin_tools_v2",
+    "make_fast_search_tools",
     "make_filesystem_tools",
     "make_git_tools",
     "make_project_tools",

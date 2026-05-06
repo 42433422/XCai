@@ -114,6 +114,11 @@ class TestTruncation:
         out = safe_parse_json_object(raw)
         assert out == {"a": {"b": [1, 2]}}
 
+    def test_truncated_inside_string_value(self) -> None:
+        raw = '{"source_code": "def demo(value):\\n    return {\\"out\\": value'
+        out = safe_parse_json_object(raw)
+        assert out["source_code"].startswith("def demo")
+
     def test_already_balanced_not_modified(self) -> None:
         # Truncation auto-close should not corrupt valid input.
         raw = '{"a": 1}'

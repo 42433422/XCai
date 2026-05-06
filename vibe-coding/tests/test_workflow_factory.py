@@ -33,7 +33,7 @@ def _spec(skill_id: str, fn: str) -> str:
 
 def _code(fn: str) -> str:
     return json.dumps(
-        {"source_code": f"def {fn}(x):\n    return {{'y': x}}\n"}
+        {"source_code": f"def {fn}(x):\n    \"\"\"Return x under the y key.\"\"\"\n    return {{'y': x}}\n"}
     )
 
 
@@ -87,6 +87,42 @@ def test_workflow_generates_graph_and_skills(tmp_path):
     assert {n.code_skill_ref for n in report.graph.nodes if n.code_skill_ref} == set(
         report.code_skills_created
     )
+
+
+def test_workflow_passes_project_analysis_to_workflow_and_skill_prompts(tmp_path):
+    project = tmp_path / "node_app"
+    project.mkdir()
+    (project / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "node-app",
+                "scripts": {"dev": "vite", "build": "vite build"},
+                "dependencies": {"vue": "^3.4.0"},
+                "devDependencies": {"vite": "^5.0.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project / "src").mkdir()
+    (project / "src" / "App.vue").write_text("<template />\n", encoding="utf-8")
+
+    llm = MockLLM(
+        [
+            _workflow_payload(),
+            _spec("wf-s1", "to_y_a"),
+            _code("to_y_a"),
+            _spec("wf-s2", "to_y_b"),
+            _code("to_y_b"),
+        ]
+    )
+    factory = _build_factory(tmp_path, llm)
+    factory.generate_with_report("生成项目 README", project_root=project)
+
+    assert "项目结构分析" in llm.calls[0].user
+    assert "Vue" in llm.calls[0].user
+    assert "Vite" in llm.calls[0].user
+    assert "项目结构分析" in llm.calls[1].user
+    assert "不要输出通用 API 章节模板" in llm.calls[1].user
 
 
 def test_workflow_validates_graph_structure(tmp_path):

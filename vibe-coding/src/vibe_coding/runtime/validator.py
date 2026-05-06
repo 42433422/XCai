@@ -6,11 +6,15 @@ import ast
 
 from .._internals.code_models import CodeFunctionSignature, CodeValidationResult
 
+# NOTE(2026-05): 与 modstore_server/script_agent/static_checker.py 的安全档对齐。
+# 沙箱由外层（per-session tempdir cwd + POSIX RLIMIT + 子进程隔离 + 静态 AST 拦截）
+# 提供边界；CodeSkill 本身允许在工作目录内做文件 IO（``open`` 已放出）。
+# 仍禁能直接绕过 Python 层防护的内建（eval/exec/compile/__import__）以及
+# 反射类（globals/locals/getattr/setattr/delattr）和交互调试类（input/breakpoint）。
 FORBIDDEN_BUILTINS = frozenset({
     "eval",
     "exec",
     "compile",
-    "open",
     "__import__",
     "globals",
     "locals",
@@ -22,47 +26,239 @@ FORBIDDEN_BUILTINS = frozenset({
 })
 
 ALLOWED_IMPORT_MODULES = frozenset({
+    # core data / text
     "json",
     "re",
     "math",
+    "string",
+    "textwrap",
+    "unicodedata",
+    "pprint",
+    # date / time / timing
     "datetime",
+    "time",           # time.time / time.sleep / time.monotonic — no FS/net
+    # concurrency primitives (Lock, RLock, Event, local — no raw OS threads needed)
+    "threading",
+    # data structures / algorithms
     "collections",
     "itertools",
     "functools",
+    "heapq",
+    "bisect",
+    "operator",
+    # typing / dataclasses / copy
     "typing",
     "dataclasses",
     "copy",
+    # numeric / statistics
+    "statistics",
+    "decimal",
+    "fractions",
+    "random",
+    # enums / io / context
+    "enum",
+    "io",
+    "contextlib",     # contextmanager, suppress, nullcontext
+    # abstract base classes / type utilities
+    "abc",
+    "numbers",
+    "types",
+    # path / filesystem 操作（沙箱已锁 cwd 到 per-session tempdir，由外层提供边界）
+    "pathlib",
+    "os",
+    "glob",
+    "fnmatch",
+    "shutil",
+    "tempfile",
+    "csv",
+    # binary / struct
+    "struct",
+    # encoding / hashing (read-only, no FS/net access)
+    "base64",
+    "hashlib",
+    "uuid",
+    # logging (writes to stderr/handler only, no FS writes in sandbox)
+    "logging",
+    # warnings suppression
+    "warnings",
 })
 
 # Safe methods on dict/list/str/tuple/set or generic objects in typical skill code
 _SAFE_ATTR_METHODS = frozenset({
+    # --- dict ---
     "get",
     "setdefault",
     "keys",
     "values",
     "items",
+    "update",
+    "pop",
+    "popitem",
+    "clear",
+    "copy",
+    # --- list ---
     "append",
     "extend",
     "insert",
-    "pop",
-    "clear",
+    "remove",
+    "sort",
+    "reverse",
+    # --- set ---
+    "add",
+    "discard",
+    "difference",
+    "difference_update",
+    "intersection",
+    "intersection_update",
+    "union",
+    "issubset",
+    "issuperset",
+    "symmetric_difference",
+    # --- str ---
     "strip",
+    "lstrip",
+    "rstrip",
     "split",
+    "rsplit",
+    "splitlines",
     "join",
     "lower",
     "upper",
+    "title",
+    "capitalize",
     "replace",
     "startswith",
     "endswith",
+    "find",
+    "rfind",
     "format",
+    "format_map",
+    "encode",
+    "zfill",
+    "ljust",
+    "rjust",
+    "center",
     "count",
     "index",
-    "add",
-    "copy",
-    "update",
+    "rindex",
+    "isdigit",
+    "isalpha",
+    "isalnum",
+    "isspace",
+    "isnumeric",
+    # --- logging / logger instances (.info / .debug / .warning / .error / .critical) ---
+    "debug",
+    "info",
+    "warning",
+    "error",
+    "critical",
+    "log",
+    # --- misc helpers (collections, itertools objects, etc.) ---
+    "most_common",
+    "elements",
+    "total",
+    "hex",
+    "digest",
+    "hexdigest",
+    # --- file IO / pathlib.Path / shutil 实例方法（沙箱已锁 cwd） ---
+    "read",
+    "write",
+    "readline",
+    "readlines",
+    "writelines",
+    "seek",
+    "tell",
+    "flush",
+    "close",
+    "read_text",
+    "write_text",
+    "read_bytes",
+    "write_bytes",
+    "open",
+    "iterdir",
+    "glob",
+    "rglob",
+    "walk",
+    "exists",
+    "is_file",
+    "is_dir",
+    "is_symlink",
+    "is_absolute",
+    "stat",
+    "lstat",
+    "mkdir",
+    "rmdir",
+    "unlink",
+    "rename",
+    "touch",
+    "with_name",
+    "with_suffix",
+    "with_stem",
+    "relative_to",
+    "resolve",
+    "absolute",
+    "as_posix",
+    "as_uri",
+    "joinpath",
+    "match",
+    "samefile",
+    "expanduser",
+    "home",
+    "cwd",
 })
 
-MAX_CODE_LINES = 100
+# 即使 ``os`` 在 import 白名单里，仍禁这些会绕过沙箱的子项
+# （与 modstore_server/script_agent/static_checker.py:DANGEROUS_ATTR_CALLS 同步）。
+DANGEROUS_ATTR_CALLS = frozenset({
+    "os.system",
+    "os.popen",
+    "os.execv",
+    "os.execve",
+    "os.execvp",
+    "os.execvpe",
+    "os.execl",
+    "os.execle",
+    "os.execlp",
+    "os.execlpe",
+    "os.fork",
+    "os.forkpty",
+    "os.spawnl",
+    "os.spawnle",
+    "os.spawnlp",
+    "os.spawnlpe",
+    "os.spawnv",
+    "os.spawnve",
+    "os.spawnvp",
+    "os.spawnvpe",
+    "subprocess.Popen",
+    "subprocess.call",
+    "subprocess.run",
+    "subprocess.check_call",
+    "subprocess.check_output",
+    "subprocess.getoutput",
+    "subprocess.getstatusoutput",
+    # 网络出网：即使有人通过别名/赋值绕开 import 白名单，仍拦截调用
+    "socket.socket",
+    "socket.create_connection",
+    "socket.create_server",
+    "socket.socketpair",
+})
+
+
+def _attr_chain(node: ast.AST) -> str:
+    """``a.b.c`` -> ``"a.b.c"``，否则 ``""``。"""
+    parts: list[str] = []
+    cur: ast.AST | None = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+MAX_CODE_LINES = 300
 
 
 class CodeValidator:
@@ -111,12 +307,14 @@ class CodeValidator:
                 if isinstance(node.func, ast.Name):
                     if node.func.id in FORBIDDEN_BUILTINS:
                         issues.append(f"forbidden_builtin:{node.func.id}")
-                elif isinstance(node.func, ast.Attribute) and not self._allowed_attribute_call(
-                    node.func, allowed_mods
-                ):
-                    issues.append(
-                        f"disallowed_attribute_call:{ast.dump(node.func, include_attributes=False)}"
-                    )
+                elif isinstance(node.func, ast.Attribute):
+                    full = _attr_chain(node.func)
+                    if full in DANGEROUS_ATTR_CALLS:
+                        issues.append(f"forbidden_attribute_call:{full}")
+                    elif not self._allowed_attribute_call(node.func, allowed_mods):
+                        issues.append(
+                            f"disallowed_attribute_call:{ast.dump(node.func, include_attributes=False)}"
+                        )
 
         sig_issues = self._check_signature(tree, function_name, signature)
         issues.extend(sig_issues)
@@ -167,6 +365,9 @@ class CodeValidator:
         if func_def is None:
             issues.append(f"missing_function:{function_name}")
             return issues
+
+        if not (func_def.body and isinstance(func_def.body[0], ast.Expr) and isinstance(func_def.body[0].value, ast.Constant) and isinstance(func_def.body[0].value.value, str)):
+            issues.append("missing_docstring")
 
         args = func_def.args
         posonly = [a.arg for a in args.posonlyargs]

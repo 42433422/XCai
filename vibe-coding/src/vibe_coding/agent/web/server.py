@@ -351,6 +351,87 @@ def create_app(
         )
         return result.to_dict()
 
+    # ---------------------------------------------------------------- agent SSE stream
+
+    @app.post("/api/agent/start")
+    async def agent_start(request: Request):
+        """Start a background agent run; return run_id."""
+        _require_fastapi()
+        from fastapi.responses import JSONResponse  # type: ignore[import-not-found]
+        from ...agent.loop.background import get_default_manager
+        from ...agent.react.builtins import builtin_tools_v2
+
+        payload = await request.json()
+        goal = str(payload.get("goal") or "").strip()
+        if not goal:
+            return JSONResponse({"error": "goal required"}, status_code=400)
+        root = str(payload.get("root") or ".").strip() or "."
+
+        coder_inst = coder or coder_factory()  # type: ignore[misc]
+        mgr = get_default_manager(coder_inst.store_dir)
+
+        def _factory():
+            from ...agent.loop import AgentLoop
+            tools = builtin_tools_v2(root=root)
+            return AgentLoop(
+                coder_inst.llm,
+                tools,
+                mode=str(payload.get("mode") or "agent"),
+                max_steps=int(payload.get("max_steps") or 30),
+                project_root=root,
+                enable_subagents=bool(payload.get("enable_subagents", False)),
+                store_dir=coder_inst.store_dir,
+            )
+
+        run_id = mgr.start(_factory, goal)
+        return {"run_id": run_id, "status": "running"}
+
+    @app.get("/api/agent/stream/{run_id}")
+    async def agent_stream(run_id: str):
+        """SSE stream of AgentEvents for a running agent."""
+        _require_fastapi()
+        from fastapi.responses import StreamingResponse  # type: ignore[import-not-found]
+        import asyncio as _asyncio
+        import json as _json
+        from ...agent.loop.background import get_default_manager
+
+        mgr = get_default_manager()
+
+        async def _gen():
+            # Subscribe to events via a queue approach
+            # For simplicity: poll the run state and emit status events
+            seen_steps = 0
+            for _ in range(600):   # up to ~60s with 0.1s polls
+                state = mgr.get_status(run_id)
+                if state is None:
+                    yield f"data: {_json.dumps({'type': 'error', 'payload': {'reason': 'run not found'}})}\n\n"
+                    return
+                ev = {"type": "status", "payload": state.to_dict()}
+                yield f"data: {_json.dumps(ev)}\n\n"
+                if state.status in ("done", "error", "cancelled"):
+                    return
+                await _asyncio.sleep(0.5)
+
+        return StreamingResponse(_gen(), media_type="text/event-stream")
+
+    @app.get("/api/agent/status/{run_id}")
+    async def agent_status(run_id: str):
+        from ...agent.loop.background import get_default_manager
+        mgr = get_default_manager()
+        state = mgr.get_status(run_id)
+        if state is None:
+            _require_fastapi()
+            from fastapi.responses import JSONResponse  # type: ignore[import-not-found]
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return state.to_dict()
+
+    @app.delete("/api/agent/cancel/{run_id}")
+    async def agent_cancel(run_id: str):
+        from ...agent.loop.background import get_default_manager
+        mgr = get_default_manager()
+        ok = mgr.cancel(run_id)
+        return {"cancelled": ok}
+
     return app
 
 

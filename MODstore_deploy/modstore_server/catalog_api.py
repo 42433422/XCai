@@ -244,6 +244,12 @@ async def api_upload_package(
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td) / (file.filename or "upload.bin")
         tmp.write_bytes(raw_bytes)
+        if str(rec.get("artifact") or "").strip().lower() == "employee_pack":
+            from modstore_server.catalog_store import package_manifest_alignment_errors
+
+            align_errs = package_manifest_alignment_errors(rec, tmp)
+            if align_errs:
+                raise HTTPException(400, "员工包 metadata 与包内 manifest 不一致: " + "; ".join(align_errs))
         saved = append_package(rec, tmp)
 
     if str(saved.get("artifact") or "").strip().lower() == "employee_pack":

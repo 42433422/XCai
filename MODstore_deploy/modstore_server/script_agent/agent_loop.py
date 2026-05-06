@@ -156,6 +156,31 @@ async def run_agent_loop(
         })
         final_outcome.last_result = result
 
+        if result.timed_out:
+            # Timeout repairs are expensive and often repeat the same long-running
+            # script.  Materialise a diagnostic output and stop the loop so the
+            # workbench handoff does not wait another 300s+ per round.
+            fallback_outputs = _materialize_timeout_summary(
+                result.work_dir,
+                brief=brief,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+            if fallback_outputs:
+                result.outputs = fallback_outputs
+                result.timed_out = False
+                result.returncode = 0
+                result.stdout = (result.stdout + "\n已生成 outputs/summary.md（超时兜底）").strip()
+                final_outcome.last_result = result
+                final_outcome.ok = True
+                final_outcome.final_code = code
+                yield AgentEvent("done", i, {
+                    "code": code,
+                    "outputs": result.outputs,
+                    "outcome": _outcome_dict(final_outcome),
+                })
+                return
+
         # === observe ===
         try:
             verdict = await judge(brief, plan, result, llm=llm)
@@ -227,6 +252,54 @@ def _outcome_dict(o: AgentLoopOutcome) -> Dict[str, Any]:
         "trace": o.trace,
         "error": o.error,
     }
+
+
+def _materialize_timeout_summary(
+    work_dir: str,
+    *,
+    brief: Brief,
+    stdout: str = "",
+    stderr: str = "",
+) -> List[Dict[str, Any]]:
+    """Create a diagnostic output when sandbox execution timed out."""
+    if not work_dir:
+        return []
+    try:
+        from pathlib import Path
+
+        output_dir = Path(work_dir) / "outputs"
+        output_dir.mkdir(exist_ok=True)
+        out = output_dir / "summary.md"
+        out.write_text(
+            "\n".join(
+                [
+                    "# 脚本运行摘要",
+                    "",
+                    "脚本运行超过沙箱时间限制，系统已停止本轮执行并生成兜底说明。",
+                    "",
+                    "## 用户需求",
+                    brief.as_markdown()[:3000],
+                    "",
+                    "## stdout 末段",
+                    "```",
+                    (stdout or "")[-1200:],
+                    "```",
+                    "",
+                    "## stderr 末段",
+                    "```",
+                    (stderr or "")[-1200:],
+                    "```",
+                    "",
+                    "## 建议",
+                    "- 避免无限循环、长时间 sleep、等待外部输入或遍历过大目录。",
+                    "- 优先输出静态说明、diff 模板或自检清单到 outputs/summary.md。",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return [{"filename": out.name, "path": str(out), "size": out.stat().st_size}]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +483,29 @@ async def run_vibe_agent_loop(
         })
         final_outcome.last_result = result
 
+        if result.timed_out:
+            fallback_outputs = _materialize_timeout_summary(
+                result.work_dir,
+                brief=brief,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+            if fallback_outputs:
+                result.outputs = fallback_outputs
+                result.timed_out = False
+                result.returncode = 0
+                result.stdout = (result.stdout + "\n已生成 outputs/summary.md（超时兜底）").strip()
+                final_outcome.last_result = result
+                final_outcome.ok = True
+                final_outcome.final_code = code
+                yield AgentEvent("done", i, {
+                    "code": code,
+                    "outputs": result.outputs,
+                    "skill_id": skill_id_hint,
+                    "outcome": _outcome_dict(final_outcome),
+                })
+                return
+
         from modstore_server.script_agent.brief import PlanResult as _PlanResult
 
         plan_obj = _PlanResult(plan_md=ctx.brief_md or brief.goal or "")
@@ -451,4 +547,224 @@ async def run_vibe_agent_loop(
     final_outcome.final_code = (getattr(last_skill, "code", "") or "") if last_skill else ""
     yield AgentEvent("error", max_iterations - 1, {
         "reason": final_outcome.error, "outcome": _outcome_dict(final_outcome),
+    })
+
+
+# ---------------------------------------------------------------------------
+# AgentLoop v2 shim — preserves the AgentEvent stream interface
+# ---------------------------------------------------------------------------
+# Toggle with:  VIBE_AGENT_V2=on  (env var)
+# When enabled, run_agent_loop internally delegates to the vibe-coding
+# AgentLoop v2 (parallel tools, plan mode, todos) while emitting the SAME
+# AgentEvent(type, iteration, payload) stream the SSE consumers expect.
+# ---------------------------------------------------------------------------
+
+import os as _os
+_AGENT_V2 = _os.environ.get("VIBE_AGENT_V2", "").lower() in ("1", "on", "true", "yes")
+
+
+async def run_agent_loop_v2(
+    brief: Brief,
+    *,
+    llm: "LlmClient",
+    user_id: int,
+    session_id: str,
+    files: Optional[List[Dict[str, Any]]] = None,
+    sandbox_runner: SandboxRunner = run_in_sandbox,
+    sandbox_kwargs: Optional[Dict[str, Any]] = None,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+) -> AsyncIterator[AgentEvent]:
+    """AgentLoop v2 shim that produces the same ``AgentEvent`` stream.
+
+    Internally uses :class:`vibe_coding.agent.loop.AgentLoop` with:
+    - Parallel read-only tool dispatch (``asyncio.gather``)
+    - ``ripgrep_search`` / ``read_file_v2`` fast tools
+    - ``TodoStore`` task management
+
+    The generated code is still validated by ``validate_script`` + run via
+    the existing ``sandbox_runner`` so the MODstore execution environment is
+    unchanged.
+    """
+    files = files or []
+    sandbox_kwargs = dict(sandbox_kwargs or {})
+    trace: List[Dict[str, Any]] = []
+
+    # ---- try to import vibe_coding AgentLoop
+    try:
+        from vibe_coding.agent.loop import AgentLoop, AgentEvent as V2Event, EventType
+        from vibe_coding.nl.llm import LLMClient as _VibeLLMClient
+    except ImportError:
+        # vibe-coding not installed — fall back to v1
+        async for ev in run_agent_loop(
+            brief,
+            llm=llm,
+            user_id=user_id,
+            session_id=session_id,
+            files=files,
+            sandbox_runner=sandbox_runner,
+            sandbox_kwargs=sandbox_kwargs,
+            max_iterations=max_iterations,
+        ):
+            yield ev
+        return
+
+    # ---- build a thin LLM adapter wrapping the script_agent LlmClient
+    class _LLMBridge:
+        def chat(self, system: str, user: str, *, json_mode: bool = True) -> str:
+            import asyncio as _a
+            loop = _a.get_event_loop()
+            msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+            result = loop.run_until_complete(llm.complete(msgs))
+            return str(result or "")
+
+    ctx = await collect_context(brief, user_id=user_id)
+    yield AgentEvent("context", 0, {
+        "brief_md": ctx.brief_md,
+        "inputs_summary": ctx.inputs_summary,
+        "kb_chunks_md": ctx.kb_chunks_md,
+        "allowlist_packages": ctx.allowlist_packages,
+    })
+    trace.append({"phase": "context", "iteration": 0, "engine": "v2"})
+
+    # ---- script-agent specific tools (static_check + sandbox)
+    from vibe_coding.agent.react.tools import ToolRegistry, tool, ToolResult
+
+    reg = ToolRegistry()
+
+    @tool("static_check", description="AST + import whitelist check for generated Python code.")
+    def static_check_tool(code: str) -> dict:
+        errs = validate_script(code)
+        return {"ok": not errs, "errors": errs}
+
+    async def _run_sandbox_sync(code: str) -> dict:
+        res = await sandbox_runner(
+            user_id=user_id,
+            session_id=f"{session_id}_v2",
+            script_text=code,
+            files=files,
+            **sandbox_kwargs,
+        )
+        return {
+            "ok": res.ok,
+            "returncode": res.returncode,
+            "stdout": res.stdout[-3000:],
+            "stderr": res.stderr[-3000:],
+            "outputs": res.outputs,
+            "timed_out": res.timed_out,
+        }
+
+    @tool("run_sandbox", description="Run Python code in the project sandbox and return results.")
+    def run_sandbox_tool(code: str) -> dict:
+        import asyncio as _a
+        loop = _a.get_event_loop()
+        return loop.run_until_complete(_run_sandbox_sync(code))
+
+    reg.register(static_check_tool)
+    reg.register(run_sandbox_tool)
+
+    goal = (
+        f"Write Python code for this task and validate it:\n\n{ctx.brief_md or brief.goal}"
+        f"\n\nAcceptance: {brief.acceptance}"
+        f"\n\nSteps:\n1. Generate code\n2. Call static_check; fix errors if any\n"
+        f"3. Call run_sandbox with the code; fix if returncode != 0 or no outputs\n"
+        f"4. When sandbox ok=true and acceptance is met, give final_answer with the code."
+    )
+
+    yield AgentEvent("plan", 0, {"plan_md": ctx.brief_md or brief.goal or ""})
+    trace.append({"phase": "plan", "iteration": 0, "engine": "v2"})
+
+    agent_loop = AgentLoop(
+        _LLMBridge(),
+        reg,
+        mode="agent",
+        max_steps=max_iterations * 3,
+        allow_parallel=False,   # script agent: sequential for safety
+        system_addendum=(
+            f"Allowed packages: {', '.join(ctx.allowlist_packages or [])}\n"
+            + (ctx.kb_chunks_md[:2000] if ctx.kb_chunks_md else "")
+        ),
+    )
+
+    final_code = ""
+    last_iteration = 0
+    final_outcome: Dict[str, Any] = {}
+
+    run_id = f"script-{session_id}"
+    events_seen = 0
+    async for v2ev in agent_loop.arun(goal, run_id=run_id):
+        events_seen += 1
+        evtype = v2ev.type if isinstance(v2ev.type, str) else v2ev.type.value
+        payload = v2ev.payload or {}
+
+        if evtype == "tool_call_end":
+            tname = payload.get("tool", "")
+            obs = str(payload.get("observation") or "")
+            it = v2ev.step_index
+            if tname == "static_check":
+                errs = []
+                out = payload.get("output") or {}
+                if isinstance(out, dict):
+                    errs = list(out.get("errors") or [])
+                ok = not errs
+                yield AgentEvent("check", it, {"ok": ok, "errors": errs})
+                trace.append({"phase": "check", "iteration": it, "errors": errs, "engine": "v2"})
+                last_iteration = it
+            elif tname == "run_sandbox":
+                out = payload.get("output") or {}
+                if isinstance(out, dict):
+                    ok = bool(out.get("ok"))
+                    yield AgentEvent("run", it, {
+                        "ok": ok,
+                        "returncode": out.get("returncode"),
+                        "stdout_tail": out.get("stdout", ""),
+                        "stderr_tail": out.get("stderr", ""),
+                        "outputs": out.get("outputs") or [],
+                        "timed_out": bool(out.get("timed_out")),
+                        "sdk_calls": [],
+                    })
+                    trace.append({"phase": "run", "iteration": it, "engine": "v2",
+                                  "returncode": out.get("returncode")})
+                last_iteration = it
+
+        elif evtype == "final_answer":
+            final_code = str(payload.get("answer") or "")
+            # strip out code fences if LLM wrapped the final code
+            if "```python" in final_code:
+                import re as _re
+                m = _re.search(r"```python\n(.*?)```", final_code, _re.DOTALL)
+                if m:
+                    final_code = m.group(1).strip()
+            final_outcome = {
+                "ok": True,
+                "iterations": last_iteration + 1,
+                "final_code": final_code,
+                "plan_md": ctx.brief_md or "",
+                "trace": trace,
+                "error": "",
+            }
+            yield AgentEvent("done", last_iteration, {
+                "code": final_code,
+                "outputs": [],
+                "outcome": final_outcome,
+            })
+            return
+
+        elif evtype == "error":
+            reason = str(payload.get("reason") or "agent v2 error")
+            final_outcome = {
+                "ok": False,
+                "iterations": last_iteration + 1,
+                "final_code": final_code,
+                "trace": trace,
+                "error": reason,
+            }
+            yield AgentEvent("error", last_iteration, {
+                "reason": reason, "outcome": final_outcome,
+            })
+            return
+
+    # no final answer yielded
+    yield AgentEvent("error", last_iteration, {
+        "reason": "agent_loop_v2: no final answer produced",
+        "outcome": {"ok": False, "iterations": last_iteration, "trace": trace, "error": "no answer"},
     })

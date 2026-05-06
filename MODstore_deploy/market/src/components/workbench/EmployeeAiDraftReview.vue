@@ -549,9 +549,23 @@ function _buildManifest(): Record<string, unknown> {
   const agent = (cog.agent as Record<string, unknown>) || {}
   agent.system_prompt = draft.value.systemPrompt
   cog.agent = agent
+  if (draft.value.skills.length) {
+    cog.skills = draft.value.skills.map((s) => ({
+      name: s.name,
+      brief: s.brief,
+      unverified: s.unverified,
+    }))
+  }
   v2.cognition = cog
 
   const meta = (v2.metadata as Record<string, unknown>) || {}
+  if (draft.value.skills.length) {
+    meta.suggested_skills = draft.value.skills.map((s) => ({
+      name: s.name,
+      brief: s.brief,
+      unverified: s.unverified,
+    }))
+  }
   if (draft.value.pricingCny > 0 || draft.value.pricingTier !== 'free') {
     meta.suggested_pricing = {
       tier: draft.value.pricingTier,

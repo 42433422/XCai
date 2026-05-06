@@ -12,10 +12,15 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .code_factory import NLCodeSkillFactory, VibeCodingError
+from .code_factory import (
+    NLCodeSkillFactory,
+    VibeCodingError,
+    _enrich_brief_with_project_analysis,
+)
 # removed: config-layer factory unavailable in standalone
 # from .config_factory import NLConfigSkillFactory
 from .nl.llm import LLMClient
@@ -80,14 +85,25 @@ class NLWorkflowFactory:
         self.code_factory = code_factory
         self.config_factory = config_factory
 
-    def generate(self, brief: str) -> VibeWorkflowGraph:
-        return self.generate_with_report(brief).graph
+    def generate(
+        self,
+        brief: str,
+        *,
+        project_root: str | Path | None = None,
+    ) -> VibeWorkflowGraph:
+        return self.generate_with_report(brief, project_root=project_root).graph
 
-    def generate_with_report(self, brief: str) -> WorkflowGenerationReport:
+    def generate_with_report(
+        self,
+        brief: str,
+        *,
+        project_root: str | Path | None = None,
+    ) -> WorkflowGenerationReport:
         if not brief or not brief.strip():
             raise VibeCodingError("workflow brief is required")
 
-        raw = self.llm.chat(WORKFLOW_PROMPT, brief.strip(), json_mode=True)
+        enriched_brief = _enrich_brief_with_project_analysis(brief, project_root)
+        raw = self.llm.chat(WORKFLOW_PROMPT, enriched_brief.strip(), json_mode=True)
         payload = _parse_json(raw)
 
         warnings: list[str] = []
@@ -115,6 +131,7 @@ class NLWorkflowFactory:
                 skill = self.code_factory.generate(
                     skill_brief,
                     skill_id=f"{workflow_id}-{temp_id}",
+                    project_root=project_root,
                 )
             except VibeCodingError as exc:
                 raise VibeCodingError(

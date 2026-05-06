@@ -23,12 +23,28 @@ async function parseResponse(res: Response): Promise<unknown> {
   }
 }
 
+function looksLikeHtmlErrorBody(s: string): boolean {
+  const t = s.trim()
+  return t.startsWith('<!') || /^<html/i.test(t)
+}
+
 function errorMessage(data: any, fallback: string): string {
   const m = data?.message
   if (typeof m === 'string' && m.trim()) return m.trim()
   const d = data?.detail
   if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join('; ')
-  if (typeof d === 'string') return d
+  if (typeof d === 'string') {
+    if (looksLikeHtmlErrorBody(d)) {
+      if (/504|Gateway Time-out/i.test(d)) {
+        return 'HTTP 504 Gateway Time-out（网关读超时：长请求请在 nginx 增大 proxy_read_timeout，见 MODstore_deploy/docs/nginx-https-example.conf）'
+      }
+      if (/502|Bad Gateway/i.test(d)) {
+        return 'HTTP 502 Bad Gateway（上游不可用或连接被重置）'
+      }
+      return fallback || '网关返回了 HTML 错误页而非 JSON'
+    }
+    return d
+  }
   if (d && typeof d === 'object') return JSON.stringify(d)
   return fallback
 }
@@ -130,7 +146,14 @@ export async function requestJson<T>(path: string, opts: RequestInit = {}, authA
     if (newToken) return requestJson<T>(path, opts, 1)
   }
   if (!res.ok) {
-    throw new ApiError(errorMessage(data, res.statusText), res.status, data)
+    let msg = errorMessage(data, res.statusText)
+    if (res.status === 504) {
+      msg =
+        'HTTP 504 Gateway Time-out（网关在等待上游响应时超时。工作台 LLM / 基准测试可能需数分钟：请为 location /api/ 设置 proxy_read_timeout 3600s 或更高。）'
+    } else if (typeof msg === 'string' && msg.length > 600) {
+      msg = `${msg.slice(0, 400)}…`
+    }
+    throw new ApiError(msg, res.status, data)
   }
   return data as T
 }

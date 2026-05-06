@@ -1,0 +1,23 @@
+---
+description: 禁止在 market/src 引入 React 依赖，锁定 Vue 3 单栈
+globs: MODstore_deploy/market/src/**
+alwaysApply: true
+---
+
+# 前端技术栈锁定：Vue 3 Only
+
+`MODstore_deploy/market/src` 是纯 Vue 3 应用（Vue Router + Pinia + Vue Flow）。
+
+## 禁止事项
+
+- 不得在 `package.json` 中添加 `react`、`react-dom`、`@types/react`、`react-*` 依赖
+- 不得创建 `.jsx` 或 `.tsx` 文件
+- 不得在 `.vue` / `.ts` 文件中写 `import React`、`import { ... } from 'react'` 等语句
+- 不得引入任何 React 生态库（如 Next.js、React Query、React Hook Form 等）
+
+## 背景
+
+2026-05 技术评估确认前端已为纯 Vue 3 栈，无任何 React islands。
+统一单框架可降低包体积、消除运行时冲突、简化 SSR/hydration 路径。
+
+如需引入 React 组件，请先在技术会议中评审，并更新此决策文档。

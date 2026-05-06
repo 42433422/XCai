@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from modstore_server.script_agent.static_checker import validate_script
+from modstore_server.script_agent.sandbox_runner import DEFAULT_TIMEOUT_SECONDS
 
 
 def test_blocks_subprocess_import():
@@ -96,3 +97,17 @@ def test_reports_syntax_error_first():
     errs = validate_script("def f(:\n  pass\n")
     assert errs
     assert "语法错误" in errs[0] or "syntax" in errs[0].lower()
+
+
+def test_prose_chinese_does_not_report_invalid_character_u3002():
+    """模型把中文说明当脚本返回时，应提示「非代码」而非 ``invalid character '。'``。"""
+    prose = "这是一个文档归纳助手。它会读取文档并输出 Markdown。\n"
+    errs = validate_script(prose)
+    assert errs
+    assert "invalid character" not in errs[0].lower()
+    assert "U+3002" not in errs[0]
+    assert "中文" in errs[0] or "说明" in errs[0]
+
+
+def test_default_sandbox_timeout_is_interactive():
+    assert DEFAULT_TIMEOUT_SECONDS <= 60

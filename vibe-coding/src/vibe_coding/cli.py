@@ -261,6 +261,58 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     return 0 if result.published or result.dry_run else 1
 
 
+# ----------------------------------------------------------------- agent v2
+
+
+def _cmd_agent_run(args: argparse.Namespace) -> int:
+    coder = _make_coder(args)
+    result = coder.agent(
+        args.goal,
+        root=args.root,
+        mode="agent",
+        max_steps=args.max_steps,
+        allow_parallel=getattr(args, "allow_parallel", True),
+        enable_subagents=getattr(args, "subagents", False),
+    )
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if result.success else 1
+
+
+def _cmd_agent_plan(args: argparse.Namespace) -> int:
+    coder = _make_coder(args)
+    result = coder.agent(
+        args.goal,
+        root=args.root,
+        mode="plan",
+        max_steps=args.max_steps,
+    )
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if result.success else 1
+
+
+def _cmd_agent_status(args: argparse.Namespace) -> int:
+    from .agent.loop.background import get_default_manager
+    from pathlib import Path as _Path
+    store_dir = _Path(args.store_dir) if hasattr(args, "store_dir") else None
+    mgr = get_default_manager(store_dir)
+    state = mgr.get_status(args.run_id)
+    if state is None:
+        print(json.dumps({"error": "run not found"}, ensure_ascii=False))
+        return 1
+    print(json.dumps(state.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_agent_cancel(args: argparse.Namespace) -> int:
+    from .agent.loop.background import get_default_manager
+    from pathlib import Path as _Path
+    store_dir = _Path(args.store_dir) if hasattr(args, "store_dir") else None
+    mgr = get_default_manager(store_dir)
+    ok = mgr.cancel(args.run_id)
+    print(json.dumps({"cancelled": ok}, ensure_ascii=False))
+    return 0 if ok else 1
+
+
 # ----------------------------------------------------------------- web / lsp
 
 
@@ -364,6 +416,36 @@ def build_parser() -> argparse.ArgumentParser:
     heal_cmd.add_argument("--notes", default=None)
     heal_cmd.add_argument("--no-auto-context", dest="auto_context", action="store_false", default=True)
     heal_cmd.set_defaults(func=_cmd_heal)
+
+    # --------------------------------------------------------------- agent v2 (AgentLoop)
+    agent_cmd = sub.add_parser("agent", help="AgentLoop v2: autonomous Claude Code-style agent")
+    agent_sub = agent_cmd.add_subparsers(dest="agent_cmd", required=True)
+
+    # agent run
+    ag_run = agent_sub.add_parser("run", help="run agent until goal is achieved")
+    ag_run.add_argument("goal", help="goal / task description")
+    ag_run.add_argument("--root", default=".", help="project root")
+    ag_run.add_argument("--max-steps", type=int, default=30)
+    ag_run.add_argument("--no-parallel", dest="allow_parallel", action="store_false", default=True)
+    ag_run.add_argument("--subagents", action="store_true", help="enable task sub-agents")
+    ag_run.set_defaults(func=_cmd_agent_run)
+
+    # agent plan
+    ag_plan = agent_sub.add_parser("plan", help="plan-only (read-only; output proposed plan)")
+    ag_plan.add_argument("goal")
+    ag_plan.add_argument("--root", default=".")
+    ag_plan.add_argument("--max-steps", type=int, default=20)
+    ag_plan.set_defaults(func=_cmd_agent_plan)
+
+    # agent status
+    ag_status = agent_sub.add_parser("status", help="get background run status")
+    ag_status.add_argument("run_id")
+    ag_status.set_defaults(func=_cmd_agent_status)
+
+    # agent cancel
+    ag_cancel = agent_sub.add_parser("cancel", help="cancel a background run")
+    ag_cancel.add_argument("run_id")
+    ag_cancel.set_defaults(func=_cmd_agent_cancel)
 
     # ------------------------------------------------------------- marketplace
     pub = sub.add_parser(

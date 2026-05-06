@@ -15,6 +15,10 @@ from modstore_server.llm_key_resolver import (
 _MODEL_ALIASES: dict[tuple[str, str], str] = {
     # 小米 2026-05 模型目录已不再接受 mimo-v2-base；兼容前端/账户缓存中的旧选择。
     ("xiaomi", "mimo-v2-base"): "mimo-v2.5-pro",
+    # 旧基准默认 / 历史 env 仍写此 ID 时，映射到当前网关支持的对话模型。
+    ("xiaomi", "MiMo-7B-RL-Think"): "mimo-v2.5-pro",
+    # 部分区域网关不报 flash；统一映射到 pro（与 services.llm 基准默认一致）
+    ("xiaomi", "mimo-v2-flash"): "mimo-v2.5-pro",
 }
 
 _shared_client: Optional[httpx.AsyncClient] = None
@@ -25,8 +29,8 @@ def _get_shared_client() -> httpx.AsyncClient:
     if _shared_client is None:
         limits = httpx.Limits(max_connections=1000, max_keepalive_connections=200)
         # Read timeout raised to 300s to accommodate slow reasoning models (e.g. deepseek-r1,
-        # mimo-v2.5-pro); still well below the frontend's 10-minute wall-clock deadline so
-        # genuine hangs surface quickly as an exception rather than a zombie session.
+        # mimo-v2.5-pro); still below the workbench poll wall-clock budget (30m) so
+        # genuine hangs surface as an exception rather than a zombie session.
         timeout = httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=30.0)
         _shared_client = httpx.AsyncClient(timeout=timeout, limits=limits)
     return _shared_client
@@ -47,6 +51,25 @@ def _normalize_openai_base(provider: str, base_url: Optional[str]) -> str:
 
 def normalize_model(provider: str, model: str) -> str:
     return _MODEL_ALIASES.get((provider, model), model)
+
+
+def _openai_assistant_message_parts(msg: Dict[str, Any]) -> tuple[str, str]:
+    """Extract visible answer and reasoning trace from an OpenAI-style assistant message.
+
+    Thinking/reasoning models (DeepSeek-R1、MiMo、部分兼容网关) 常在 ``reasoning_content``
+    中返回长链推理，正式回复仍在 ``content``；若 ``max_tokens`` 预算不足，可能出现
+    ``content`` 为空仅保留推理段 —— 下游若只读 ``content`` 会得到「像没有思考」或解析失败。
+    """
+    if not isinstance(msg, dict):
+        return "", ""
+    content = str(msg.get("content") or "").strip()
+    reasoning = str(
+        msg.get("reasoning_content")
+        or msg.get("reasoning")
+        or msg.get("thinking")
+        or ""
+    ).strip()
+    return content, reasoning
 
 
 async def chat_openai_compatible(
@@ -73,8 +96,17 @@ async def chat_openai_compatible(
     data = r.json()
     choice0 = (data.get("choices") or [{}])[0]
     msg = choice0.get("message") or {}
-    content = msg.get("content") or ""
-    return {"ok": True, "content": content, "usage": data.get("usage") or {}, "raw": data}
+    content, reasoning_trace = _openai_assistant_message_parts(msg)
+    text_out = content if content else reasoning_trace
+    out: Dict[str, Any] = {
+        "ok": True,
+        "content": text_out,
+        "usage": data.get("usage") or {},
+        "raw": data,
+    }
+    if reasoning_trace:
+        out["reasoning_trace"] = reasoning_trace
+    return out
 
 
 async def stream_openai_compatible(
@@ -240,16 +272,63 @@ async def chat_dispatch(
     model: str,
     messages: List[Dict[str, str]],
     max_tokens: Optional[int] = None,
+    # Timeout fallback: if primary call exceeds this (seconds), retry with fallback_provider/model
+    timeout_fallback_s: Optional[float] = None,
+    fallback_provider: Optional[str] = None,
+    fallback_model: Optional[str] = None,
+    fallback_api_key: Optional[str] = None,
+    fallback_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     model = normalize_model(provider, model)
-    if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
-        b = _normalize_openai_base(provider, base_url)
-        return await chat_openai_compatible(b, api_key, model, messages, max_tokens=max_tokens)
-    if provider == "anthropic":
-        return await chat_anthropic(api_key, model, messages, max_tokens=max_tokens or 1024)
-    if provider == "google":
-        return await chat_google(api_key, model, messages)
-    return {"ok": False, "error": f"unsupported provider: {provider}"}
+    has_fallback = bool(
+        timeout_fallback_s and fallback_provider and fallback_model
+    )
+
+    async def _primary() -> Dict[str, Any]:
+        if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
+            b = _normalize_openai_base(provider, base_url)
+            return await chat_openai_compatible(b, api_key, model, messages, max_tokens=max_tokens)
+        if provider == "anthropic":
+            return await chat_anthropic(api_key, model, messages, max_tokens=max_tokens or 1024)
+        if provider == "google":
+            return await chat_google(api_key, model, messages)
+        return {"ok": False, "error": f"unsupported provider: {provider}"}
+
+    if not has_fallback:
+        return await _primary()
+
+    import asyncio as _asyncio
+    try:
+        result = await _asyncio.wait_for(_primary(), timeout=float(timeout_fallback_s))
+        if result.get("ok"):
+            return result
+        # provider returned error — fall through to fallback
+        primary_error = result.get("error") or "primary returned error"
+    except (_asyncio.TimeoutError, Exception) as exc:
+        primary_error = f"{type(exc).__name__}: {exc}"
+
+    # ---- fallback
+    fb_provider = str(fallback_provider)
+    fb_model = normalize_model(fb_provider, str(fallback_model))
+    fb_key = str(fallback_api_key or api_key)
+    fb_base = fallback_base_url or base_url
+    try:
+        if fb_provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
+            fb_b = _normalize_openai_base(fb_provider, fb_base)
+            fb_result = await chat_openai_compatible(fb_b, fb_key, fb_model, messages, max_tokens=max_tokens)
+        elif fb_provider == "anthropic":
+            fb_result = await chat_anthropic(fb_key, fb_model, messages, max_tokens=max_tokens or 1024)
+        elif fb_provider == "google":
+            fb_result = await chat_google(fb_key, fb_model, messages)
+        else:
+            fb_result = {"ok": False, "error": f"unsupported fallback provider: {fb_provider}"}
+    except Exception as exc2:  # noqa: BLE001
+        fb_result = {"ok": False, "error": f"fallback failed: {exc2}"}
+
+    if fb_result.get("ok"):
+        fb_result["_fallback_used"] = True
+        fb_result["_primary_error"] = primary_error
+    return fb_result
 
 
 async def chat_dispatch_stream(

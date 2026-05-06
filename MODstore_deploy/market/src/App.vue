@@ -246,7 +246,12 @@ const { balance } = storeToRefs(walletStore)
 const { unreadCount: unreadNotifications, badgeText: unreadBadgeText } = storeToRefs(notificationStore)
 const initialPath = String(router.currentRoute.value.path || '/')
 const isHome = ref(initialPath === '/about')
-const isEmployeeWorkbench = ref(initialPath.startsWith('/workbench/employee'))
+const isEmployeeWorkbench = ref(
+  initialPath.startsWith('/workbench/employee') ||
+  initialPath.startsWith('/workbench/shell') ||
+  initialPath.startsWith('/workbench/unified') ||
+  initialPath.startsWith('/workbench/mod/'),
+)
 
 const BUTLER_EXCLUDED_PATHS = ['/about', '/login', '/login-email', '/forgot-password', '/register']
 const shouldShowButler = computed(() => {
@@ -305,7 +310,11 @@ router.afterEach(() => {
 function checkHome() {
   const path = String(router.currentRoute.value.path || '/')
   isHome.value = path === '/about'
-  isEmployeeWorkbench.value = path.startsWith('/workbench/employee')
+  isEmployeeWorkbench.value =
+    path.startsWith('/workbench/employee') ||
+    path.startsWith('/workbench/shell') ||
+    path.startsWith('/workbench/unified') ||
+    path.startsWith('/workbench/mod/')
 }
 
 watch(
@@ -760,9 +769,10 @@ a { text-decoration: none; color: inherit; }
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: var(--layout-max);
-  margin-inline: auto;
-  padding: var(--page-pad-y) var(--layout-pad-x);
+  /* 全宽铺底：避免 max-width + margin auto 在两侧露出 body 背景（扩展/窄视口「黑边」） */
+  max-width: none;
+  margin-inline: 0;
+  padding: var(--page-pad-y) 0;
   min-width: 0;
   min-height: 0;
 }
@@ -793,10 +803,9 @@ a { text-decoration: none; color: inherit; }
   padding: 0;
 }
 
-/* 账户中心：控制台式单列留白，避免 main-content-router 内块与顶栏之间「散、乱」 */
+/* 账户中心：纵向节奏；横向宽度交给 .account-page 自身 max-width */
 .main-content--account {
   --page-pad-y: clamp(0.75rem, 2vw, 1.25rem);
-  max-width: 1200px;
 }
 
 /* 工作台首页 / 与窗口等高，禁页面级纵向滚轮，避免与右侧长条档杆冲突；内容在 .wb-gear-scene 内自行滚动 */
@@ -956,7 +965,7 @@ body:has(.app-shell--wb-home) {
     padding: 0.35rem 0.55rem;
   }
   .main-content {
-    padding: var(--page-pad-y) var(--layout-pad-x);
+    padding: var(--page-pad-y) 0;
   }
   .main-content--wb-home {
     padding: 0;

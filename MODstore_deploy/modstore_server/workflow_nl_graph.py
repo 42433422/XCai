@@ -835,16 +835,34 @@ async def apply_nl_workflow_graph(
             )
             warnings.append("模型未生成 employee 节点，已自动插入目标员工包节点")
 
+    temp_to_row: Dict[str, Dict[str, Any]] = {n["temp_id"]: n for n in nodes_in}
+    edges_in: List[Dict[str, Any]] = []
+    for raw_edge in raw_edges:
+        if not isinstance(raw_edge, dict):
+            continue
+        s = str(raw_edge.get("source_temp_id") or "").strip()
+        t = str(raw_edge.get("target_temp_id") or "").strip()
+        cond = str(raw_edge.get("condition") or "")
+        if not s or not t or s not in temp_to_row or t not in temp_to_row:
+            warnings.append(f"跳过无效边: {s!r} -> {t!r}")
+            continue
+        edges_in.append({"source_temp_id": s, "target_temp_id": t, "condition": cond})
+
     # ── 强制补齐漏掉的 preset eskill 节点 ────────────────────────────────
     if preset_nodes:
         existing_skill_ids = {
-            str(n.get("config", {}).get("skill_id") or "")
+            str(
+                n.get("config", {}).get("skill_id")
+                or n.get("config", {}).get("temp_skill_id")
+                or ""
+            )
             for n in nodes_in
             if n.get("node_type") == "eskill"
         }
         missing_presets = [
             p for p in preset_nodes
             if str(p["eskill_id"]) not in existing_skill_ids
+            and str(p.get("temp_skill_id") or "") not in existing_skill_ids
         ]
         if missing_presets:
             warnings.append(
@@ -876,6 +894,7 @@ async def apply_nl_workflow_graph(
                 )
 
         # 若有插入的 preset 节点，把它们串进 start → preset(s) → end 链
+        temp_to_row = {n["temp_id"]: n for n in nodes_in}
         inserted_preset_tids = [
             f"preset_eskill_{p['eskill_id']}"
             for p in missing_presets
@@ -906,19 +925,6 @@ async def apply_nl_workflow_graph(
             "ok": False,
             "error": f"图中须有且仅有一个 start 与一个 end（当前 start={len(starts)} end={len(ends)}）",
         }
-
-    temp_to_row: Dict[str, Dict[str, Any]] = {n["temp_id"]: n for n in nodes_in}
-    edges_in: List[Dict[str, Any]] = []
-    for raw_edge in raw_edges:
-        if not isinstance(raw_edge, dict):
-            continue
-        s = str(raw_edge.get("source_temp_id") or "").strip()
-        t = str(raw_edge.get("target_temp_id") or "").strip()
-        cond = str(raw_edge.get("condition") or "")
-        if not s or not t or s not in temp_to_row or t not in temp_to_row:
-            warnings.append(f"跳过无效边: {s!r} -> {t!r}")
-            continue
-        edges_in.append({"source_temp_id": s, "target_temp_id": t, "condition": cond})
 
     if employee_pack_id and any(n["temp_id"] == "target_employee" for n in nodes_in):
         start_tid = next((n["temp_id"] for n in nodes_in if n["node_type"] == "start"), "")
@@ -953,6 +959,42 @@ async def apply_nl_workflow_graph(
         if n.get("node_type") == "eskill" and str(n.get("config", {}).get("temp_skill_id") or "")
     }
     blueprint_refs = {str(bp.get("temp_skill_id") or "") for bp in skill_blueprints}
+    preset_name_to_skill = {
+        str(p.get("name") or "").strip(): str(p.get("eskill_id") or "").strip()
+        for p in preset_nodes
+        if str(p.get("name") or "").strip() and str(p.get("eskill_id") or "").strip()
+    }
+    preset_alias_refs: set[str] = set()
+    if preset_nodes and len(preset_nodes) == 1:
+        preset_alias_refs = set(skill_refs)
+    if preset_name_to_skill or preset_alias_refs:
+        sole_preset_skill_id = (
+            str(preset_nodes[0].get("eskill_id") or "").strip()
+            if preset_nodes and len(preset_nodes) == 1
+            else ""
+        )
+        for n in nodes_in:
+            if n.get("node_type") != "eskill":
+                continue
+            cfg = n.get("config") if isinstance(n.get("config"), dict) else {}
+            temp_skill_id = str(cfg.get("temp_skill_id") or "")
+            if temp_skill_id in blueprint_refs or str(cfg.get("skill_id") or "").strip():
+                if temp_skill_id not in preset_alias_refs:
+                    continue
+            preset_skill_id = preset_name_to_skill.get(str(n.get("name") or "").strip()) or (
+                sole_preset_skill_id if temp_skill_id in preset_alias_refs else ""
+            )
+            if preset_skill_id:
+                cfg.pop("temp_skill_id", None)
+                cfg["skill_id"] = preset_skill_id
+                n["config"] = cfg
+                skill_refs.discard(temp_skill_id)
+        if preset_alias_refs:
+            skill_blueprints = [
+                bp for bp in skill_blueprints
+                if str(bp.get("temp_skill_id") or "") not in preset_alias_refs
+            ]
+            blueprint_refs = {str(bp.get("temp_skill_id") or "") for bp in skill_blueprints}
     missing_refs = sorted(x for x in skill_refs if x and x not in blueprint_refs)
     if missing_refs:
         return {"ok": False, "error": f"ESkill 节点引用了不存在的 temp_skill_id: {', '.join(missing_refs)}"}

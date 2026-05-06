@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from threading import Lock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class EmployeeRuntimeClient(ABC):
@@ -33,6 +33,7 @@ class EmployeeRuntimeClient(ABC):
         task: str,
         input_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[int] = None,
+        bench_llm_override: Optional[Tuple[str, str]] = None,
     ) -> Dict[str, Any]:
         ...
 
@@ -58,10 +59,11 @@ class InProcessEmployeeRuntimeClient(EmployeeRuntimeClient):
         task: str,
         input_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[int] = None,
+        bench_llm_override: Optional[Tuple[str, str]] = None,
     ) -> Dict[str, Any]:
         from modstore_server.employee_executor import execute_employee_task
 
-        return execute_employee_task(employee_id, task, input_data or {}, user_id)
+        return execute_employee_task(employee_id, task, input_data or {}, user_id, bench_llm_override=bench_llm_override)
 
 
 _LOCK = Lock()

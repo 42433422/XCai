@@ -24,6 +24,15 @@ from modstore_server.employee_pack_blueprints_template import (
     render_employee_pack_blueprints_py,
     render_employee_pack_employee_py,
 )
+from modstore_server.employee_pack_standalone_template import (
+    render_standalone_main_py,
+    render_standalone_cli_py,
+    render_standalone_runner_py,
+    render_standalone_llm_adapter_py,
+    render_standalone_handler_no_llm_py,
+    render_standalone_handler_llm_md_py,
+    render_standalone_readme_md,
+)
 from modstore_server.mod_employee_impl_scaffold import sanitize_employee_stem
 from modstore_server.mod_ai_scaffold import normalize_mod_id
 
@@ -155,7 +164,18 @@ def _build_employee_pack_zip_with_source(
     manifest: Dict[str, Any],
     source_py: Optional[str],
 ) -> bytes:
-    """manifest.json + 与 ``build_employee_pack_zip`` 一致的后端运行时；可选附 ``source/employee.py`` 副本。"""
+    """manifest.json + 与 ``build_employee_pack_zip`` 一致的后端运行时；可选附 ``source/employee.py`` 副本。
+
+    同时在 zip 顶层注入 ``__main__.py`` 与 ``<pack_id>/standalone/`` 目录，
+    使产出的 .xcemp 文件既可被平台装载，也可作为 Python zipapp 独立执行：
+
+        python xxx.xcemp info
+        python xxx.xcemp validate
+        python xxx.xcemp run [--input task.json] [--llm]
+
+    平台运行时只通过 ``<pack_id>/manifest.json`` 与 ``backend/`` 加载，
+    顶层 ``__main__.py`` 与 ``standalone/`` 不参与平台路径，零侵入。
+    """
     buf = io.BytesIO()
     body = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     emp = manifest.get("employee") if isinstance(manifest.get("employee"), dict) else {}
@@ -169,6 +189,7 @@ def _build_employee_pack_zip_with_source(
         else render_employee_pack_employee_py(employee_id=eid, stem=stem, label=label)
     )
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # ── 平台原有文件（不变）─────────────────────────────────────────────
         zf.writestr(f"{pack_id}/manifest.json", body)
         zf.writestr(f"{pack_id}/backend/blueprints.py", bp)
         zf.writestr(f"{pack_id}/backend/employees/{stem}.py", emp_py)
@@ -182,6 +203,21 @@ def _build_employee_pack_zip_with_source(
                 f"{pack_id}/source/README.md",
                 "# 员工源码\n\n本文件仅为查看参考。宿主通过 `backend/employees/<stem>.py` 执行。\n",
             )
+        # ── zipapp 独立可执行入口（新增，对平台透明）──────────────────────
+        zf.writestr("__main__.py", render_standalone_main_py(pack_id))
+        zf.writestr(f"{pack_id}/standalone/__init__.py", "")
+        zf.writestr(f"{pack_id}/standalone/cli.py", render_standalone_cli_py(pack_id, eid))
+        zf.writestr(f"{pack_id}/standalone/runner.py", render_standalone_runner_py(pack_id))
+        zf.writestr(f"{pack_id}/standalone/llm_adapter.py", render_standalone_llm_adapter_py())
+        zf.writestr(f"{pack_id}/standalone/handlers/__init__.py", "")
+        zf.writestr(f"{pack_id}/standalone/handlers/no_llm.py", render_standalone_handler_no_llm_py())
+        zf.writestr(f"{pack_id}/standalone/handlers/llm_md.py", render_standalone_handler_llm_md_py())
+        zf.writestr(
+            f"{pack_id}/standalone/fixtures/example_input.json",
+            '{"task": "validate"}\n',
+        )
+        zf.writestr(f"{pack_id}/standalone/requirements.txt", "")
+        zf.writestr(f"{pack_id}/standalone/README.md", render_standalone_readme_md(pack_id, label))
     return buf.getvalue()
 
 

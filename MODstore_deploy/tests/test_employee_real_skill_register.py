@@ -49,6 +49,30 @@ def _make_pack_dir(tmp: Path, source: str = "def execute(**kwargs):\n    return 
     return tmp
 
 
+def _make_pack_dir_with_skills(tmp: Path) -> Path:
+    pack = _make_pack_dir(tmp)
+    manifest = {
+        "id": "test_pack",
+        "name": "Test Pack",
+        "employee": {"id": "test", "label": "测试员工", "capabilities": ["复核结果"]},
+        "employee_config_v2": {
+            "cognition": {
+                "skills": [
+                    {"name": "解析输入", "brief": "提取用户 payload 中的关键字段"},
+                    {"name": "生成报告", "brief": "根据处理结果生成结构化报告"},
+                ]
+            },
+            "metadata": {
+                "suggested_skills": [
+                    {"name": "风险检查", "brief": "检查结果中的风险和缺失信息"}
+                ]
+            },
+        },
+    }
+    (pack / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return pack
+
+
 # ---------------------------------------------------------------------------
 # 场景 1: 有脚本 → 注册为 ESkill（mock vibe coder，A 注册成功，B 升级跳过）
 # ---------------------------------------------------------------------------
@@ -110,7 +134,7 @@ async def test_register_with_script_returns_eskill_spec():
             )
 
         assert isinstance(specs, list)
-        assert len(specs) == 1
+        assert len(specs) >= 2
         spec = specs[0]
         assert spec["eskill_id"] == 42
         assert "vibe_skill_id" in spec
@@ -173,6 +197,52 @@ async def test_register_multi_step_split():
         assert "parsed" in output_vars
         assert "processed" in output_vars
         assert "output" in output_vars
+
+
+@pytest.mark.asyncio
+async def test_register_manifest_skills_when_llm_split_fails():
+    """LLM 拆分失败时，仍应从 manifest 的 skills/suggested_skills 拆出多个 ESkill。"""
+    from modstore_server.employee_skill_register import register_employee_pack_as_eskills
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pack_dir = _make_pack_dir_with_skills(Path(tmpdir))
+
+        mock_coder = MagicMock()
+        mock_coder.code_store = MagicMock()
+        mock_coder.code_store.has_code_skill.return_value = False
+        mock_coder.code_store.save_code_skill = MagicMock()
+        mock_coder.code.side_effect = RuntimeError("no LLM in test")
+
+        upsert_id_seq = iter(range(30, 40))
+
+        with (
+            patch(
+                "modstore_server.employee_skill_register.get_vibe_coder",
+                return_value=mock_coder,
+            ),
+            patch(
+                "modstore_server.employee_skill_register._llm_split_steps",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "modstore_server.employee_skill_register._upsert_eskill",
+                side_effect=lambda *a, **kw: next(upsert_id_seq),
+            ),
+        ):
+            specs = await register_employee_pack_as_eskills(
+                _make_db(),
+                _make_user(),
+                pack_dir=pack_dir,
+                brief="处理输入并生成报告",
+                provider="openai",
+                model="gpt-4o",
+            )
+
+    assert len(specs) >= 3
+    names = " ".join(s["name"] for s in specs)
+    assert "解析输入" in names
+    assert "生成报告" in names
+    assert "风险检查" in names
 
 
 # ---------------------------------------------------------------------------

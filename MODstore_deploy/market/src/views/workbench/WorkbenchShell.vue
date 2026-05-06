@@ -295,6 +295,16 @@ function switchTarget(kind: TargetKind) {
 
 const leftWidth = ref(props.embedded ? 260 : 280)
 const rightWidth = ref(props.embedded ? 280 : 300)
+const sidePanelsCollapsed = ref(false)
+
+function onCanvasLayoutModeChange(mode: 'normal' | 'workflow-focus') {
+  // 「工作流画布」沉浸模式：收起左右栏让画布占满（嵌入与非嵌入一致）
+  const next = mode === 'workflow-focus'
+  if (sidePanelsCollapsed.value === next) return
+  sidePanelsCollapsed.value = next
+  // 左右栏显隐会改变中心可视区，触发一次适配，避免节点挤在旧视口。
+  setTimeout(() => canvasRef.value?.fitView(), 120)
+}
 
 // ── Save / publish actions ────────────────────────────────────────────────────
 
@@ -306,18 +316,40 @@ async function saveEmployee() {
   saving.value = true
   saveMsg.value = ''
   try {
-    // Use export endpoint to get zip blob and upload
     const manifest = store.target.manifest
     const identity = manifest.identity as Record<string, unknown> | undefined
     if (!identity?.id || !identity?.name) {
       saveMsg.value = '请先填写员工身份（ID 和名称）'
       return
     }
-    // For now: show a success message until the full save flow is implemented
-    saveMsg.value = '配置已暂存（本地会话）'
-    store.dirty = false
-    store.lastSavedAt = Date.now()
-    setTimeout(() => { saveMsg.value = '' }, 3000)
+    const employeeId = String(identity.id || store.target.id || '')
+    const res = await api.employeeSaveManifest(manifest, employeeId) as {
+      ok?: boolean
+      pack_id?: string
+      error?: string
+      eskill_registered?: number
+      eskill_error?: string
+      manifest?: Record<string, unknown>
+    }
+    if (res?.ok) {
+      // Update target id
+      if (res.pack_id) {
+        store.target.id = res.pack_id
+      }
+      // Apply returned manifest (has eskill_id written back into cognition.skills)
+      if (res.manifest && typeof res.manifest === 'object') {
+        store.target.manifest = res.manifest as Record<string, unknown>
+      }
+      const skillMsg = (res.eskill_registered ?? 0) > 0
+        ? `，已注册 ${res.eskill_registered} 个 Skill`
+        : (res.eskill_error ? '（Skill 注册跳过）' : '')
+      saveMsg.value = `配置已保存${skillMsg}`
+      store.dirty = false
+      store.lastSavedAt = Date.now()
+      setTimeout(() => { saveMsg.value = '' }, 4000)
+    } else {
+      saveMsg.value = '保存失败: ' + (res?.error || '未知错误')
+    }
   } catch (e: unknown) {
     saveMsg.value = '保存失败: ' + ((e as Error)?.message || String(e))
   } finally {
@@ -348,7 +380,15 @@ const showPublishPanel = ref(false)
     <header v-if="!embedded" class="wb-topbar">
       <!-- Left: branding + target tabs -->
       <div class="wb-topbar-left">
-        <span class="wb-logo">XCAGI <span class="wb-logo-badge">工作台</span></span>
+        <RouterLink
+          class="wb-logo wb-logo-home-link"
+          :to="{ name: 'workbench-home' }"
+          title="返回工作台首页（三档对话）"
+          aria-label="返回工作台首页（三档对话）"
+        >
+          <span class="wb-logo-return" aria-hidden="true">←</span>
+          XCAGI <span class="wb-logo-badge">工作台</span>
+        </RouterLink>
         <nav class="wb-target-tabs">
           <button
             v-for="tab in TARGET_TABS"
@@ -394,14 +434,15 @@ const showPublishPanel = ref(false)
     <div v-else-if="loadError" class="wb-error">加载失败：{{ loadError }}</div>
 
     <!-- Three-column body -->
-    <div v-else class="wb-body">
+    <div v-else class="wb-body" :class="{ 'wb-body--canvas-focus': sidePanelsCollapsed }">
       <!-- Left rail -->
-      <div class="wb-col wb-col--left" :style="{ width: leftWidth + 'px' }">
+      <div v-show="!sidePanelsCollapsed" class="wb-col wb-col--left" :style="{ width: leftWidth + 'px' }">
         <LeftRail @select-employee="onSelectEmployee" />
       </div>
 
       <!-- Resize handle left -->
       <div
+        v-show="!sidePanelsCollapsed"
         class="wb-resize"
         @mousedown="(e) => {
           const startX = e.clientX
@@ -415,11 +456,12 @@ const showPublishPanel = ref(false)
 
       <!-- Center canvas -->
       <div class="wb-col wb-col--center">
-        <CanvasStage ref="canvasRef" />
+        <CanvasStage ref="canvasRef" @layout-mode-change="onCanvasLayoutModeChange" />
       </div>
 
       <!-- Resize handle right -->
       <div
+        v-show="!sidePanelsCollapsed"
         class="wb-resize"
         @mousedown="(e) => {
           const startX = e.clientX
@@ -432,7 +474,7 @@ const showPublishPanel = ref(false)
       />
 
       <!-- Right rail -->
-      <div class="wb-col wb-col--right" :style="{ width: rightWidth + 'px' }">
+      <div v-show="!sidePanelsCollapsed" class="wb-col wb-col--right" :style="{ width: rightWidth + 'px' }">
         <RightRail />
       </div>
     </div>
@@ -535,6 +577,35 @@ const showPublishPanel = ref(false)
   color: #6366f1;
   letter-spacing: -0.02em;
   white-space: nowrap;
+}
+
+.wb-logo-home-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.wb-logo-return {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(148, 163, 184, 0.55);
+  transition: color 0.15s ease;
+}
+
+.wb-logo-home-link:hover .wb-logo-return {
+  color: #a5b4fc;
+}
+
+.wb-logo-home-link:hover {
+  color: #818cf8;
+}
+
+.wb-logo-home-link:focus-visible {
+  outline: 2px solid rgba(129, 140, 248, 0.65);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
 
 .wb-logo-badge {
@@ -663,6 +734,10 @@ const showPublishPanel = ref(false)
   display: flex;
   overflow: hidden;
   min-height: 0;
+}
+
+.wb-body--canvas-focus {
+  background: #080f1a;
 }
 
 .wb-col {

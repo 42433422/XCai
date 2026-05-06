@@ -256,7 +256,8 @@ async function changePw() {
 .account-page {
   max-width: 1080px;
   margin: 0 auto;
-  padding: 0 4px 2.5rem;
+  /* 与全局 --layout-gutter 同节奏；原 main-content 横向 padding 已取消 */
+  padding: 0 clamp(12px, 3.5vw, 40px) 2.5rem;
   color: #fff;
 }
 .account-page--console {

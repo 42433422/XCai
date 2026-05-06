@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -281,13 +281,18 @@ async def _cognition_real(
     *,
     employee_id: str = "",
     task: str = "",
+    bench_llm_override: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
     cog_cfg = _get_section(config, "cognition")
     agent = cog_cfg.get("agent") if isinstance(cog_cfg.get("agent"), dict) else cog_cfg
     system_prompt = agent.get("system_prompt", "你是智能员工助手")
     model_cfg = agent.get("model") if isinstance(agent.get("model"), dict) else {}
-    provider = str(model_cfg.get("provider") or "deepseek").strip()
-    model_name = str(model_cfg.get("model_name") or "deepseek-chat").strip()
+
+    if bench_llm_override:
+        provider, model_name = bench_llm_override
+    else:
+        provider = str(model_cfg.get("provider") or "deepseek").strip()
+        model_name = str(model_cfg.get("model_name") or "deepseek-chat").strip()
     max_tokens = int(model_cfg.get("max_tokens") or 4000)
     messages = [{"role": "system", "content": system_prompt}]
     user_input = json.dumps(perceived.get("normalized_input", {}), ensure_ascii=False)
@@ -326,14 +331,18 @@ async def _cognition_real(
             logger.warning("cognition.knowledge retrieve 失败: %s", e)
             rag_meta = {"enabled": True, "items": [], "error": str(e)}
 
-    result = await chat_dispatch_via_session(
-        session,
-        user_id,
-        provider,
-        model_name,
-        messages,
-        max_tokens=max_tokens,
-    )
+    if bench_llm_override:
+        from modstore_server.services.llm import chat_dispatch_via_platform_only
+        result = await chat_dispatch_via_platform_only(provider, model_name, messages, max_tokens=max_tokens)
+    else:
+        result = await chat_dispatch_via_session(
+            session,
+            user_id,
+            provider,
+            model_name,
+            messages,
+            max_tokens=max_tokens,
+        )
     if not result.get("ok"):
         err = str(result.get("error") or "llm call failed")
         if "missing api key" in err.lower():
@@ -355,6 +364,8 @@ async def _cognition_real(
         "provider": provider,
         "model": model_name,
         "llm_raw": result.get("raw"),
+        "system_prompt": system_prompt,  # forwarded so agent runner can use it
+        "_bench_platform_only": bool(bench_llm_override),
     }
 
 
@@ -367,6 +378,7 @@ def _cognition_sync(
     *,
     employee_id: str = "",
     task: str = "",
+    bench_llm_override: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
     return _run_coro_sync(
         _cognition_real(
@@ -377,6 +389,7 @@ def _cognition_sync(
             user_id,
             employee_id=employee_id,
             task=task,
+            bench_llm_override=bench_llm_override,
         )
     )
 
@@ -538,6 +551,123 @@ def _action_fhd_business(
         return {"handler": "fhd_business", "error": str(e), "url": url}
 
 
+def _action_agent_runner(
+    actions_cfg: Dict[str, Any],
+    reasoning: Dict[str, Any],
+    task: str,
+    employee_id: str,
+    user_id: int,
+) -> Dict[str, Any]:
+    """Dispatch the ``agent`` handler by running an EmployeeAgentRunner ReAct loop.
+
+    Reads ``actions.agent.workspace`` to determine the project root and whether
+    write tools should be available.  Falls back to the reasoning text when the
+    runner is unavailable.
+    """
+    try:
+        from modstore_server.mod_employee_agent_runner import EmployeeAgentRunner
+    except ImportError as exc:
+        return {
+            "handler": "agent",
+            "ok": False,
+            "error": f"EmployeeAgentRunner 未导入: {exc}",
+        }
+
+    agent_cfg = actions_cfg.get("agent") if isinstance(actions_cfg.get("agent"), dict) else {}
+    ws_cfg = agent_cfg.get("workspace") if isinstance(agent_cfg.get("workspace"), dict) else {}
+    read_only = bool(ws_cfg.get("read_only", True))
+    requires_root = bool(ws_cfg.get("requires_project_root", False))
+
+    # Try to get project_root from input payload first, then from the cognition result.
+    cog_input = reasoning.get("input") or {}
+    project_root_raw = (
+        cog_input.get("project_root")
+        or cog_input.get("workspace_root")
+        or (reasoning.get("input") or {}).get("project_root")
+    )
+    workspace_root = "."
+
+    if project_root_raw:
+        try:
+            from modstore_server.integrations.vibe_adapter import ensure_within_workspace, VibePathError
+            resolved = str(ensure_within_workspace(str(project_root_raw), user_id=int(user_id or 0)))
+            workspace_root = resolved
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "handler": "agent",
+                "ok": False,
+                "error": f"project_root 路径无效: {exc}",
+            }
+    elif requires_root:
+        return {
+            "handler": "agent",
+            "ok": False,
+            "error": (
+                "该员工需要项目根目录才能分析文件。"
+                "请在 input_data 中提供 project_root 字段（例如：{'project_root': '/path/to/project'}）。"
+            ),
+        }
+
+    # Build the ctx for the runner — wire up a synchronous-compatible call_llm.
+    sf = get_session_factory()
+
+    async def _agent_call_llm(messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        mt = int(kwargs.get("max_tokens") or 2048)
+        temp = float(kwargs.get("temperature") or 0.2)
+        # Re-use the same provider/model stored in reasoning if available.
+        provider = str(reasoning.get("provider") or "deepseek")
+        model = str(reasoning.get("model") or "deepseek-chat")
+        if reasoning.get("_bench_platform_only"):
+            from modstore_server.services.llm import chat_dispatch_via_platform_only
+            return await chat_dispatch_via_platform_only(provider, model, messages, max_tokens=mt)
+        with sf() as sess:
+            return await chat_dispatch_via_session(sess, user_id, provider, model, messages, max_tokens=mt)
+
+    async def _noop_http_get(url: str, **kwargs) -> Dict[str, Any]:
+        return {"ok": False, "error": "agent 模式下 HTTP 工具未启用"}
+
+    async def _noop_http_post(url: str, **kwargs) -> Dict[str, Any]:
+        return {"ok": False, "error": "agent 模式下 HTTP 工具未启用"}
+
+    ctx: Dict[str, Any] = {
+        "call_llm": _agent_call_llm,
+        "http_get": _noop_http_get,
+        "http_post": _noop_http_post,
+        "workspace_root": workspace_root,
+        "employee_id": employee_id,
+        "read_only": read_only,
+    }
+
+    # Extract system_prompt from reasoning config (populated by cognition layer).
+    system_prompt = str(reasoning.get("system_prompt") or "").strip()
+    if not system_prompt:
+        # Fall back to the cognition section if available.
+        cog_cfg = reasoning.get("cognition_cfg") or {}
+        ag = cog_cfg.get("agent") if isinstance(cog_cfg.get("agent"), dict) else cog_cfg
+        system_prompt = str(ag.get("system_prompt") or "").strip()
+
+    runner = EmployeeAgentRunner(ctx, workspace_root=workspace_root)
+
+    async def _run() -> Dict[str, Any]:
+        return await runner.run(task, system_prompt=system_prompt)
+
+    try:
+        result = _run_coro_sync(_run())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("agent runner raised employee=%s", employee_id)
+        return {"handler": "agent", "ok": False, "error": f"agent 执行异常: {exc}"}
+
+    return {
+        "handler": "agent",
+        "ok": result.get("ok", False),
+        "summary": result.get("summary") or "",
+        "rounds": result.get("rounds", 0),
+        "tool_calls_count": len(result.get("tool_calls") or []),
+        "workspace_root": workspace_root,
+        "error": result.get("error") or "",
+    }
+
+
 def _actions_real(
     config: Dict[str, Any],
     reasoning: Dict[str, Any],
@@ -622,6 +752,13 @@ def _actions_real(
                     "voice_id": str(vo.get("voice_id") or "").strip(),
                 }
             )
+        elif handler == "agent":
+            outputs.append(
+                _action_agent_runner(actions_cfg, reasoning, task, employee_id, user_id)
+            )
+        elif handler == "llm_md":
+            # Alias: llm_md is single-shot LLM already done via cognition; return it.
+            outputs.append({"handler": "llm_md", "output": reasoning.get("reasoning", "")})
         elif handler in ("vibe_edit", "vibe_heal", "vibe_code"):
             try:
                 from modstore_server.integrations.vibe_action_handlers import dispatch_vibe_handler
@@ -659,6 +796,8 @@ def execute_employee_task(
     task: str,
     input_data: Dict[str, Any] = None,
     user_id: int = 0,
+    *,
+    bench_llm_override: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
     t0 = time.perf_counter()
     payload = input_data or {}
@@ -678,6 +817,7 @@ def execute_employee_task(
                 user_id,
                 employee_id=employee_id,
                 task=task,
+                bench_llm_override=bench_llm_override,
             )
             result = _actions_real(config.get("actions", {}), reasoning, task, employee_id, user_id)
             duration_ms = round((time.perf_counter() - t0) * 1000, 3)
@@ -699,6 +839,13 @@ def execute_employee_task(
                 notify_employee_execution_done(user_id, employee_id, task, "success")
             except Exception:
                 pass
+            cog_err = ""
+            if isinstance(reasoning, dict):
+                cog_err = str(reasoning.get("error") or "").strip()
+            rex = ""
+            if isinstance(reasoning, dict):
+                rex = str(reasoning.get("reasoning") or "").strip()[:4000]
+
             return {
                 "employee_id": employee_id,
                 "pack": {"id": pack["pack_id"], "version": pack["version"]},
@@ -706,6 +853,8 @@ def execute_employee_task(
                 "result": result,
                 "executed_at": datetime.now(timezone.utc).isoformat(),
                 "llm_tokens": llm_tokens,
+                "cognition_error": cog_err or None,
+                "reasoning_excerpt": rex or None,
             }
         except Exception as e:
             duration_ms = round((time.perf_counter() - t0) * 1000, 3)

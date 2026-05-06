@@ -9,7 +9,9 @@ orchestrator 集成测试覆盖三条路径：
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 import pytest
 
 from modstore_server.script_agent.llm_client import StubLlmClient
@@ -203,13 +205,17 @@ async def test_stage_resolve_workflow_fallback_fails():
 @pytest.mark.asyncio
 async def test_stage_design_v2_ok():
     llm = StubLlmClient([V2_JSON])
-    v2, err = await stage_design_v2(SAMPLE_INTENT, SAMPLE_WF_CHOICE, llm)
+    v2, err = await stage_design_v2(SAMPLE_INTENT, SAMPLE_WF_CHOICE, llm, suggested_skills=SAMPLE_SKILLS)
     assert err == ""
     assert v2 is not None
     assert v2.perception["type"] == "document"
     assert v2.memory["type"] == "long_term"
     assert "system_prompt" in v2.cognition["agent"]
     assert "text_output" in v2.actions["handlers"]
+    prompt = v2.cognition["agent"]["system_prompt"]
+    assert "退款工作流" in prompt
+    assert "订单查询" in prompt
+    assert "不得编造" in prompt
 
 
 @pytest.mark.asyncio
@@ -225,6 +231,32 @@ async def test_stage_design_v2_missing_prompt_gets_default():
     assert err == ""
     assert v2 is not None
     assert v2.cognition["agent"]["system_prompt"]  # filled by default
+    assert v2.actions["handlers"] == ["llm_md", "echo"]
+
+
+@pytest.mark.asyncio
+async def test_stage_design_v2_rejects_api_template_prompt():
+    templated = json.dumps({
+        "perception": {"type": "text"},
+        "memory": {"type": "session"},
+        "cognition": {
+            "agent": {
+                "system_prompt": "## 用途\n处理退款\n## 输入\n订单\n## 输出\n结果\n## 示例\n示例",
+                "model": {"provider": "deepseek", "model_name": "deepseek-chat"},
+            }
+        },
+        "actions": {"handlers": ["echo"]},
+    })
+    llm = StubLlmClient([templated])
+    v2, err = await stage_design_v2(SAMPLE_INTENT, SAMPLE_WF_CHOICE, llm, suggested_skills=SAMPLE_SKILLS)
+    assert err == ""
+    assert v2 is not None
+    prompt = v2.cognition["agent"]["system_prompt"]
+    assert "## 用途" not in prompt
+    assert "退款工作流" in prompt
+    assert "订单查询" in prompt
+    assert "不得编造" in prompt
+    assert v2.actions["handlers"] == ["llm_md", "echo"]
 
 
 @pytest.mark.asyncio
@@ -262,12 +294,19 @@ async def test_stage_assemble_produces_valid_manifest():
     assert manifest is not None, f"assemble returned None: {errs}"
     assert manifest["id"] == "refund-assistant"
     assert manifest["artifact"] == "employee_pack"
+    assert manifest["employee"]["id"] == "refund-assistant"
+    assert manifest["workflow_employees"][0]["id"] == "refund-assistant"
+    assert manifest["workflow_employees"][0]["api_base_path"] == "employees/refund-assistant"
     v2 = manifest["employee_config_v2"]
     assert v2["perception"]["type"] == "document"
+    assert v2["actions"]["handlers"]
+    assert v2["cognition"]["skills"]
     meta = v2["metadata"]
     assert any(s["name"] == "订单查询" for s in meta["suggested_skills"])
     assert meta["suggested_pricing"]["tier"] == "standard"
+    assert manifest["employee"]["capabilities"]
     assert manifest["workflow_employees"][0].get("workflow_id") == 42
+    assert v2["collaboration"]["workflow"]["name"] == "退款工作流"
 
 
 @pytest.mark.asyncio
@@ -275,6 +314,294 @@ async def test_stage_assemble_no_workflow():
     manifest, errs = stage_assemble(SAMPLE_INTENT, None, SAMPLE_V2, [], None)
     assert manifest is not None
     assert "workflow_employees" in manifest
+    assert manifest["employee"]["capabilities"]
+    v2 = manifest["employee_config_v2"]
+    assert v2["actions"]["handlers"]
+    assert v2["cognition"]["skills"]
+    assert v2["collaboration"]["workflow"]["name"]
+
+
+def test_normalize_editor_manifest_fills_runtime_required_fields():
+    from modstore_server.employee_ai_scaffold import normalize_editor_manifest_for_registry
+
+    sparse = {
+        "identity": {
+            "id": "seo-file-maintainer",
+            "name": "SEO站点地图维护员",
+            "description": "维护 sitemap、robots 和百度推送配置",
+        },
+        "cognition": {"agent": {"system_prompt": "根据 SEO 维护任务生成结构化执行方案。"}},
+        "collaboration": {"workflow": {"workflow_id": 2, "name": ""}},
+        "metadata": {"created_by": "test"},
+    }
+    manifest, errs = normalize_editor_manifest_for_registry(sparse, "seo-file-maintainer")
+    assert manifest is not None
+    assert not errs
+    assert manifest["employee"]["id"] == "seo-file-maintainer"
+    assert manifest["workflow_employees"][0]["id"] == "seo-file-maintainer"
+    assert manifest["workflow_employees"][0]["api_base_path"] == "employees/seo-file-maintainer"
+    assert manifest["employee"]["capabilities"] == [
+        "seo.sitemap",
+        "seo.robots",
+        "seo.baidu_push",
+        "seo.verification_files",
+    ]
+    v2 = manifest["employee_config_v2"]
+    assert v2["actions"]["handlers"] == ["llm_md", "echo"]
+    assert v2["actions"]["vibe_edit_ready"]["focus_paths"] == [
+        "sitemap.xml",
+        "sitemap_index.xml",
+        "robots.txt",
+        "baidu_urls.txt",
+        "BingSiteAuth.xml",
+        "baidu_verify_*.html",
+    ]
+    assert [s["name"] for s in v2["cognition"]["skills"]] == [
+        "seo.sitemap",
+        "seo.robots",
+        "seo.baidu_push",
+        "seo.verification_files",
+    ]
+    sitemap_skill = v2["cognition"]["skills"][0]
+    assert sitemap_skill["skill_id"] == "skill-seo-sitemap"
+    assert sitemap_skill["domain"] == "seo-static-files"
+    assert sitemap_skill["static_phase"]["focus_paths"] == ["sitemap.xml", "sitemap_index.xml"]
+    assert sitemap_skill["dynamic_phase"]["budget"]["max_steps"] == 5
+    assert sitemap_skill["solidify"]["acceptance"]
+    assert sitemap_skill["metrics"]["static_success_rate_target"] == ">=95%"
+    agent = v2["cognition"]["agent"]
+    assert agent["model"]["temperature"] <= 0.3
+    assert agent["few_shot_examples"]
+    assert "BingSiteAuth.xml" in agent["system_prompt"]
+    assert "baidu_verify_*.html" in agent["system_prompt"]
+    assert "xml.etree.ElementTree" in agent["system_prompt"]
+    assert "只能输出可审阅的 Markdown 方案、文件片段和 unified diff" in agent["system_prompt"]
+    assert v2["metadata"]["recommended_filename"] == "seo-file-maintainer.xcemp"
+    assert "workflow_id/script_workflow_id" in v2["metadata"]["workflow_runtime_check"]
+    assert v2["collaboration"]["workflow"]["name"] == "SEO站点地图维护员"
+
+
+def test_seo_employee_pack_zip_contains_complete_runnable_manifest():
+    from modstore_server.employee_ai_scaffold import (
+        build_employee_pack_zip,
+        normalize_editor_manifest_for_registry,
+    )
+
+    sparse = {
+        "identity": {
+            "id": "seo-static-file-maintainer",
+            "name": "SEO站点地图维护员",
+            "description": "检查并维护 sitemap、robots 与百度推送配置，输出修复建议",
+        },
+        "cognition": {"agent": {"system_prompt": "根据 SEO 维护任务生成可执行检查方案，不编造文件状态。"}},
+        "collaboration": {"workflow": {"workflow_id": 2, "name": ""}},
+        "employee": {"id": "seo-static-file-maintainer", "label": "SEO站点地图维护员", "capabilities": []},
+        "workflow_employees": [{"id": "seo_maintainer", "api_base_path": "employees/seo_maintainer"}],
+    }
+    manifest, errs = normalize_editor_manifest_for_registry(sparse, "seo-static-file-maintainer")
+    assert not errs
+    raw = build_employee_pack_zip("seo-static-file-maintainer", manifest)
+
+    with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
+        packed = json.loads(zf.read("seo-static-file-maintainer/manifest.json").decode("utf-8"))
+        employee_py = zf.read("seo-static-file-maintainer/backend/employees/seo_static_file_maintainer.py").decode("utf-8")
+
+    v2 = packed["employee_config_v2"]
+    assert packed["id"] == "seo-static-file-maintainer"
+    assert packed["employee"]["id"] == "seo-static-file-maintainer"
+    assert packed["workflow_employees"][0]["id"] == "seo-static-file-maintainer"
+    assert packed["workflow_employees"][0]["api_base_path"] == "employees/seo-static-file-maintainer"
+    assert packed["employee"]["capabilities"] == [
+        "seo.sitemap",
+        "seo.robots",
+        "seo.baidu_push",
+        "seo.verification_files",
+    ]
+    assert v2["actions"]["handlers"] == ["llm_md", "echo"]
+    assert v2["actions"]["vibe_edit_ready"]["focus_paths"] == [
+        "sitemap.xml",
+        "sitemap_index.xml",
+        "robots.txt",
+        "baidu_urls.txt",
+        "BingSiteAuth.xml",
+        "baidu_verify_*.html",
+    ]
+    assert len(v2["cognition"]["skills"]) >= 4
+    verification_skill = next(s for s in v2["cognition"]["skills"] if s["name"] == "seo.verification_files")
+    assert verification_skill["skill_id"] == "skill-seo-verification-files"
+    assert verification_skill["static_phase"]["focus_paths"] == ["BingSiteAuth.xml", "baidu_verify_*.html"]
+    assert verification_skill["trigger_rules"]
+    assert verification_skill["dynamic_phase"]["allowed_patch_scope"] == ["BingSiteAuth.xml", "baidu_verify_*.html"]
+    assert verification_skill["solidify"]["actions"]
+    agent = v2["cognition"]["agent"]
+    assert agent["model"]["temperature"] <= 0.3
+    assert agent["few_shot_examples"]
+    assert "BingSiteAuth.xml" in agent["system_prompt"]
+    assert "baidu_verify_*.html" in agent["system_prompt"]
+    assert "xml.etree.ElementTree" in agent["system_prompt"]
+    assert "只能输出可审阅的 Markdown 方案、文件片段和 unified diff" in agent["system_prompt"]
+    assert v2["metadata"]["recommended_filename"] == "seo-static-file-maintainer.xcemp"
+    assert "workflow_id/script_workflow_id" in v2["metadata"]["workflow_runtime_check"]
+    assert v2["collaboration"]["workflow"]["name"] == "SEO站点地图维护员"
+    assert "offline plan" in employee_py
+    assert "ctx.call_llm unavailable" in employee_py
+
+
+def test_normalize_editor_manifest_overrides_stale_requirement_summary_id():
+    from modstore_server.employee_ai_scaffold import normalize_editor_manifest_for_registry
+
+    sparse = {
+        "id": "requirement-summary-assistant",
+        "identity": {
+            "id": "requirement-summary-assistant",
+            "name": "SEO站点地图维护员",
+            "description": "维护 sitemap.xml、robots.txt、baidu_urls.txt",
+        },
+        "employee": {
+            "id": "requirement-summary-assistant",
+            "label": "SEO站点地图维护员",
+            "capabilities": [],
+        },
+        "workflow_employees": [
+            {"id": "requirement-summary-assistant", "api_base_path": "employees/requirement-summary-assistant"}
+        ],
+        "cognition": {
+            "agent": {
+                "system_prompt": "你是 SEO 站点地图维护员，负责维护 sitemap.xml、robots.txt 与 baidu_urls.txt。"
+            }
+        },
+    }
+
+    manifest, errs = normalize_editor_manifest_for_registry(sparse, "seo-file-maintainer")
+
+    assert not errs
+    assert manifest["id"] == "seo-file-maintainer"
+    assert manifest["identity"]["id"] == "seo-file-maintainer"
+    assert manifest["employee"]["id"] == "seo-file-maintainer"
+    assert manifest["workflow_employees"][0]["id"] == "seo-file-maintainer"
+    assert manifest["workflow_employees"][0]["api_base_path"] == "employees/seo-file-maintainer"
+
+
+def test_catalog_alignment_rejects_mismatched_employee_pack_id(tmp_path):
+    from modstore_server.catalog_store import package_manifest_alignment_errors
+    from modstore_server.employee_ai_scaffold import build_employee_pack_zip
+
+    inner = {
+        "id": "requirement-summary-assistant",
+        "name": "需求摘要助手",
+        "version": "1.0.0",
+        "artifact": "employee_pack",
+        "scope": "global",
+        "employee": {"id": "requirement-summary-assistant", "label": "需求摘要助手", "capabilities": []},
+    }
+    path = tmp_path / "seo-file-maintainer.xcemp"
+    path.write_bytes(build_employee_pack_zip("requirement-summary-assistant", inner))
+
+    errors = package_manifest_alignment_errors(
+        {
+            "id": "seo-file-maintainer",
+            "name": "SEO站点地图维护员",
+            "version": "1.0.0",
+            "artifact": "employee_pack",
+        },
+        path,
+    )
+
+    assert errors
+    assert any("manifest.id=requirement-summary-assistant" in e for e in errors)
+
+
+def test_catalog_alignment_accepts_registry_normalized_stale_employee_ids(tmp_path):
+    from modstore_server.catalog_store import package_manifest_alignment_errors
+    from modstore_server.employee_ai_scaffold import build_employee_pack_zip, normalize_editor_manifest_for_registry
+
+    stale = {
+        "id": "seo-file-maintainer",
+        "name": "SEO站点地图维护员",
+        "version": "1.0.0",
+        "artifact": "employee_pack",
+        "scope": "global",
+        "employee": {"id": "seo-admin", "label": "SEO管理员", "capabilities": []},
+        "workflow_employees": [{"id": "seo-admin", "api_base_path": "employees/seo-admin"}],
+    }
+    manifest, errs = normalize_editor_manifest_for_registry(stale, "seo-file-maintainer")
+    assert not errs
+    path = tmp_path / "seo-file-maintainer.xcemp"
+    path.write_bytes(build_employee_pack_zip("seo-file-maintainer", manifest))
+
+    errors = package_manifest_alignment_errors(
+        {
+            "id": "seo-file-maintainer",
+            "name": "SEO站点地图维护员",
+            "version": "1.0.0",
+            "artifact": "employee_pack",
+        },
+        path,
+    )
+
+    assert errors == []
+
+
+def test_seo_vibe_edit_focus_paths_match_asset_scope_when_enabled():
+    from modstore_server.employee_ai_scaffold import normalize_editor_manifest_for_registry
+
+    sparse = {
+        "identity": {
+            "id": "seo-static-file-maintainer",
+            "name": "SEO静态文件维护员",
+            "description": "自动维护 sitemap、robots、Bing 与百度验证文件",
+        },
+        "actions": {"handlers": ["llm_md", "vibe_edit"], "vibe_edit": {"focus_paths": ["robots.txt"]}},
+        "cognition": {"agent": {"system_prompt": "根据 SEO 维护任务生成可执行检查方案。"}},
+    }
+    manifest, errs = normalize_editor_manifest_for_registry(sparse, "seo-static-file-maintainer")
+    assert not errs
+    v2 = manifest["employee_config_v2"]
+    assert "vibe_edit" in v2["actions"]["handlers"]
+    assert v2["actions"]["vibe_edit"]["focus_paths"] == [
+        "robots.txt",
+        "sitemap.xml",
+        "sitemap_index.xml",
+        "baidu_urls.txt",
+        "BingSiteAuth.xml",
+        "baidu_verify_*.html",
+    ]
+    assert "xml.etree.ElementTree" in v2["cognition"]["agent"]["system_prompt"]
+    assert "自动写入文件" in v2["cognition"]["agent"]["system_prompt"]
+
+
+def test_workflow_reference_report_marks_missing_ids():
+    from modstore_server.workbench_api import _employee_pack_workflow_reference_report
+
+    class _Query:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return None
+
+    class _Db:
+        def query(self, *_args):
+            return _Query()
+
+    user = type("UserStub", (), {"id": 7})()
+    manifest = {
+        "workflow_employees": [{"id": "seo", "workflow_id": 3}],
+        "employee_config_v2": {
+            "collaboration": {
+                "workflow": {"workflow_id": 3},
+                "script_workflows": [{"script_workflow_id": 4}],
+            }
+        },
+    }
+    report = _employee_pack_workflow_reference_report(_Db(), user, manifest)
+    assert report["packaging"] == "manifest_runtime_only"
+    assert report["workflow_ids"] == [3]
+    assert report["script_workflow_ids"] == [4]
+    assert report["missing_workflow_ids"] == [3]
+    assert report["missing_script_workflow_ids"] == [4]
+    assert report["ok"] is False
+    assert any("不会内嵌" in w for w in report["warnings"])
 
 
 @pytest.mark.asyncio
@@ -301,7 +628,7 @@ async def test_refine_system_prompt_ok():
 @pytest.mark.asyncio
 async def test_pipeline_workflow_match():
     """Path 1: eligible workflow found with high score."""
-    llm = StubLlmClient([INTENT_JSON, RANK_JSON_MATCH, V2_JSON, SKILLS_JSON, PRICING_JSON])
+    llm = StubLlmClient([INTENT_JSON, RANK_JSON_MATCH, SKILLS_JSON, V2_JSON, PRICING_JSON])
     events: list = []
 
     async def on_event(ev):
@@ -327,7 +654,7 @@ async def test_pipeline_workflow_match():
 @pytest.mark.asyncio
 async def test_pipeline_workflow_fallback_generation():
     """Path 2: no eligible workflows → fallback generator called."""
-    llm = StubLlmClient([INTENT_JSON, V2_JSON, SKILLS_JSON, PRICING_JSON])
+    llm = StubLlmClient([INTENT_JSON, SKILLS_JSON, V2_JSON, PRICING_JSON])
     fallback_called = []
 
     async def fake_fallback():
@@ -379,7 +706,7 @@ async def test_pipeline_stage1_failure_aborts():
 @pytest.mark.asyncio
 async def test_pipeline_skills_error_non_fatal():
     """Skills stage error should not abort the pipeline."""
-    llm = StubLlmClient([INTENT_JSON, RANK_JSON_MATCH, V2_JSON, "not-json-array", PRICING_JSON])
+    llm = StubLlmClient([INTENT_JSON, RANK_JSON_MATCH, "not-json-array", V2_JSON, PRICING_JSON])
     events: list = []
 
     async def on_event(ev):

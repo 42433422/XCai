@@ -11,9 +11,11 @@
 <script setup lang="ts"></script>
 
 <style scoped>
-/* 与 App 的 .main-content 的 padding / max-width 配合，本层不重复加横向留白 */
+/* 原 App .main-content 的横向 gutter 已下放到各页；钱包区统一左右留白 */
 .wallet-layout {
   width: 100%;
+  padding: 0 clamp(12px, 3.5vw, 40px);
+  box-sizing: border-box;
 }
 .wallet-tabs {
   display: flex;

@@ -96,6 +96,8 @@ if test -d "$STATE_BAK"; then
   if test -f "$STATE_BAK/modstore_server/modstore.db"; then
     mkdir -p "$DP/modstore_server"
     cp -a "$STATE_BAK/modstore_server/modstore.db" "$DP/modstore_server/"
+    chmod 666 "$DP/modstore_server/modstore.db" 2>/dev/null || true
+    chmod 777 "$DP/modstore_server" 2>/dev/null || true
   fi
   for rel in \
     modstore_server/data \

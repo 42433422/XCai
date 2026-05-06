@@ -57,6 +57,7 @@ from modstore_server.script_agent.agent_loop import run_agent_loop
 from modstore_server.script_agent.brief import Brief
 from modstore_server.script_agent.llm_client import RealLlmClient
 from modstore_server.script_agent.sandbox_runner import run_in_sandbox
+from modstore_server.workbench_script_runner import DEFAULT_SCRIPT_AGENT_ITERATIONS
 
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,8 @@ async def _stream_agent_loop(
                 "api_key": llm_cfg["api_key"],
                 "base_url": llm_cfg.get("base_url"),
             },
+            # 与工作台 run_script_agent_job 一致，避免此处默默只用 agent_loop 默认 4 轮
+            max_iterations=DEFAULT_SCRIPT_AGENT_ITERATIONS,
         ):
             evd = ev.to_dict()
             await _record_event(sid, evd)

@@ -39,6 +39,78 @@ from modstore_server.workflow_sandbox_state import (
 
 router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 
+
+def _guess_employee_id_from_empty_workflow(workflow: Workflow) -> str:
+    """Best-effort extraction for old empty employee workflows.
+
+    New employee workflows are fixed at creation time.  This fallback only helps
+    already-created rows whose canvas is empty.  It is deliberately conservative
+    and returns "" if no clear employee id is present.
+    """
+    text = f"{workflow.name or ''}\n{workflow.description or ''}"
+    import re
+
+    # Prefer explicit employee_id / pack_id markers when present in generated
+    # descriptions or debugging notes.
+    for pat in (r"employee_id[=:：]\s*([a-z0-9._-]+)", r"pack_id[=:：]\s*([a-z0-9._-]+)"):
+        m = re.search(pat, text, flags=re.I)
+        if m:
+            return m.group(1).strip()
+    # Fall back to a slug-like token in names such as "seo-file-maintainer 工作流".
+    m = re.search(r"\b([a-z0-9][a-z0-9._-]{2,})\b", text, flags=re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _repair_empty_employee_workflow_graph(db: Session, workflow: Workflow) -> bool:
+    """Create start → employee → end for old empty employee workflow rows."""
+    existing = db.query(WorkflowNode).filter(WorkflowNode.workflow_id == workflow.id).count()
+    if existing:
+        return False
+    marker = f"{workflow.name or ''} {workflow.description or ''}"
+    if "员工" not in marker and "employee" not in marker.lower():
+        return False
+    employee_id = _guess_employee_id_from_empty_workflow(workflow)
+    if not employee_id:
+        return False
+    start = WorkflowNode(
+        workflow_id=workflow.id,
+        node_type="start",
+        name="开始",
+        config=json.dumps({}, ensure_ascii=False),
+        position_x=80,
+        position_y=140,
+    )
+    emp = WorkflowNode(
+        workflow_id=workflow.id,
+        node_type="employee",
+        name=workflow.name or "执行员工",
+        config=json.dumps(
+            {
+                "employee_id": employee_id,
+                "task": (workflow.description or "根据工作流输入完成员工任务")[:400],
+            },
+            ensure_ascii=False,
+        ),
+        position_x=340,
+        position_y=140,
+    )
+    end_node = WorkflowNode(
+        workflow_id=workflow.id,
+        node_type="end",
+        name="结束",
+        config=json.dumps({}, ensure_ascii=False),
+        position_x=620,
+        position_y=140,
+    )
+    db.add_all([start, emp, end_node])
+    db.flush()
+    db.add_all([
+        WorkflowEdge(workflow_id=workflow.id, source_node_id=start.id, target_node_id=emp.id, condition=""),
+        WorkflowEdge(workflow_id=workflow.id, source_node_id=emp.id, target_node_id=end_node.id, condition=""),
+    ])
+    db.commit()
+    return True
+
 workflow_hooks_router = APIRouter(prefix="/api/workflow-hooks", tags=["workflow-hooks"])
 
 
@@ -410,6 +482,10 @@ async def get_workflow(
     nodes = db.query(WorkflowNode).filter(
         WorkflowNode.workflow_id == workflow_id
     ).all()
+    if not nodes and _repair_empty_employee_workflow_graph(db, workflow):
+        nodes = db.query(WorkflowNode).filter(
+            WorkflowNode.workflow_id == workflow_id
+        ).all()
 
     edges = db.query(WorkflowEdge).filter(
         WorkflowEdge.workflow_id == workflow_id

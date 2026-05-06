@@ -26,12 +26,36 @@ export default defineConfig(({ command }) => {
     base,
     build: {
       emptyOutDir: false,
+      // Most >500 kB chunks are lazy-loaded diagram/rendering libraries
+      // (mermaid/cytoscape/katex/html2canvas). Keep deploy logs focused on
+      // unexpected regressions rather than known on-demand payloads.
+      chunkSizeWarningLimit: 900,
       rollupOptions: {
         output: {
-          manualChunks: {
-            'vue-vendor': ['vue', 'vue-router', 'pinia'],
-            'vue-flow': ['@vue-flow/core', '@vue-flow/background', '@vue-flow/controls', '@vue-flow/minimap'],
-            'mermaid': ['mermaid', '@dagrejs/dagre']
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('/vue/') || id.includes('/vue-router/') || id.includes('/pinia/')) {
+                return 'vue-vendor'
+              }
+              if (id.includes('/@vue-flow/')) {
+                return 'vue-flow'
+              }
+              if (id.includes('/cytoscape/')) {
+                return 'diagram-cytoscape'
+              }
+              if (id.includes('/katex/')) {
+                return 'diagram-katex'
+              }
+              if (id.includes('/html2canvas/')) {
+                return 'capture-html2canvas'
+              }
+              if (id.includes('/@dagrejs/dagre/')) {
+                return 'layout-dagre'
+              }
+              if (id.includes('/lodash-es/') || id.includes('/lodash/')) {
+                return 'lodash-vendor'
+              }
+            }
           }
         }
       }

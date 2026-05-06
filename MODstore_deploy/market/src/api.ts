@@ -213,8 +213,12 @@ export const api = {
     const a = document.createElement('a')
     a.href = url
     a.download = `mod-${id}.zip`
+    a.style.display = 'none'
+    document.body.appendChild(a)
     a.click()
-    URL.revokeObjectURL(url)
+    a.remove()
+    // 延后释放，避免浏览器尚未读完流时立即 revoke 导致落盘 0 字节
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
   },
   myStore: (limit = 50, offset = 0) => req(`/api/my-store?limit=${limit}&offset=${offset}`),
 
@@ -383,6 +387,45 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ employee_id: employeeId, ...(opts || {}) }),
     }),
+
+  /**
+   * 保存当前编辑器 manifest 到服务器库（持久化）并通过 vibe-coding 注册 ESkill。
+   * 返回保存的 pack_id、已注册 eskill 数量和更新后的 manifest（含 eskill_id）。
+   */
+  employeeSaveManifest: (
+    manifest: unknown,
+    employeeId?: string,
+    opts?: { provider?: string; model?: string; registerSkills?: boolean },
+  ) =>
+    req('/api/workbench/employee-save', {
+      method: 'POST',
+      body: JSON.stringify({
+        manifest,
+        employee_id: employeeId || null,
+        provider: opts?.provider || null,
+        model: opts?.model || null,
+        register_skills: opts?.registerSkills !== false,
+      }),
+    }),
+
+  /**
+   * 根据当前 manifest 生成完整 .xcemp（含 blueprints.py + employee.py）并下载。
+   * 不落盘，直接返回 zip 流。
+   */
+  employeeExportZip: async (manifest: unknown, employeeId?: string): Promise<Blob> => {
+    const headers = authHeaders() || {}
+    headers['Content-Type'] = 'application/json'
+    const res = await fetch('/api/workbench/employee-export', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ manifest, employee_id: employeeId || null }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as Record<string, unknown>
+      throw new Error(String((err as any)?.detail || (err as any)?.error || `HTTP ${res.status}`))
+    }
+    return res.blob()
+  },
 
   /**
    * 员工同步测试：bench → 发布到 catalog → 推送到宿主 fhd-sandbox-runtime /api/mod-store/install

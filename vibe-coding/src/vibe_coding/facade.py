@@ -75,9 +75,14 @@ class VibeCoder:
         mode: GenerationMode = "brief_first",
         skill_id: str | None = None,
         dependencies: list[str] | None = None,
+        project_root: str | Path | None = None,
     ) -> CodeSkill:
         return self.code_factory.generate(
-            brief, mode=mode, skill_id=skill_id, dependencies=dependencies
+            brief,
+            mode=mode,
+            skill_id=skill_id,
+            dependencies=dependencies,
+            project_root=project_root,
         )
 
     def config_skill(self, brief: str, *, skill_id: str | None = None) -> Any:
@@ -86,11 +91,23 @@ class VibeCoder:
             "package for config-layer (template_transform / employee_task / pipeline) skills."
         )
 
-    def workflow(self, brief: str) -> VibeWorkflowGraph:
-        return self.workflow_factory.generate(brief)
+    def workflow(
+        self,
+        brief: str,
+        *,
+        project_root: str | Path | None = None,
+    ) -> VibeWorkflowGraph:
+        return self.workflow_factory.generate(brief, project_root=project_root)
 
-    def workflow_with_report(self, brief: str) -> WorkflowGenerationReport:
-        return self.workflow_factory.generate_with_report(brief)
+    def workflow_with_report(
+        self,
+        brief: str,
+        *,
+        project_root: str | Path | None = None,
+    ) -> WorkflowGenerationReport:
+        return self.workflow_factory.generate_with_report(
+            brief, project_root=project_root
+        )
 
     # ------------------------------------------------------------------ execution
 
@@ -187,6 +204,71 @@ class VibeCoder:
             max_rounds=max_rounds,
             tool_runner=tool_runner,
         )
+
+    # ------------------------------------------------------------------ agent v2 (AgentLoop)
+
+    def agent(
+        self,
+        goal: str,
+        *,
+        root: str | Path | None = None,
+        mode: str = "agent",
+        max_steps: int = 30,
+        allow_parallel: bool = True,
+        enable_subagents: bool = False,
+        stream: bool = False,
+        on_event: Any | None = None,
+        run_id: str = "",
+    ) -> Any:
+        """Run :class:`AgentLoop` v2 for ``goal``.
+
+        Parameters
+        ----------
+        goal:
+            Natural-language task description.
+        root:
+            Project root for file / search tools (default: cwd).
+        mode:
+            ``"agent"`` (default) or ``"plan"`` (read-only + ``present_plan``).
+        max_steps:
+            Hard cap on LLM round-trips.
+        allow_parallel:
+            Enable concurrent read-only tool execution.
+        enable_subagents:
+            Register ``task`` / ``subagent_status`` tools.
+        stream:
+            If ``True``, return an ``AsyncIterator[AgentEvent]`` instead of
+            blocking until done (caller must ``await`` / ``async for``).
+        on_event:
+            Sync callback ``(AgentEvent) -> None`` called for every event.
+        run_id:
+            Optional ID for background / resume; auto-generated when empty.
+
+        Returns
+        -------
+        :class:`AgentLoopResult` (sync) or ``AsyncIterator[AgentEvent]`` (stream=True).
+        """
+        from .agent.loop import AgentLoop
+        from .agent.react.builtins import builtin_tools_v2
+        from pathlib import Path as _Path
+
+        _root = _Path(str(root)).resolve() if root else _Path.cwd()
+        tools = builtin_tools_v2(root=_root)
+
+        loop = AgentLoop(
+            self.llm,
+            tools,
+            mode=mode,
+            max_steps=max_steps,
+            allow_parallel=allow_parallel,
+            enable_subagents=enable_subagents,
+            store_dir=self.store_dir,
+            project_root=_root,
+        )
+
+        if stream:
+            return loop.arun(goal, run_id=run_id, on_event=on_event)
+        return loop.run(goal, run_id=run_id, on_event=on_event)
 
     # ------------------------------------------------------------------ marketplace
 

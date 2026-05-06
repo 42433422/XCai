@@ -490,7 +490,8 @@ async function submitSaveAsTemplate() {
 
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 56px);
+  flex: 1;
+  min-height: 0;
   background: var(--wf-canvas-bg);
 }
 

@@ -964,9 +964,27 @@
               <span class="wb-step-dot" aria-hidden="true" />
               <span class="wb-step-body">
                 <span class="wb-step-label">{{ st.label }}</span>
-                <span v-if="st.message" class="wb-step-msg">{{ st.message }}</span>
+                <!-- message may be a plain string OR a structured dict from AgentLoop v2 -->
+                <span v-if="stepMsgSummary(st)" class="wb-step-msg">{{ stepMsgSummary(st) }}</span>
+                <!-- rich sub-status from AgentLoop v2: current tool call -->
+                <span v-if="stepMsgCurrentTool(st)" class="wb-step-tool">
+                  <span class="wb-step-tool__icon">⚙</span>
+                  {{ stepMsgCurrentTool(st) }}
+                </span>
+                <!-- todo sub-list from AgentLoop v2 TodoStore -->
+                <ol v-if="stepMsgTodos(st).length" class="wb-step-todos">
+                  <li
+                    v-for="td in stepMsgTodos(st)"
+                    :key="td.id"
+                    class="wb-step-todo"
+                    :class="`wb-step-todo--${td.status}`"
+                  >
+                    <span class="wb-step-todo__dot" aria-hidden="true" />
+                    <span class="wb-step-todo__content">{{ td.content }}</span>
+                  </li>
+                </ol>
                 <span v-if="orchStepRunningSec(st) !== null" class="wb-step-since">已运行 {{ formatWallClockSec(orchStepRunningSec(st)) }}</span>
-                <span v-if="orchStepSlowHint(st)" class="wb-step-slow">模型响应较慢，仍在等待…</span>
+                <span v-if="orchStepSlowHint(st) || stepMsgSlowHint(st)" class="wb-step-slow">模型响应较慢，仍在等待…</span>
               </span>
             </li>
           </ol>
@@ -4014,14 +4032,50 @@ function orchStepSlowHint(st) {
 }
 
 /** 每次轮询后调用，更新 message 变化时间戳。 */
-function _trackStepMessages(steps: Array<{ id: string; message?: string | null }>) {
+function _trackStepMessages(steps: Array<{ id: string; message?: any }>) {
   for (const st of steps || []) {
-    const cur = String(st.message || '')
+    const cur = typeof st.message === 'object' && st.message
+      ? String(st.message.summary || JSON.stringify(st.message))
+      : String(st.message || '')
     const prev = _stepLastMsgChange[st.id]
     if (!prev || prev.msg !== cur) {
       _stepLastMsgChange[st.id] = { msg: cur, ts: Date.now() }
     }
   }
+}
+
+// ---------------------------------------------------------------- AgentLoop v2 message helpers
+
+/** Returns the display summary string from a step's message (str or dict). */
+function stepMsgSummary(st: any): string {
+  const msg = st?.message
+  if (!msg) return ''
+  if (typeof msg === 'string') return msg
+  if (typeof msg === 'object') return String(msg.summary || '')
+  return ''
+}
+
+/** Returns the current tool name from a structured message, or empty string. */
+function stepMsgCurrentTool(st: any): string {
+  const msg = st?.message
+  if (!msg || typeof msg !== 'object') return ''
+  return String(msg.current_tool || '')
+}
+
+/** Returns the todo list from a structured message, or empty array. */
+function stepMsgTodos(st: any): Array<{ id: string; content: string; status: string }> {
+  const msg = st?.message
+  if (!msg || typeof msg !== 'object') return []
+  const todos = msg.todos
+  if (!Array.isArray(todos)) return []
+  return todos.filter((t: any) => t && typeof t === 'object')
+}
+
+/** Returns true if the structured message indicates a slow-model hint. */
+function stepMsgSlowHint(st: any): boolean {
+  const msg = st?.message
+  if (!msg || typeof msg !== 'object') return false
+  return Boolean(msg.slow_hint)
 }
 
 function serializablePlanSession(ps) {
@@ -5121,8 +5175,8 @@ async function pollWorkbenchSession(sessionId) {
    * 后端同时为 GET /api/workbench/sessions/{id} 单独抬高了上限作为兜底。
    */
   const baseIntervalMs = 1500
-  /** 总等待预算约 10 分钟，使用墙钟时间而非轮询次数（应对动态退避）。 */
-  const deadline = Date.now() + 10 * 60 * 1000
+  /** 总等待预算约 30 分钟（配套小程序等步骤可走多轮 Agent），墙钟时间而非轮询次数（应对动态退避）。 */
+  const deadline = Date.now() + 30 * 60 * 1000
   let backoffMs = 0
   while (!pollStop.value) {
     try {
@@ -5171,7 +5225,7 @@ async function pollWorkbenchSession(sessionId) {
       const steps = Array.isArray(orchestrationSession.value?.steps) ? orchestrationSession.value.steps : []
       const stuckStep = steps.find((x) => x.status === 'running') || steps.slice().reverse().find((x) => x.status === 'done')
       const stuckLabel = stuckStep ? `「${String(stuckStep.label || stuckStep.id)}」` : ''
-      throw new Error(`在${stuckLabel}步骤等待超时（约 10 分钟）。后端已自动标记失败，可立即重试。请检查后端日志、网络或 LLM 配置。`)
+      throw new Error(`在${stuckLabel}步骤等待超时（约 30 分钟）。若会话仍在后端运行可刷新后从历史恢复；否则可重试。请检查后端日志、网络或 LLM 配置。`)
     }
     await delay(backoffMs || baseIntervalMs)
   }
@@ -5273,6 +5327,7 @@ async function runOrchestration() {
     if (intent === 'employee') {
       const et = String(h.employeeTarget || 'pack_plus_workflow').trim()
       body.employee_target = et === 'pack_only' ? 'pack_only' : 'pack_plus_workflow'
+      body.embed_script_workflow = true
       const wfn = String(h.employeeWorkflowName || '').trim()
       if (wfn) body.employee_workflow_name = wfn
       const fhd = String(h.fhdBaseUrl || '').trim()
@@ -9164,6 +9219,61 @@ function onComposerKeydown(e) {
   font-size: 0.72rem;
   color: rgba(255, 255, 255, 0.3);
   font-style: italic;
+}
+
+/* AgentLoop v2 — current tool indicator */
+.wb-step-tool {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  color: rgba(251, 191, 36, 0.7);
+  margin-top: 2px;
+}
+.wb-step-tool__icon {
+  animation: spin 1.5s linear infinite;
+  display: inline-block;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* AgentLoop v2 — todo sub-list */
+.wb-step-todos {
+  list-style: none;
+  margin: 4px 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wb-step-todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: 0.71rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+.wb-step-todo__dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-top: 3px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.wb-step-todo--in_progress .wb-step-todo__dot {
+  background: #fbbf24;
+}
+.wb-step-todo--completed .wb-step-todo__dot {
+  background: #34d399;
+}
+.wb-step-todo--completed .wb-step-todo__content {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+.wb-step-todo--cancelled .wb-step-todo__content {
+  opacity: 0.3;
 }
 
 .wb-step--pending .wb-step-dot {

@@ -282,7 +282,57 @@ docs/contracts/
 - `../../docs/roadmap/ops-metrics-p2.md`
 - `../../docs/roadmap/event-driven-architecture.md`
 
-## 11. 提交前自检
+## 11. .xcemp 双身份产物（平台包 + zipapp CLI）
+
+从 2026-05 起，`_build_employee_pack_zip_with_source` 导出的每个 `.xcemp`
+文件同时具备两种身份，**不改变任何现有平台接口**：
+
+### 11.1 zip 内布局
+
+```
+<pack_id>.xcemp
+├── __main__.py                         # zipapp 入口（顶层）
+├── <pack_id>/
+│   ├── manifest.json                   # 不变（平台入口）
+│   ├── backend/blueprints.py           # 不变
+│   ├── backend/employees/<stem>.py     # 不变
+│   └── standalone/                     # 新增（对平台透明）
+│       ├── cli.py                      # argparse 子命令
+│       ├── runner.py                   # manifest 路由
+│       ├── llm_adapter.py              # stdlib urllib LLM 客户端
+│       ├── handlers/no_llm.py          # 机械检查（零依赖）
+│       ├── handlers/llm_md.py          # LLM Markdown 输出
+│       └── README.md                   # 本地用法
+```
+
+### 11.2 本地用法
+
+```bash
+python <pack_id>.xcemp info                     # 打印 manifest 摘要
+python <pack_id>.xcemp validate                 # 零依赖结构校验
+python <pack_id>.xcemp run                      # no-llm 机械检查
+python <pack_id>.xcemp run --input task.json    # 传入任务输入
+python <pack_id>.xcemp run --llm                # 需 OPENAI_API_KEY 或 DEEPSEEK_API_KEY
+```
+
+### 11.3 涉及文件
+
+| 文件 | 说明 |
+|------|------|
+| `modstore_server/employee_pack_standalone_template.py` | 模板渲染器，生成 standalone/* 源码 |
+| `modstore_server/employee_pack_export.py` | `_build_employee_pack_zip_with_source` 注入顶层 `__main__.py` 与 `standalone/` |
+| `modstore_server/workbench_api.py` | 制作流水线追加 `standalone_smoke` 步骤（第 12 步，失败降级 warning）|
+| `market/src/employeePackClientExport.ts` | 浏览器兜底导出函数同步注入同样内容 |
+| `tests/test_employee_pack_standalone.py` | subprocess 端到端测试 |
+
+### 11.4 向后兼容
+
+- 平台运行时只通过 `<pack_id>/manifest.json` 与 `backend/` 加载，顶层 `__main__.py`
+  与 `standalone/` 对平台完全透明。
+- 老 `.xcemp`（无 `__main__.py`）导入平台不受影响。
+- `validate_manifest_dict` 与 manifest schema 未改动。
+
+## 12. 提交前自检
 
 - 新增 API 是否有明确领域归属。
 - 路由是否只做参数、鉴权和响应转换。

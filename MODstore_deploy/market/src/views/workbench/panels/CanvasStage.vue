@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch, onMounted, computed } from 'vue'
+import { watch, onMounted, computed, ref } from 'vue'
 import {
   VueFlow,
   useVueFlow,
@@ -26,6 +26,10 @@ import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 
+const emit = defineEmits<{
+  (e: 'layout-mode-change', mode: 'normal' | 'workflow-focus'): void
+}>()
+
 const store = useWorkbenchStore()
 
 const isWorkflowTarget = computed(() => store.target.kind === 'workflow')
@@ -35,6 +39,21 @@ const workflowId = computed(() => {
   const n = Number(id ?? 0)
   return Number.isFinite(n) && n > 0 ? n : 0
 })
+const employeeWorkflowId = computed(() => {
+  const manifest = store.target.manifest as Record<string, unknown>
+  const collaboration = manifest?.collaboration as Record<string, unknown> | undefined
+  const workflow = collaboration?.workflow as Record<string, unknown> | undefined
+  const n = Number(workflow?.workflow_id ?? 0)
+  return Number.isFinite(n) && n > 0 ? n : 0
+})
+const employeeCanvasMode = ref<'workflow' | 'modules'>('workflow')
+const isWorkflowFocusMode = computed(
+  () => isEmployeeTarget.value && employeeWorkflowId.value > 0 && employeeCanvasMode.value === 'workflow',
+)
+const shouldShowWorkflowEditor = computed(() =>
+  isWorkflowTarget.value || (isEmployeeTarget.value && employeeCanvasMode.value === 'workflow' && employeeWorkflowId.value > 0),
+)
+const activeWorkflowId = computed(() => (isWorkflowTarget.value ? workflowId.value : employeeWorkflowId.value))
 
 const flowInstance = useVueFlow({ id: 'workbench-canvas' })
 
@@ -71,6 +90,23 @@ watch(
   () => store.target.manifest,
   () => syncManifestToCanvas(),
   { deep: false },
+)
+
+watch(
+  () => [store.target.kind, employeeWorkflowId.value] as const,
+  ([kind, wid]) => {
+    if (kind === 'employee' && wid > 0) employeeCanvasMode.value = 'workflow'
+    if (kind === 'employee' && wid <= 0) employeeCanvasMode.value = 'modules'
+  },
+  { immediate: true },
+)
+
+watch(
+  () => isWorkflowFocusMode.value,
+  (v) => {
+    emit('layout-mode-change', v ? 'workflow-focus' : 'normal')
+  },
+  { immediate: true },
 )
 
 // ── Vue Flow event handlers ──────────────────────────────────────────────────
@@ -149,10 +185,30 @@ defineExpose({ fitView, autoLayout, syncManifestToCanvas })
 
 <template>
   <div class="canvas-stage" @dragover.prevent="onDragOver" @drop="onDrop">
-    <!-- Workflow target: embed the existing workflow editor -->
+    <div v-if="isEmployeeTarget && employeeWorkflowId > 0" class="employee-canvas-switch">
+      <button
+        type="button"
+        class="canvas-switch-btn"
+        :class="{ 'canvas-switch-btn--active': employeeCanvasMode === 'workflow' }"
+        @click="employeeCanvasMode = 'workflow'"
+      >
+        工作流画布 #{{ employeeWorkflowId }}
+      </button>
+      <button
+        type="button"
+        class="canvas-switch-btn"
+        :class="{ 'canvas-switch-btn--active': employeeCanvasMode === 'modules' }"
+        @click="employeeCanvasMode = 'modules'"
+      >
+        员工模块
+      </button>
+    </div>
+
+    <!-- Workflow target or linked employee workflow: embed the existing workflow editor -->
     <WorkflowFlowEditor
-      v-if="isWorkflowTarget && workflowId > 0"
-      :workflow-id="workflowId"
+      v-if="shouldShowWorkflowEditor && activeWorkflowId > 0"
+      :key="`workflow-${activeWorkflowId}`"
+      :workflow-id="activeWorkflowId"
       @back="store.target.kind === 'workflow' && $router?.push({ name: 'workflow' })"
     />
     <div v-else-if="isWorkflowTarget && workflowId === 0" class="canvas-empty">
@@ -196,7 +252,7 @@ defineExpose({ fitView, autoLayout, syncManifestToCanvas })
     </VueFlow>
 
     <!-- Canvas toolbar (only for employee/mod/skill canvas) -->
-    <div v-if="!isWorkflowTarget" class="canvas-toolbar">
+    <div v-if="!isWorkflowTarget && !shouldShowWorkflowEditor" class="canvas-toolbar">
       <button class="canvas-btn" title="适配视图" @click="fitView">⊡ 适配</button>
       <button class="canvas-btn" title="自动布局" @click="autoLayout">⊞ 布局</button>
     </div>
@@ -211,6 +267,38 @@ defineExpose({ fitView, autoLayout, syncManifestToCanvas })
   background: #080f1a;
   display: flex;
   flex-direction: column;
+}
+
+.employee-canvas-switch {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px;
+  flex-shrink: 0;
+  background: rgba(8, 15, 26, 0.9);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.canvas-switch-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.canvas-switch-btn:hover {
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.canvas-switch-btn--active {
+  color: #a5b4fc;
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.2);
 }
 
 .canvas-empty {

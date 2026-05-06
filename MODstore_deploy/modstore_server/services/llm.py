@@ -144,6 +144,102 @@ async def chat_dispatch_via_session(
     return result
 
 
+# ── Platform-only bench helpers ───────────────────────────────────────────────
+
+# Sensible default model per provider when no env override is given.
+_BENCH_DEFAULT_MODELS: dict[str, str] = {
+    "deepseek":    "deepseek-chat",
+    "openai":      "gpt-4o-mini",
+    "anthropic":   "claude-3-5-haiku-20241022",
+    "google":      "gemini-2.0-flash",
+    "siliconflow": "deepseek-ai/DeepSeek-V3",
+    "dashscope":   "qwen-turbo",
+    "moonshot":    "moonshot-v1-8k",
+    # 小米网关型号以控制台为准；flash 在部分 token 计划不可用，基准默认与别名统一到 v2.5-pro
+    "xiaomi":      "mimo-v2.5-pro",
+    "minimax":     "abab6.5s-chat",
+    "doubao":      "doubao-1-5-lite-32k-240828",
+    "wenxin":      "ernie-4.0-turbo-8k",
+    "hunyuan":     "hunyuan-lite",
+    "zhipu":       "glm-4-flash",
+    "xunfei":      "generalv3.5",
+    "yi":          "yi-lightning",
+    "stepfun":     "step-2-16k",
+    "baichuan":    "Baichuan4",
+    "sensetime":   "nova-ptc-xl-v2",
+    "groq":        "llama-3.3-70b-versatile",
+    "together":    "meta-llama/Llama-3-8b-chat-hf",
+    "openrouter":  "openai/gpt-4o-mini",
+}
+
+
+def resolve_platform_bench_llm() -> tuple[str, str] | tuple[None, None]:
+    """Resolve provider + model for bench evaluation using platform keys only.
+
+    Priority:
+    1. Env ``MODSTORE_EMPLOYEE_BENCH_PROVIDER`` + ``MODSTORE_EMPLOYEE_BENCH_MODEL``
+    2. First ``KNOWN_PROVIDERS`` entry with a ``platform_api_key`` configured,
+       paired with the ``_BENCH_DEFAULT_MODELS`` fallback for that provider.
+
+    Returns ``(provider, model)`` or ``(None, None)`` when no platform key is
+    available.  Never touches user BYOK credentials.
+    """
+    import os
+    from modstore_server.llm_key_resolver import KNOWN_PROVIDERS, platform_api_key
+
+    env_prov = (os.environ.get("MODSTORE_EMPLOYEE_BENCH_PROVIDER") or "").strip()
+    env_mdl = (os.environ.get("MODSTORE_EMPLOYEE_BENCH_MODEL") or "").strip()
+
+    if env_prov and env_mdl and platform_api_key(env_prov):
+        return env_prov, env_mdl
+
+    for prov in KNOWN_PROVIDERS:
+        if not platform_api_key(prov):
+            continue
+        mdl = (env_mdl if env_prov == prov else "") or _BENCH_DEFAULT_MODELS.get(prov, "")
+        if mdl:
+            return prov, mdl
+
+    return None, None
+
+
+async def chat_dispatch_via_platform_only(
+    provider: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: Optional[int] = None,
+) -> dict[str, Any]:
+    """Call ``chat_dispatch`` using the server-side platform API key only.
+
+    Does not consult user BYOK credentials.  Used for bench evaluation so
+    costs are attributed to the platform, not individual users.
+    """
+    from modstore_server.llm_chat_proxy import chat_dispatch
+    from modstore_server.llm_key_resolver import (
+        OAI_COMPAT_OPENAI_STYLE_PROVIDERS,
+        platform_api_key,
+        platform_base_url,
+    )
+
+    api_key = platform_api_key(provider)
+    if not api_key:
+        return {"ok": False, "error": f"no platform api key configured for provider: {provider}"}
+
+    base_url = None
+    if provider in OAI_COMPAT_OPENAI_STYLE_PROVIDERS:
+        base_url = platform_base_url(provider)
+
+    return await chat_dispatch(
+        provider,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
+
+
 _LOCK = Lock()
 _default: LlmChatClient | None = None
 
@@ -167,7 +263,9 @@ __all__ = [
     "LlmChatClient",
     "LlmChatRequest",
     "LlmChatResponse",
+    "chat_dispatch_via_platform_only",
     "chat_dispatch_via_session",
     "get_default_llm_client",
+    "resolve_platform_bench_llm",
     "set_default_llm_client",
 ]

@@ -63,7 +63,7 @@ async def judge(
     max_tokens: int = 1024,
 ) -> Verdict:
     if result.timed_out:
-        return Verdict(ok=False, reason=f"脚本超时（>{0}s）：{', '.join(result.errors)}")
+        return Verdict(ok=False, reason=f"脚本超时：{', '.join(result.errors)}")
     if result.returncode != 0:
         return Verdict(
             ok=False,

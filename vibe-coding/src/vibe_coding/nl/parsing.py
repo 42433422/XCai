@@ -167,6 +167,10 @@ def _attempts(text: str):
     if closed:
         yield _try(closed, label="auto_closed_braces")
 
+    closed_strings = _try_close_truncated_string(base)
+    if closed_strings:
+        yield _try(closed_strings, label="auto_closed_string")
+
     obj = extract_first_object(base)
     if obj:
         yield _try(obj, label="extracted_object")
@@ -176,6 +180,9 @@ def _attempts(text: str):
         obj_closed = _try_close_truncation(obj_clean or obj)
         if obj_closed:
             yield _try(obj_closed, label="extracted_closed")
+        obj_string_closed = _try_close_truncated_string(obj_clean or obj)
+        if obj_string_closed:
+            yield _try(obj_string_closed, label="extracted_string_closed")
 
     bare_key_fixed = _quote_bare_keys(base)
     if bare_key_fixed != base:
@@ -344,6 +351,49 @@ def _try_close_truncation(text: str) -> str | None:
         return None
     closers = "".join("}" if o == "{" else "]" for o in reversed(stack))
     return text + closers
+
+
+def _try_close_truncated_string(text: str) -> str | None:
+    """Close a payload cut off while inside a JSON string, then close braces.
+
+    Token limits often truncate after a key or a string value, e.g.
+    ``{"items": [{"id": "abc``.  Appending a quote plus matching ``]``/``}``
+    can recover the outer structure so downstream schema normalisation can
+    decide whether the partial field is usable.
+    """
+    stack: list[str] = []
+    i = 0
+    n = len(text)
+    in_str = False
+    quote = ""
+    while i < n:
+        c = text[i]
+        if in_str:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == quote:
+                in_str = False
+            i += 1
+            continue
+        if c in '"\'':
+            in_str = True
+            quote = c
+            i += 1
+            continue
+        if c in "{[":
+            stack.append(c)
+        elif c in "}]":
+            if not stack:
+                return None
+            opener = stack.pop()
+            if (opener, c) not in {("{", "}"), ("[", "]")}:
+                return None
+        i += 1
+    if not in_str:
+        return None
+    closers = "".join("}" if o == "{" else "]" for o in reversed(stack))
+    return text + quote + closers
 
 
 def _find_matching_brace(text: str, start: int) -> int:

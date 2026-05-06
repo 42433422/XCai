@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from modstore_server.mod_ai_scaffold import parse_llm_mod_suite_json
 from modstore_server.mod_scaffold_runner import (
     run_mod_suite_mod_sandbox,
@@ -9,6 +11,8 @@ from modstore_server.mod_scaffold_runner import (
     write_mod_suite_ui_shell,
 )
 from modstore_server.workbench_api import _default_steps
+from modstore_server.workbench_api import _embed_script_workflow_in_employee_pack
+from modstore_server.workbench_api import _fallback_employee_orchestration_plan
 
 
 def _suite_payload() -> dict:
@@ -83,16 +87,281 @@ def test_default_employee_steps_include_named_sandboxes():
     ids_pack = [s["id"] for s in _default_steps("employee", employee_target="pack_only")]
     assert ids_pack == [
         "spec",
+        "employee_plan",
         "generate",
         "validate",
+        "script_workflow",
+        "embed_script",
         "workflow",
         "workflow_sandbox",
         "mod_sandbox",
+        "standalone_smoke",
         "host_check",
         "complete",
     ]
     ids_plus = [s["id"] for s in _default_steps("employee", employee_target="pack_plus_workflow")]
     assert ids_plus == ids_pack
+
+
+def test_employee_orchestration_fallback_plan_splits_briefs():
+    plan = _fallback_employee_orchestration_plan(
+        "做一个文档归纳助手，读取文档并输出 Markdown 摘要",
+        {"execution_checklist": ["支持多文件", "输出 md"]},
+    )
+    assert plan["employee_brief"]
+    assert "inputs/" in plan["script_brief"]
+    assert "outputs/" in plan["script_brief"]
+    assert plan["workflow_brief"]
+    assert plan["acceptance"]
+
+
+def test_embed_script_workflow_in_employee_pack_manifest(tmp_path):
+    pack_dir = tmp_path / "doc-helper"
+    pack_dir.mkdir()
+    manifest = {
+        "id": "doc-helper",
+        "name": "文档助手",
+        "employee_config_v2": {
+            "collaboration": {
+                "workflow": {"workflow_id": 7},
+            },
+        },
+    }
+    (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    attachment = _embed_script_workflow_in_employee_pack(
+        pack_dir,
+        script_workflow={"id": 42, "name": "文档助手 脚本工作流"},
+        brief="批量生成 docstring",
+    )
+
+    updated = json.loads((pack_dir / "manifest.json").read_text(encoding="utf-8"))
+    scripts = updated["employee_config_v2"]["collaboration"]["script_workflows"]
+    assert attachment["script_workflow_id"] == 42
+    assert scripts[0]["script_workflow_id"] == 42
+    assert scripts[0]["workflow_id"] == 42
+    assert scripts[0]["role"] == "primary_program"
+
+
+def _make_in_memory_db():
+    """Return a minimal SQLAlchemy in-memory SQLite Session for bundle tests."""
+    pytest.importorskip("sqlalchemy")
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from modstore_server.models import Base  # type: ignore
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    return Session()
+
+
+def test_export_workflow_bundle_round_trip(tmp_path):
+    """Bundle export serialises all nodes/edges; rehydration recreates them."""
+    db = _make_in_memory_db()
+    from modstore_server.models import User, Workflow, WorkflowEdge, WorkflowNode
+    from modstore_server.employee_pack_workflow_bundle import (
+        export_workflow_bundle,
+        rehydrate_workflow_bundles,
+    )
+
+    user = User(id=1, username="tester", email="t@t.com", password_hash="x")
+    db.add(user)
+    db.flush()
+
+    wf = Workflow(user_id=user.id, name="SEO 工作流", description="SEO 任务编排", kind="skill_group", is_active=True)
+    db.add(wf)
+    db.flush()
+    n1 = WorkflowNode(workflow_id=wf.id, node_type="start", name="开始", config="{}", position_x=0, position_y=0)
+    n2 = WorkflowNode(workflow_id=wf.id, node_type="employee", name="SEO 员工", config='{"employee_id":"seo-file-maintainer"}', position_x=200, position_y=0)
+    n3 = WorkflowNode(workflow_id=wf.id, node_type="end", name="结束", config="{}", position_x=400, position_y=0)
+    db.add_all([n1, n2, n3])
+    db.flush()
+    db.add(WorkflowEdge(workflow_id=wf.id, source_node_id=n1.id, target_node_id=n2.id, condition=""))
+    db.add(WorkflowEdge(workflow_id=wf.id, source_node_id=n2.id, target_node_id=n3.id, condition=""))
+    db.commit()
+
+    bundle = export_workflow_bundle(db, wf.id)
+    assert bundle is not None
+    assert bundle["source_workflow_id"] == wf.id
+    assert bundle["name"] == "SEO 工作流"
+    assert len(bundle["nodes"]) == 3
+    assert len(bundle["edges"]) == 2
+    node_types = {n["node_type"] for n in bundle["nodes"]}
+    assert node_types == {"start", "end", "employee"}
+    # Node keys are portable (no DB IDs)
+    node_keys = {n["node_key"] for n in bundle["nodes"]}
+    assert node_keys == {"n0", "n1", "n2"}
+
+    # Rehydrate into a fresh manifest — the new workflow should get a different ID
+    manifest = {
+        "workflow_employees": [{"id": "seo", "workflow_id": wf.id}],
+        "employee_config_v2": {
+            "collaboration": {"workflow": {"workflow_id": wf.id}},
+        },
+        "workflow_bundles": [bundle],
+    }
+    manifest = rehydrate_workflow_bundles(db, user, manifest, commit=True)
+
+    new_wf_id = manifest["workflow_employees"][0]["workflow_id"]
+    assert new_wf_id != wf.id  # a brand-new row was created
+    assert manifest["employee_config_v2"]["collaboration"]["workflow"]["workflow_id"] == new_wf_id
+    # The bundle carries the rehydrated ID for idempotency tracking
+    assert manifest["workflow_bundles"][0]["rehydrated_workflow_id"] == new_wf_id
+
+
+def test_export_script_workflow_bundle_round_trip():
+    """Script workflow export includes script text; rehydration creates new row."""
+    db = _make_in_memory_db()
+    from modstore_server.models import User, ScriptWorkflow, ScriptWorkflowVersion
+    from modstore_server.employee_pack_workflow_bundle import (
+        export_script_workflow_bundle,
+        rehydrate_workflow_bundles,
+    )
+
+    user = User(id=1, username="tester", email="t@t.com", password_hash="x")
+    db.add(user)
+    db.flush()
+
+    swf = ScriptWorkflow(
+        user_id=user.id,
+        name="SEO 脚本工作流",
+        brief_json='{"goal": "维护 sitemap"}',
+        schema_in_json="{}",
+        status="sandbox_testing",
+    )
+    db.add(swf)
+    db.flush()
+    ver = ScriptWorkflowVersion(
+        workflow_id=swf.id,
+        version_no=1,
+        script_text="from pathlib import Path\nPath('outputs').mkdir()\n",
+        plan_md="## 计划\n1. 写 sitemap",
+        agent_log_json="{}",
+        is_current=True,
+    )
+    db.add(ver)
+    db.commit()
+
+    bundle = export_script_workflow_bundle(db, swf.id)
+    assert bundle is not None
+    assert bundle["source_script_workflow_id"] == swf.id
+    assert bundle["current_version"]["script_text"] != ""
+    assert "计划" in bundle["current_version"]["plan_md"]
+    assert bundle["status"] == "sandbox_testing"
+
+    manifest = {
+        "script_workflow_attachment": {"script_workflow_id": swf.id, "name": "SEO 脚本工作流"},
+        "employee_config_v2": {
+            "collaboration": {
+                "script_workflows": [{"script_workflow_id": swf.id, "role": "primary_program"}],
+            }
+        },
+        "script_workflow_bundles": [bundle],
+    }
+    manifest = rehydrate_workflow_bundles(db, user, manifest, commit=True)
+
+    new_sid = manifest["script_workflow_attachment"]["script_workflow_id"]
+    assert new_sid != swf.id
+    assert manifest["employee_config_v2"]["collaboration"]["script_workflows"][0]["script_workflow_id"] == new_sid
+    assert manifest["script_workflow_bundles"][0]["rehydrated_script_workflow_id"] == new_sid
+
+
+def test_rehydrate_workflow_bundles_is_idempotent():
+    """Calling rehydrate twice does not create duplicate DB rows."""
+    db = _make_in_memory_db()
+    from modstore_server.models import User, ScriptWorkflow
+    from modstore_server.employee_pack_workflow_bundle import (
+        export_script_workflow_bundle,
+        rehydrate_workflow_bundles,
+    )
+
+    user = User(id=1, username="tester", email="t@t.com", password_hash="x")
+    db.add(user)
+    db.flush()
+
+    swf = ScriptWorkflow(
+        user_id=user.id,
+        name="幂等测试工作流",
+        brief_json="{}",
+        schema_in_json="{}",
+        status="draft",
+    )
+    db.add(swf)
+    db.commit()
+
+    bundle = export_script_workflow_bundle(db, swf.id)
+    manifest = {
+        "script_workflow_bundles": [bundle],
+        "script_workflow_attachment": {"script_workflow_id": swf.id},
+    }
+
+    # First rehydration
+    manifest = rehydrate_workflow_bundles(db, user, manifest, commit=True)
+    first_new_id = manifest["script_workflow_attachment"]["script_workflow_id"]
+
+    # Second call — must use the cached rehydrated_script_workflow_id, not create again
+    manifest = rehydrate_workflow_bundles(db, user, manifest, commit=True)
+    second_new_id = manifest["script_workflow_attachment"]["script_workflow_id"]
+
+    assert first_new_id == second_new_id
+    total = db.query(ScriptWorkflow).filter(ScriptWorkflow.name == "幂等测试工作流").count()
+    # Original + exactly one new row (not two)
+    assert total == 2
+
+
+def test_embed_script_workflow_bundle_written_when_db_provided(tmp_path):
+    """_embed_script_workflow_in_employee_pack embeds bundle when db is passed."""
+    db = _make_in_memory_db()
+    from modstore_server.models import User, ScriptWorkflow, ScriptWorkflowVersion
+    from modstore_server.workbench_api import _embed_script_workflow_in_employee_pack
+
+    user = User(id=1, username="tester", email="t@t.com", password_hash="x")
+    db.add(user)
+    db.flush()
+
+    swf = ScriptWorkflow(
+        user_id=user.id,
+        name="文档助手配套脚本",
+        brief_json='{"goal": "生成文档"}',
+        schema_in_json="{}",
+        status="sandbox_testing",
+    )
+    db.add(swf)
+    db.flush()
+    ver = ScriptWorkflowVersion(
+        workflow_id=swf.id,
+        version_no=1,
+        script_text="print('ok')",
+        plan_md="",
+        agent_log_json="{}",
+        is_current=True,
+    )
+    db.add(ver)
+    db.commit()
+
+    pack_dir = tmp_path / "doc-helper"
+    pack_dir.mkdir()
+    manifest = {
+        "id": "doc-helper",
+        "name": "文档助手",
+        "employee_config_v2": {"collaboration": {"workflow": {"workflow_id": 0}}},
+    }
+    (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    _embed_script_workflow_in_employee_pack(
+        pack_dir,
+        script_workflow={"id": swf.id, "name": "文档助手配套脚本"},
+        brief="生成 docstring",
+        db=db,
+    )
+
+    updated = json.loads((pack_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "script_workflow_bundles" in updated
+    bundle = updated["script_workflow_bundles"][0]
+    assert bundle["source_script_workflow_id"] == swf.id
+    assert "print" in bundle["current_version"]["script_text"]
 
 
 def test_mod_suite_mod_sandbox_checks_manifest_blueprint_and_links(tmp_path):

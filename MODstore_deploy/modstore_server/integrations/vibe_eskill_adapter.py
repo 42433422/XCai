@@ -49,6 +49,24 @@ def _render_brief(logic: Dict[str, Any], input_data: Dict[str, Any]) -> str:
     return rendered
 
 
+def _resolve_project_root(logic: Dict[str, Any], user_id: int) -> Optional[str]:
+    """Validate ``logic.project_root`` against the user workspace.
+
+    Returns the resolved absolute path string, or ``None`` when not supplied.
+    Raises :class:`~modstore_server.integrations.vibe_adapter.VibePathError`
+    when the path is outside the tenant workspace.
+    """
+    raw = str(logic.get("project_root") or "").strip()
+    if not raw:
+        return None
+    try:
+        from modstore_server.integrations.vibe_adapter import ensure_within_workspace
+        validated = ensure_within_workspace(raw, user_id=int(user_id or 0))
+        return str(validated)
+    except Exception:  # VibePathError or any OS error — re-raise so caller can surface it
+        raise
+
+
 def execute_vibe_code_kind(
     logic: Dict[str, Any],
     input_data: Dict[str, Any],
@@ -63,10 +81,12 @@ def execute_vibe_code_kind(
         provider/model: str           可选;默认走 user 偏好
         run_immediately: bool         默认 True;为 False 则只返回生成的代码摘要
         run_input_mapping: dict       可选,把 input_data 抽子集喂给 run(skill, ...)
+        project_root: str             可选;合法工作区路径;用于项目分析/文档生成 Skill
     """
     try:
         from modstore_server.integrations.vibe_adapter import (
             VibeIntegrationError,
+            VibePathError,
             get_vibe_coder,
         )
     except ImportError as exc:  # pragma: no cover
@@ -84,6 +104,17 @@ def execute_vibe_code_kind(
             "error": "缺少 provider/model",
         }
 
+    # Validate and resolve project_root (workspace-bounded path check).
+    project_root: Optional[str] = None
+    try:
+        project_root = _resolve_project_root(logic, int(user_id or 0))
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "eskill_logic_type": "vibe_code",
+            "ok": False,
+            "error": f"project_root 路径无效: {exc}",
+        }
+
     brief = _render_brief(logic, input_data)
     skill_id_hint = (logic.get("skill_id") or None)
     mode = str(logic.get("mode") or "brief_first")
@@ -95,6 +126,29 @@ def execute_vibe_code_kind(
         }
     else:
         run_input = dict(input_data or {})
+
+    # Inject pre-computed project analysis into run_input so the generated
+    # Skill can access it as project_analysis without hitting the filesystem.
+    if project_root and "project_analysis" not in run_input:
+        try:
+            from vibe_coding.code_factory import analyze_project  # type: ignore[import-not-found]
+            analysis = analyze_project(project_root)
+            import json as _json
+            run_input["project_analysis"] = _json.loads(
+                _json.dumps({
+                    "root_name": analysis.root_name,
+                    "manifests": analysis.manifests,
+                    "top_level": analysis.top_level,
+                    "languages": analysis.languages,
+                    "tech_stack": analysis.tech_stack,
+                    "entry_points": analysis.entry_points,
+                    "config_files": analysis.config_files,
+                    "readme_snippet": analysis.readme_snippet,
+                    "git_info": analysis.git_info,
+                }, ensure_ascii=False)
+            )
+        except Exception:  # noqa: BLE001 — analysis is optional, never block execution
+            logger.warning("vibe_code: project_root 分析失败，已跳过", exc_info=True)
 
     sf = get_session_factory()
     try:
@@ -112,15 +166,47 @@ def execute_vibe_code_kind(
                     "ok": False,
                     "error": str(exc),
                 }
-            skill = coder.code(brief, mode=mode, skill_id=skill_id_hint)
+            skill = None
+            if skill_id_hint and getattr(coder, "code_store", None) is not None:
+                try:
+                    if coder.code_store.has_code_skill(str(skill_id_hint)):
+                        skill = coder.code_store.get_code_skill(str(skill_id_hint))
+                except Exception:  # noqa: BLE001
+                    skill = None
+            if skill is None:
+                skill = coder.code(brief, mode=mode, skill_id=skill_id_hint,
+                                   project_root=project_root)
             run_dict: Optional[Dict[str, Any]] = None
+            repaired = False
             if run_immediately:
-                run_obj = coder.run(getattr(skill, "skill_id", "") or skill_id_hint or "", run_input)
+                sid = getattr(skill, "skill_id", "") or skill_id_hint or ""
+                run_obj = coder.run(sid, run_input)
                 run_dict = (
                     run_obj.to_dict()
                     if hasattr(run_obj, "to_dict") and callable(run_obj.to_dict)
                     else {"output": getattr(run_obj, "output", None)}
                 )
+                run_error = _run_error_message(run_dict)
+                if run_error and bool(logic.get("auto_repair", True)):
+                    try:
+                        repaired_skill = coder.repair(
+                            sid,
+                            failure=(
+                                f"ESkill vibe_code run failed: {run_error}\n"
+                                f"input_data={run_input!r}\nbrief={brief[:1000]}"
+                            ),
+                        )
+                        sid = getattr(repaired_skill, "skill_id", sid)
+                        run_obj = coder.run(sid, run_input)
+                        run_dict = (
+                            run_obj.to_dict()
+                            if hasattr(run_obj, "to_dict") and callable(run_obj.to_dict)
+                            else {"output": getattr(run_obj, "output", None)}
+                        )
+                        skill = repaired_skill
+                        repaired = True
+                    except Exception as repair_exc:  # noqa: BLE001
+                        logger.warning("vibe_code auto repair failed: %s", repair_exc)
     except Exception as exc:  # noqa: BLE001
         logger.exception("vibe_code ESkill execution failed")
         return {
@@ -143,8 +229,25 @@ def execute_vibe_code_kind(
         "ok": True,
         "vibe_skill": skill_dict,
         "vibe_run": run_dict,
+        "auto_repaired": repaired,
         output_var: (run_dict or skill_dict),
     }
+
+
+def _run_error_message(run_dict: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(run_dict, dict):
+        return ""
+    for key in ("error", "error_message"):
+        value = run_dict.get(key)
+        if value:
+            return str(value)
+    output = run_dict.get("output") or run_dict.get("output_data")
+    if isinstance(output, dict) and output.get("error"):
+        return str(output.get("error"))
+    stage = str(run_dict.get("stage") or "")
+    if stage.lower() in {"failed", "error"}:
+        return stage
+    return ""
 
 
 def execute_vibe_workflow_kind(
@@ -156,6 +259,7 @@ def execute_vibe_workflow_kind(
     """``logic.type == "vibe_workflow"``: NL → :class:`VibeWorkflowGraph`,立即 ``execute``。
 
     logic 字段同 ``vibe_code``;不接受 skill_id(workflow 总是 fresh)。
+    支持 ``project_root`` 字段：合法工作区路径，会注入项目分析到 workflow 的 brief。
     返回 ``vibe_workflow_run`` 包含 vibe-coding 的 :class:`WorkflowRunResult`。
     """
     try:
@@ -178,7 +282,40 @@ def execute_vibe_workflow_kind(
             "error": "缺少 provider/model",
         }
 
+    # Validate project_root if provided.
+    project_root: Optional[str] = None
+    try:
+        project_root = _resolve_project_root(logic, int(user_id or 0))
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "eskill_logic_type": "vibe_workflow",
+            "ok": False,
+            "error": f"project_root 路径无效: {exc}",
+        }
+
     brief = _render_brief(logic, input_data)
+    exec_input = dict(input_data or {})
+    if project_root and "project_analysis" not in exec_input:
+        try:
+            from vibe_coding.code_factory import analyze_project  # type: ignore[import-not-found]
+            import json as _json
+            analysis = analyze_project(project_root)
+            exec_input["project_analysis"] = _json.loads(
+                _json.dumps({
+                    "root_name": analysis.root_name,
+                    "manifests": analysis.manifests,
+                    "top_level": analysis.top_level,
+                    "languages": analysis.languages,
+                    "tech_stack": analysis.tech_stack,
+                    "entry_points": analysis.entry_points,
+                    "config_files": analysis.config_files,
+                    "readme_snippet": analysis.readme_snippet,
+                    "git_info": analysis.git_info,
+                }, ensure_ascii=False)
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("vibe_workflow: project_root 分析失败，已跳过", exc_info=True)
+
     sf = get_session_factory()
     try:
         with sf() as session:
@@ -195,8 +332,8 @@ def execute_vibe_workflow_kind(
                     "ok": False,
                     "error": str(exc),
                 }
-            graph = coder.workflow(brief)
-            run_result = coder.execute(graph, dict(input_data or {}))
+            graph = coder.workflow(brief, project_root=project_root)
+            run_result = coder.execute(graph, exec_input)
     except Exception as exc:  # noqa: BLE001
         logger.exception("vibe_workflow ESkill execution failed")
         return {

@@ -28,7 +28,7 @@ def _spec(skill_id: str, fn: str = "demo") -> str:
 
 def _code(fn: str = "demo") -> str:
     return json.dumps(
-        {"source_code": f"def {fn}(x):\n    return {{'y': x}}\n"}
+        {"source_code": f"def {fn}(x):\n    \"\"\"Return x under the y key.\"\"\"\n    return {{'y': x}}\n"}
     )
 
 
@@ -120,7 +120,13 @@ def test_facade_history_and_rollback(tmp_path):
         "quality_gate": {"required_keys": ["name"]},
         "domain_keywords": [],
     }
-    code = {"source_code": "def extract(user):\n    return {'name': user['name']}\n"}
+    code = {
+        "source_code": (
+            "def extract(user):\n"
+            "    \"\"\"Extract the name field from a user mapping.\"\"\"\n"
+            "    return {'name': user['name']}\n"
+        )
+    }
     coder = VibeCoder(
         llm=MockLLM([json.dumps(spec), json.dumps(code)]),
         store_dir=tmp_path,

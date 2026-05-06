@@ -10,7 +10,7 @@ import uuid
 from io import BytesIO
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -37,7 +37,9 @@ from modstore_server.mod_scaffold_runner import (
     generate_workflow_for_intent,
     import_mod_suite_repository,
     employee_pack_consistency_warnings,
+    materialize_employee_pack_if_missing,
     mod_compileall_warnings,
+    modstore_library_path,
     patch_workflow_graph_employee_nodes,
     register_mod_employee_packs_async,
     run_mod_suite_mod_sandbox,
@@ -57,9 +59,14 @@ from modstore_server.mod_employee_impl_scaffold import (
 from modstore_server.workflow_engine import run_workflow_sandbox
 from modstore_server.workflow_nl_graph import apply_nl_workflow_graph
 from modstore_server.workflow_sandbox_state import record_workflow_sandbox_run
-from modstore_server.workbench_script_runner import run_script_job
+from modstore_server.workbench_script_runner import run_script_agent_job, run_script_job
 from modstore_server.workbench_research import build_research_context
-from modstore_server.employee_ai_scaffold import build_employee_pack_zip
+from modstore_server.llm_chat_proxy import chat_dispatch
+from modstore_server.llm_key_resolver import resolve_api_key, resolve_base_url
+from modstore_server.employee_ai_scaffold import (
+    build_employee_pack_zip,
+    normalize_editor_manifest_for_registry,
+)
 from modman.manifest_util import read_manifest
 
 try:
@@ -236,6 +243,10 @@ class WorkbenchSessionCreateBody(BaseModel):
         max_length=512,
         description="可选 FHD 宿主根 URL，用于编排末尾 GET /api/mods/ 连通性探测",
     )
+    embed_script_workflow: bool = Field(
+        False,
+        description="做员工：在生成员工包之前先走脚本生成/沙箱 pipeline，落库 ScriptWorkflow 并把 workflow_id 写入 employee_config_v2.collaboration.script_workflows",
+    )
 
     @field_validator("intent", mode="before")
     @classmethod
@@ -297,21 +308,30 @@ def _default_steps(
         {"id": "validate", "label": "服务端校验", "status": "pending", "message": None},
     ]
     if intent == "employee":
+        base.insert(1, {"id": "employee_plan", "label": "规划一站式员工", "status": "pending", "message": None})
+        base.extend(
+            [
+                {"id": "script_workflow", "label": "生成配套小程序", "status": "pending", "message": None},
+                {"id": "embed_script", "label": "绑定到员工", "status": "pending", "message": None},
+            ]
+        )
         if (employee_target or "").strip().lower() == "pack_plus_workflow":
             base.extend(
                 [
-                    {"id": "workflow", "label": "生成 Skill 组（真脚本）", "status": "pending", "message": None},
-                    {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
+                    {"id": "workflow", "label": "生成自动化流程", "status": "pending", "message": None},
+                    {"id": "workflow_sandbox", "label": "流程沙箱测试", "status": "pending", "message": None},
                     {"id": "mod_sandbox", "label": "包体与 Python 校验", "status": "pending", "message": None},
+                    {"id": "standalone_smoke", "label": "独立可执行自检", "status": "pending", "message": None},
                     {"id": "host_check", "label": "宿主连通性检查", "status": "pending", "message": None},
                 ]
             )
         else:
             base.extend(
                 [
-                    {"id": "workflow", "label": "生成 Skill 组（画布）", "status": "pending", "message": None},
-                    {"id": "workflow_sandbox", "label": "工作流沙箱测试", "status": "pending", "message": None},
+                    {"id": "workflow", "label": "生成自动化流程", "status": "pending", "message": None},
+                    {"id": "workflow_sandbox", "label": "流程沙箱测试", "status": "pending", "message": None},
                     {"id": "mod_sandbox", "label": "包体与 Python 校验", "status": "pending", "message": None},
+                    {"id": "standalone_smoke", "label": "独立可执行自检", "status": "pending", "message": None},
                     {"id": "host_check", "label": "宿主连通性检查", "status": "pending", "message": None},
                 ]
             )
@@ -325,8 +345,15 @@ async def _set_step(
     sid: str,
     step_id: str,
     status: str,
-    message: Optional[str] = None,
+    message: Optional[Union[str, dict]] = None,
 ) -> None:
+    """Update a workbench step.
+
+    ``message`` may now be either a plain string (legacy) or a structured
+    dict with keys: ``summary``, ``round``, ``current_tool``, ``todos``,
+    ``slow_hint``.  The Vue frontend uses ``summary`` as the fallback text
+    when it encounters a dict.
+    """
     async with _SESSION_LOCK:
         _hydrate_workbench_session_unlocked(sid)
         sess = WORKBENCH_SESSIONS.get(sid)
@@ -400,6 +427,150 @@ async def _finalize_session_done(sid: str, artifact: Dict[str, Any]) -> None:
         _persist_workbench_session_unlocked(sid)
 
 
+def _check_vibe_coding_capability(
+    pack_dir: Path,
+    wf_attach: "Dict[str, Any]",
+) -> "List[Dict[str, Any]]":
+    """Inspect pack_dir + workflow attachment for vibe-coding completeness.
+
+    Returns a list of check-result dicts (id, ok, message) that are appended to
+    the mod_sandbox checks list.  All checks are informational (non-blocking)
+    so a missing capability surfaces as a warning rather than a hard failure.
+    """
+    import re as _re
+    results: List[Dict[str, Any]] = []
+
+    # 1. Does the workflow attachment claim any vibe_code / vibe_workflow ESkills?
+    nl_data = wf_attach.get("nl") if isinstance(wf_attach, dict) else None
+    skill_blueprints = []
+    if isinstance(nl_data, dict):
+        skill_blueprints = nl_data.get("skill_blueprints") or []
+    vibe_logic_count = sum(
+        1 for bp in skill_blueprints
+        if isinstance(bp, dict) and str(bp.get("static_logic", {}).get("type") or "").startswith("vibe")
+    )
+    has_vibe_nodes = bool(wf_attach) and (
+        int(wf_attach.get("eskill_count") or 0) > 0 or vibe_logic_count > 0
+    )
+    results.append({
+        "id": "vibe_logic_present",
+        "ok": True,  # informational — always pass; surface count for observability
+        "message": (
+            f"Skill 组含 {vibe_logic_count} 个 vibe 类 logic / {int(wf_attach.get('eskill_count') or 0)} 个 ESkill"
+            if isinstance(wf_attach, dict) and wf_attach
+            else "未创建画布工作流，vibe-coding 能力检查已跳过"
+        ),
+    })
+
+    # 2. Do the generated employee Python files have a meaningful SYSTEM_PROMPT?
+    emp_dir = pack_dir / "backend" / "employees"
+    if emp_dir.is_dir():
+        hollow_files: List[str] = []
+        missing_prompt_files: List[str] = []
+        hollow_patterns = [
+            r'SYSTEM_PROMPT\s*=\s*["\'].*请根据用户输入完成任务.*["\']',
+            # Exactly empty string: "" or '' — use negative lookahead to avoid matching """
+            r'SYSTEM_PROMPT\s*=\s*["\']["\'](?!["\'])',
+        ]
+        for py_file in sorted(emp_dir.glob("*.py")):
+            if py_file.name.startswith("__"):
+                continue
+            try:
+                src = py_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "SYSTEM_PROMPT" not in src:
+                missing_prompt_files.append(py_file.name)
+            elif any(_re.search(pat, src) for pat in hollow_patterns):
+                hollow_files.append(py_file.name)
+
+        if hollow_files:
+            results.append({
+                "id": "vibe_system_prompt_quality",
+                "ok": False,
+                "message": (
+                    f"以下员工文件的 SYSTEM_PROMPT 为空洞占位，缺少角色/任务/输出格式说明："
+                    f" {', '.join(hollow_files[:5])}"
+                ),
+            })
+        elif missing_prompt_files:
+            results.append({
+                "id": "vibe_system_prompt_quality",
+                "ok": False,
+                "message": (
+                    f"以下员工文件未定义 SYSTEM_PROMPT 常量（员工只能调 LLM 但无明确指导）："
+                    f" {', '.join(missing_prompt_files[:5])}"
+                ),
+            })
+        else:
+            results.append({
+                "id": "vibe_system_prompt_quality",
+                "ok": True,
+                "message": "员工文件均定义了 SYSTEM_PROMPT 常量",
+            })
+
+        # 3. Does the employee code implement real step-by-step logic (怎么做)?
+        #    Heuristic: a file that calls call_llm but never extracts data from
+        #    payload / project_analysis before the call is a "thin impl".
+        #    We look for explicit reads from payload/pa/project_analysis variables,
+        #    directory scan ops, or file system calls.  Reads from the LLM result
+        #    (e.g. result.get('content')) don't count because they happen AFTER
+        #    the call and don't represent pre-processing logic.
+        thin_impl_files: List[str] = []
+        for py_file in sorted(emp_dir.glob("*.py")):
+            if py_file.name.startswith("__"):
+                continue
+            try:
+                src = py_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            # Skip very short or empty stubs
+            if len(src.strip()) < 200:
+                continue
+            has_payload_steps = bool(
+                # Reads from payload or project_analysis-named variables
+                _re.search(
+                    r'(?:payload|project_analysis|pa|manifests|tech_stack|scripts|config|data)\s*'
+                    r'\.\s*(?:get|items|values|keys)\s*\(',
+                    src,
+                )
+                or _re.search(r'payload\s*\[', src)
+                or _re.search(r'for\s+\w+\s+in\s+', src)
+                or _re.search(r'os\.|glob\.|pathlib\.', src)
+            )
+            if not has_payload_steps and "call_llm" in src:
+                thin_impl_files.append(py_file.name)
+
+        if thin_impl_files:
+            results.append({
+                "id": "vibe_how_to_do_logic",
+                "ok": False,
+                "message": (
+                    f"以下员工文件调用了 call_llm 但缺乏数据提取/目录扫描等前置步骤，"
+                    f"建议补充「怎么做」逻辑： {', '.join(thin_impl_files[:5])}"
+                ),
+            })
+        else:
+            results.append({
+                "id": "vibe_how_to_do_logic",
+                "ok": True,
+                "message": "员工文件包含数据处理步骤（怎么做逻辑检查通过）",
+            })
+    else:
+        results.append({
+            "id": "vibe_system_prompt_quality",
+            "ok": True,
+            "message": "无 backend/employees 目录，跳过员工代码检查",
+        })
+        results.append({
+            "id": "vibe_how_to_do_logic",
+            "ok": True,
+            "message": "无 backend/employees 目录，跳过怎么做检查",
+        })
+
+    return results
+
+
 def _refresh_employee_pack_catalog_zip(db: Session, user: User, pack_dir: Path) -> Dict[str, Any]:
     """Rebuild stored .xcemp after in-place manifest edits.
 
@@ -408,10 +579,9 @@ def _refresh_employee_pack_catalog_zip(db: Session, user: User, pack_dir: Path) 
     writing workflow_id into employee_config_v2).  The catalog runtime reads the
     stored .xcemp, not the library folder, so rebuild and re-register that file.
     """
-    from modstore_server.catalog_store import append_package
+    from modstore_server.catalog_store import append_package, package_manifest_alignment_errors
 
-    mf = pack_dir / "manifest.json"
-    raw = json.loads(mf.read_text(encoding="utf-8"))
+    raw = _load_registry_aligned_employee_manifest(pack_dir, pack_dir.name)
     pack_id = str(raw.get("id") or pack_dir.name).strip() or pack_dir.name
     raw_zip = build_employee_pack_zip(pack_id, raw)
     with tempfile.NamedTemporaryFile(suffix=".xcemp", delete=False) as tmp:
@@ -429,6 +599,9 @@ def _refresh_employee_pack_catalog_zip(db: Session, user: User, pack_dir: Path) 
             "commerce": raw.get("commerce") or {"mode": "free", "price": 0},
             "license": {"type": "personal", "verify_url": None},
         }
+        align_errs = package_manifest_alignment_errors(rec, tmp_path)
+        if align_errs:
+            raise ValueError("员工包 metadata 与包内 manifest 不一致: " + "; ".join(align_errs))
         saved = append_package(rec, tmp_path)
         row = db.query(CatalogItem).filter(CatalogItem.pkg_id == pack_id).first()
         if not row:
@@ -446,6 +619,122 @@ def _refresh_employee_pack_catalog_zip(db: Session, user: User, pack_dir: Path) 
         return saved
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _load_registry_aligned_employee_manifest(pack_dir: Path, pack_id: str) -> Dict[str, Any]:
+    mf = pack_dir / "manifest.json"
+    raw = json.loads(mf.read_text(encoding="utf-8"))
+    aligned, errs = normalize_editor_manifest_for_registry(raw, pack_id)
+    if errs:
+        from modman.artifact_constants import normalize_artifact
+
+        if normalize_artifact(aligned) != "employee_pack":
+            raise ValueError("manifest 规范化失败: " + "; ".join(errs))
+    return aligned
+
+
+def _employee_pack_workflow_reference_report(
+    db: Session,
+    user: User,
+    manifest: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Validate workflow/script_workflow ID references against the current DB.
+
+    Employee packs currently package manifest/runtime files only; workflow and
+    ScriptWorkflow definitions are not migrated inside the .xcemp.  A manifest
+    that references IDs not present in the target DB will install successfully
+    but fail at runtime, so export/save records an explicit report.
+    """
+    workflow_ids: List[int] = []
+    script_workflow_ids: List[int] = []
+
+    rows = manifest.get("workflow_employees")
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                wid = int(row.get("workflow_id") or row.get("workflowId") or 0)
+            except (TypeError, ValueError):
+                wid = 0
+            if wid > 0 and wid not in workflow_ids:
+                workflow_ids.append(wid)
+
+    v2 = manifest.get("employee_config_v2") if isinstance(manifest.get("employee_config_v2"), dict) else {}
+    collab = v2.get("collaboration") if isinstance(v2.get("collaboration"), dict) else {}
+    wf = collab.get("workflow") if isinstance(collab.get("workflow"), dict) else {}
+    try:
+        wid = int(wf.get("workflow_id") or wf.get("workflowId") or 0)
+    except (TypeError, ValueError):
+        wid = 0
+    if wid > 0 and wid not in workflow_ids:
+        workflow_ids.append(wid)
+
+    scripts = collab.get("script_workflows")
+    if isinstance(scripts, list):
+        for item in scripts:
+            if not isinstance(item, dict):
+                continue
+            try:
+                sid = int(item.get("script_workflow_id") or item.get("workflow_id") or 0)
+            except (TypeError, ValueError):
+                sid = 0
+            if sid > 0 and sid not in script_workflow_ids:
+                script_workflow_ids.append(sid)
+    swa = manifest.get("script_workflow_attachment")
+    if isinstance(swa, dict):
+        try:
+            sid = int(swa.get("script_workflow_id") or swa.get("workflow_id") or 0)
+        except (TypeError, ValueError):
+            sid = 0
+        if sid > 0 and sid not in script_workflow_ids:
+            script_workflow_ids.append(sid)
+
+    workflow_found: List[int] = []
+    for wid in workflow_ids:
+        row = db.query(Workflow).filter(Workflow.id == wid, Workflow.user_id == user.id).first()
+        if row:
+            workflow_found.append(wid)
+    script_found: List[int] = []
+    for sid in script_workflow_ids:
+        row = db.query(ScriptWorkflow).filter(ScriptWorkflow.id == sid, ScriptWorkflow.user_id == user.id).first()
+        if row:
+            script_found.append(sid)
+
+    missing_workflows = [wid for wid in workflow_ids if wid not in workflow_found]
+    missing_scripts = [sid for sid in script_workflow_ids if sid not in script_found]
+    warnings: List[str] = []
+    if missing_workflows:
+        warnings.append(f"workflow_id 不存在或不属于当前用户: {missing_workflows}")
+    if missing_scripts:
+        warnings.append(f"script_workflow_id 不存在或不属于当前用户: {missing_scripts}")
+    if workflow_ids or script_workflow_ids:
+        warnings.append("employee_pack 不会内嵌 workflow/script_workflow 定义；跨环境上线前必须在目标库重建或重新绑定。")
+
+    return {
+        "packaging": "manifest_runtime_only",
+        "workflow_ids": workflow_ids,
+        "script_workflow_ids": script_workflow_ids,
+        "missing_workflow_ids": missing_workflows,
+        "missing_script_workflow_ids": missing_scripts,
+        "ok": not missing_workflows and not missing_scripts,
+        "warnings": warnings,
+    }
+
+
+def _write_workflow_reference_report(
+    db: Session,
+    user: User,
+    manifest: Dict[str, Any],
+) -> List[str]:
+    report = _employee_pack_workflow_reference_report(db, user, manifest)
+    v2 = manifest.get("employee_config_v2") if isinstance(manifest.get("employee_config_v2"), dict) else {}
+    meta = v2.get("metadata") if isinstance(v2.get("metadata"), dict) else {}
+    meta["workflow_reference_report"] = report
+    meta["workflow_runtime_check"] = "employee_pack 不内嵌 workflow/script_workflow；上线前须确认目标库存在这些 ID 或重新绑定。"
+    v2["metadata"] = meta
+    manifest["employee_config_v2"] = v2
+    return list(report.get("warnings") or [])
 
 
 def _cleanup_mod_pipeline_resources(db: Session, resources: List[Dict[str, Any]]) -> None:
@@ -500,6 +789,184 @@ def _script_workflow_brief(payload: Dict[str, Any], files: List[Dict[str, Any]])
         "trigger_type": "manual",
         "references": {"source": "workbench-script-session"},
     }
+
+
+def _embed_script_workflow_in_employee_pack(
+    pack_dir: Path,
+    *,
+    script_workflow: Dict[str, Any],
+    brief: str,
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    """Write ScriptWorkflow linkage into an employee pack manifest in-place.
+
+    When *db* is supplied the function also embeds a portable
+    ``script_workflow_bundles`` entry so the pack is self-contained and can be
+    installed into a different environment without losing the script definition.
+    """
+    mf = pack_dir / "manifest.json"
+    raw = json.loads(mf.read_text(encoding="utf-8"))
+    v2 = raw.get("employee_config_v2") if isinstance(raw.get("employee_config_v2"), dict) else {}
+    collab = v2.get("collaboration") if isinstance(v2.get("collaboration"), dict) else {}
+    entries = collab.get("script_workflows")
+    if not isinstance(entries, list):
+        entries = []
+    sid = script_workflow.get("id")
+    sid_int = int(sid) if sid is not None else 0
+    entry = {
+        "script_workflow_id": sid_int,
+        "workflow_id": sid_int,
+        "name": str(script_workflow.get("name") or "员工脚本工作流"),
+        "trigger_type": "manual",
+        "role": "primary_program",
+        "description": (brief or "").strip()[:1000],
+    }
+    deduped: List[Any] = []
+    for x in entries:
+        if not isinstance(x, dict):
+            deduped.append(x)
+            continue
+        try:
+            existing_id = int(x.get("script_workflow_id") or x.get("workflow_id") or 0)
+        except (TypeError, ValueError):
+            existing_id = 0
+        if existing_id != sid_int:
+            deduped.append(x)
+    entries = deduped
+    entries.insert(0, entry)
+    collab = {**collab, "script_workflows": entries}
+    v2["collaboration"] = collab
+    raw["employee_config_v2"] = v2
+    raw["script_workflow_attachment"] = {
+        "script_workflow_id": sid_int,
+        "name": entry["name"],
+        "trigger_type": entry["trigger_type"],
+    }
+    if db is not None and sid_int > 0:
+        try:
+            from modstore_server.employee_pack_workflow_bundle import embed_workflow_bundles_in_manifest
+            embed_workflow_bundles_in_manifest(db, raw)
+        except Exception as _e:  # noqa: BLE001
+            _LOG.warning("embed script workflow bundle failed sid=%d: %s", sid_int, _e)
+    mf.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return raw["script_workflow_attachment"]
+
+
+def _strip_json_fence(text: str) -> str:
+    t = (text or "").strip()
+    if t.startswith("```"):
+        import re
+
+        t = re.sub(r"^```(?:json)?\s*", "", t, flags=re.I)
+        t = re.sub(r"\s*```\s*$", "", t)
+    return t.strip()
+
+
+def _fallback_employee_orchestration_plan(brief: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    checklist = payload.get("execution_checklist")
+    checklist_text = "\n".join(f"- {x}" for x in checklist if isinstance(x, str)) if isinstance(checklist, list) else ""
+    source_docs = payload.get("source_documents")
+    doc_hint = ""
+    if isinstance(source_docs, list) and source_docs:
+        names = [str((x or {}).get("name") or "").strip() for x in source_docs if isinstance(x, dict)]
+        doc_hint = "参考资料：" + "、".join([n for n in names if n][:8])
+    merged = "\n".join(x for x in [brief, checklist_text, doc_hint] if x).strip()
+    short = (brief or "员工助手").strip().splitlines()[0][:40] or "员工助手"
+    return {
+        "employee_name": short,
+        "employee_brief": merged or brief,
+        "script_workflow_name": f"{short} 脚本工作流",
+        "script_brief": (
+            f"{merged or brief}\n\n请生成配套 Python 脚本：读取 inputs/ 中的文档或数据文件，"
+            "递归整理可读文本，输出 Markdown 摘要/处理结果到 outputs/；没有输入文件时输出示例说明。"
+        ),
+        "script_runtime_notes": "只能读 inputs/、写 outputs/；允许 os.walk 遍历 inputs；禁止联网和越界文件访问。",
+        "workflow_name": str(payload.get("employee_workflow_name") or short).strip() or short,
+        "workflow_brief": (
+            f"{merged or brief}\n\n请把该员工拆成可执行 Skill 组：接收输入、读取/归纳、生成结果、人工复核。"
+        ),
+        "acceptance": [
+            "员工包可安装并能解释自己的职责",
+            "脚本工作流可空跑并生成 outputs/ 结果文件",
+            "Skill 组体现输入、处理、输出、复核的顺序",
+        ],
+    }
+
+
+async def _build_employee_orchestration_plan(
+    db: Session,
+    user_id: int,
+    *,
+    payload: Dict[str, Any],
+    provider: Optional[str],
+    model: Optional[str],
+) -> Dict[str, Any]:
+    brief = (payload.get("brief") or "").strip()
+    fallback = _fallback_employee_orchestration_plan(brief, payload)
+    if not provider or not model:
+        return fallback
+    key, _src = resolve_api_key(db, user_id, provider)
+    if not key:
+        return fallback
+    checklist = payload.get("execution_checklist")
+    messages = payload.get("planning_messages")
+    docs = payload.get("source_documents")
+    planning_context = {
+        "brief": brief,
+        "execution_checklist": checklist if isinstance(checklist, list) else [],
+        "planning_messages": messages if isinstance(messages, list) else [],
+        "source_documents": docs if isinstance(docs, list) else [],
+    }
+    sys_prompt = (
+        "你是 XCAGI「做员工」一站式编排规划器。只输出 JSON 对象，不要 markdown。\n"
+        "你要把同一个用户需求拆成三份互相一致的 brief：\n"
+        "1 employee_brief：给员工包生成器，描述角色、边界、输出格式。\n"
+        "2 script_brief：给 Python 脚本工作流生成器，描述如何读取 inputs/、写 outputs/，没有输入也能空跑生成说明文件。\n"
+        "3 workflow_brief：给画布 Skill 组生成器，描述多步自动化流程。\n"
+        "字段必须包含：employee_name, employee_brief, script_workflow_name, script_brief, script_runtime_notes, workflow_name, workflow_brief, acceptance。\n"
+        "script_brief 必须明确：只能读 inputs/、只能写 outputs/；如需遍历文件，用 os.walk('inputs')；输出 Markdown 或 JSON 结果文件。\n"
+        "不要让脚本读取真实磁盘绝对路径，不要要求联网。"
+    )
+    try:
+        res = await chat_dispatch(
+            provider,
+            api_key=key,
+            base_url=resolve_base_url(db, user_id, provider),
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": json.dumps(planning_context, ensure_ascii=False)[:12000]},
+            ],
+            max_tokens=1800,
+        )
+    except Exception:
+        _LOG.exception("employee orchestration plan LLM failed")
+        return fallback
+    if not res.get("ok"):
+        return fallback
+    try:
+        data = json.loads(_strip_json_fence(str(res.get("content") or "")))
+    except json.JSONDecodeError:
+        return fallback
+    if not isinstance(data, dict):
+        return fallback
+    out = {**fallback}
+    for k in (
+        "employee_name",
+        "employee_brief",
+        "script_workflow_name",
+        "script_brief",
+        "script_runtime_notes",
+        "workflow_name",
+        "workflow_brief",
+    ):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    acc = data.get("acceptance")
+    if isinstance(acc, list):
+        out["acceptance"] = [str(x).strip() for x in acc if str(x).strip()][:8]
+    return out
 
 
 def _planning_record(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1063,15 +1530,39 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
 
         if intent == "employee":
             et = str(payload.get("employee_target") or "pack_only").strip().lower()
+            embed_script_workflow = bool(payload.get("embed_script_workflow", True))
             wf_name = (payload.get("employee_workflow_name") or "").strip() or None
             fhd_base = (payload.get("fhd_base_url") or "").strip() or None
-            _emp_current_step = "generate"
+            _emp_current_step = "employee_plan"
             try:
+                await _set_step(sid, "employee_plan", "running", "正在拆分员工、脚本工作流与 Skill 组职责")
+                employee_plan = await _build_employee_orchestration_plan(
+                    db,
+                    user_id,
+                    payload=payload,
+                    provider=prov,
+                    model=mdl,
+                )
+                await _set_step(
+                    sid,
+                    "employee_plan",
+                    "done",
+                    f"已规划：{employee_plan.get('employee_name') or '员工'} / 脚本 / Skill 组",
+                )
+
+                employee_brief = str(employee_plan.get("employee_brief") or brief).strip() or brief
+                script_brief = str(employee_plan.get("script_brief") or brief).strip() or brief
+                script_hint = str(employee_plan.get("script_runtime_notes") or "").strip()
+                workflow_brief = str(employee_plan.get("workflow_brief") or brief).strip() or brief
+                planned_workflow_name = str(employee_plan.get("workflow_name") or "").strip() or None
+                planned_script_name = str(employee_plan.get("script_workflow_name") or "").strip() or None
+
+                _emp_current_step = "generate"
                 await _set_step(sid, "generate", "running")
                 res = await run_employee_ai_scaffold_async(
                     db,
                     user,
-                    brief=brief,
+                    brief=employee_brief,
                     replace=replace,
                     provider=prov,
                     model=mdl,
@@ -1091,10 +1582,85 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                 await _set_step(sid, "validate", "done", "manifest 已在导入时校验")
 
                 pack_dir = Path(str(res.get("path") or ""))
+                script_wf: Optional[Dict[str, Any]] = None
+                script_attachment: Dict[str, Any] = {}
+                script_result: Dict[str, Any] = {}
+                _emp_current_step = "script_workflow"
+                if embed_script_workflow:
+                    await _set_step(sid, "script_workflow", "running", "正在生成员工配套小程序")
+
+                    async def _script_progress(msg: str) -> None:
+                        await _set_step(sid, "script_workflow", "running", msg)
+
+                    script_result = await run_script_agent_job(
+                        db=db,
+                        user_id=user_id,
+                        session_id=f"{sid}-employee-script",
+                        brief=script_brief,
+                        files=[],
+                        provider=prov,
+                        model=mdl,
+                        system_hint=script_hint,
+                        status_hook=_script_progress,
+                    )
+                    if script_result.get("errors"):
+                        msg = "；".join(script_result.get("errors") or [])[:1500]
+                        await _set_step(sid, "script_workflow", "error", msg)
+                        await _fail_session(sid, "script_workflow", msg)
+                        return
+                    if not script_result.get("ok"):
+                        msg = str(script_result.get("stderr") or "脚本工作流沙箱未通过")[:1000]
+                        await _set_step(sid, "script_workflow", "error", msg)
+                        await _fail_session(sid, "script_workflow", msg)
+                        return
+                    script_wf = _commit_script_workflow_from_result(
+                        db,
+                        user_id=user_id,
+                        session_id=sid,
+                        payload={
+                            **payload,
+                            "brief": script_brief,
+                            "workflow_name": planned_script_name or wf_name or res.get("id") or "员工配套",
+                        },
+                        files=[],
+                        result=script_result,
+                    )
+                    if not script_wf:
+                        msg = "脚本已运行但未能保存为 ScriptWorkflow"
+                        await _set_step(sid, "script_workflow", "error", msg)
+                        await _fail_session(sid, "script_workflow", msg)
+                        return
+                    await _set_step(
+                        sid,
+                        "script_workflow",
+                        "done",
+                        f"已生成脚本工作流 id={script_wf.get('id')}",
+                    )
+                else:
+                    await _set_step(sid, "script_workflow", "done", "已跳过：未开启配套小程序")
+
                 wf_attach: Dict[str, Any] = {}
                 saved_package: Dict[str, Any] = res.get("package") or {}
+                _emp_current_step = "embed_script"
+                if embed_script_workflow and script_wf:
+                    await _set_step(sid, "embed_script", "running", "正在把配套小程序绑定到员工能力")
+                    script_attachment = _embed_script_workflow_in_employee_pack(
+                        pack_dir,
+                        script_workflow=script_wf,
+                        brief=script_brief,
+                        db=db,
+                    )
+                    saved_package = _refresh_employee_pack_catalog_zip(db, user, pack_dir)
+                    await _set_step(
+                        sid,
+                        "embed_script",
+                        "done",
+                        f"已写入脚本工作流 id={script_attachment.get('script_workflow_id')}",
+                    )
+                else:
+                    await _set_step(sid, "embed_script", "done", "已跳过：未绑定配套小程序")
                 _emp_current_step = "workflow"
-                await _set_step(sid, "workflow", "running", "正在创建画布工作流…")
+                await _set_step(sid, "workflow", "running", "正在创建自动化流程…")
 
                 async def _emp_wf_msg(text: str) -> None:
                     await _set_step(sid, "workflow", "running", text)
@@ -1104,8 +1670,8 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         db,
                         user,
                         pack_dir=pack_dir,
-                        brief=brief,
-                        workflow_name=wf_name,
+                        brief=workflow_brief,
+                        workflow_name=wf_name or planned_workflow_name,
                         provider=prov,
                         model=mdl,
                         status_hook=_emp_wf_msg,
@@ -1200,15 +1766,95 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                             "message": "；".join(cons_warns)[:1200] if cons_warns else "manifest ↔ employees 一致性检查通过",
                         },
                     )
+
+                    # ── vibe-coding 实质性检查 ─────────────────────────────────────
+                    # 当画布 Skill 组里包含 vibe_code/vibe_workflow logic 时，
+                    # 验证员工包是否具备"怎么做"能力：
+                    #   1. vibe_logic_present   – 是否声明了 vibe_code/vibe_workflow
+                    #   2. system_prompt_quality – SYSTEM_PROMPT 不为空洞占位
+                    #   3. how_to_do_logic       – employees/*.py 含真实业务步骤标志
+                    vibe_checks = _check_vibe_coding_capability(pack_dir, wf_attach)
+                    mod_checks.extend(vibe_checks)
                 else:
                     mod_checks.append({"id": "manifest", "ok": False, "message": f"包目录无效: {pack_dir}"})
+
                 emp_mod_sandbox = {
                     "ok": all(c.get("ok") for c in mod_checks) if mod_checks else False,
                     "checks": mod_checks,
-                    "note": "员工包轻量校验（含 backend/blueprints 运行时）",
+                    "note": "员工包轻量校验（含 backend/blueprints 运行时与 vibe-coding 能力检查）",
                 }
-                mod_sb_msg = "包体轻量校验通过" if emp_mod_sandbox["ok"] else "包体校验有提示，见会话 artifact.mod_sandbox"
+                _all_pass = emp_mod_sandbox["ok"]
+                _vibe_gaps = [c for c in mod_checks if not c.get("ok") and "vibe" in c.get("id", "")]
+                if _all_pass:
+                    mod_sb_msg = "包体轻量校验通过"
+                elif _vibe_gaps:
+                    mod_sb_msg = "基础校验通过，vibe-coding 能力存在缺口：" + "；".join(
+                        c.get("message", "") for c in _vibe_gaps
+                    )
+                else:
+                    mod_sb_msg = "包体校验有提示，见会话 artifact.mod_sandbox"
                 await _set_step(sid, "mod_sandbox", "done", mod_sb_msg[:480])
+
+                # ── standalone_smoke：验证 .xcemp 可作为 zipapp 独立运行 ────────
+                _emp_current_step = "standalone_smoke"
+                await _set_step(sid, "standalone_smoke", "running", "正在生成独立包并验证 python xxx.xcemp validate …")
+                _standalone_smoke_ok = False
+                _standalone_smoke_msg = "跳过（未能获取包字节）"
+                try:
+                    import asyncio as _asyncio
+                    import sys as _sys
+                    import tempfile as _tempfile
+                    from modstore_server.employee_pack_export import _build_employee_pack_zip_with_source
+                    from modstore_server.employee_ai_scaffold import build_employee_pack_zip
+
+                    # 取当前会话中已保存的 manifest；若没有则仅标记 skip
+                    _sess_now = WORKBENCH_SESSIONS.get(sid)
+                    _sm_manifest = (
+                        (_sess_now.get("artifact") or {}).get("manifest")
+                        if isinstance(_sess_now, dict)
+                        else None
+                    )
+                    if _sm_manifest and isinstance(_sm_manifest, dict):
+                        _sm_pid = str(_sm_manifest.get("id") or "employee-pack").strip() or "employee-pack"
+                        _sm_zip_bytes = _build_employee_pack_zip_with_source(_sm_pid, _sm_manifest, None)
+                        with _tempfile.NamedTemporaryFile(
+                            suffix=".xcemp", delete=False
+                        ) as _tf:
+                            _tf.write(_sm_zip_bytes)
+                            _tmp_xcemp = _tf.name
+                        try:
+                            _proc = await _asyncio.wait_for(
+                                _asyncio.create_subprocess_exec(
+                                    _sys.executable, _tmp_xcemp, "validate",
+                                    stdout=_asyncio.subprocess.PIPE,
+                                    stderr=_asyncio.subprocess.PIPE,
+                                ),
+                                timeout=20,
+                            )
+                            _stdout, _stderr = await _asyncio.wait_for(
+                                _proc.communicate(), timeout=20
+                            )
+                            if _proc.returncode == 0:
+                                _standalone_smoke_ok = True
+                                _standalone_smoke_msg = f"独立运行 OK — python {_sm_pid}.xcemp validate 通过"
+                            else:
+                                _out_text = (_stderr or _stdout or b"").decode("utf-8", errors="replace")[:300]
+                                _standalone_smoke_msg = f"validate 退出码 {_proc.returncode}（降级为 warning）: {_out_text}"
+                        except Exception as _se:
+                            _standalone_smoke_msg = f"子进程异常（降级为 warning）: {_se}"
+                        finally:
+                            try:
+                                import os as _os
+                                _os.unlink(_tmp_xcemp)
+                            except Exception:
+                                pass
+                    else:
+                        _standalone_smoke_msg = "manifest 尚未生成，独立自检跳过"
+                        _standalone_smoke_ok = True  # 非阻断性
+                except Exception as _smoke_exc:
+                    _standalone_smoke_msg = f"独立自检异常（降级为 warning）: {_smoke_exc}"
+                # standalone_smoke 失败不阻断流程，仅作 warning
+                await _set_step(sid, "standalone_smoke", "done", _standalone_smoke_msg[:480])
 
                 _emp_current_step = "host_check"
                 host_probe: Dict[str, Any] = {"skipped": True}
@@ -1295,7 +1941,10 @@ async def _run_pipeline(sid: str, user_id: int, payload: Dict[str, Any]) -> None
                         "workflow_sandbox": workflow_sandbox,
                         "mod_sandbox": emp_mod_sandbox,
                         "employee_target": et,
+                        "employee_orchestration_plan": employee_plan,
                         "workflow_attachment": wf_attach,
+                        "script_workflow": script_wf,
+                        "script_workflow_attachment": script_attachment,
                         "host_probe": host_probe,
                         "validation_summary": {
                             "ok": bool(emp_mod_sandbox.get("ok")),
@@ -1662,6 +2311,16 @@ class WorkbenchVibeCodeSkillBody(BaseModel):
     dry_run: bool = Field(False, description="为 True 时只生成代码 + 试跑,不上架")
     provider: Optional[str] = Field(None, max_length=64)
     model: Optional[str] = Field(None, max_length=128)
+    project_root: Optional[str] = Field(
+        None,
+        max_length=4096,
+        description=(
+            "可选：项目根目录（必须在用户工作区内）。"
+            "非空时会先做目录扫描/技术栈分析并注入 brief，"
+            "并把 project_analysis 自动加入 run_input，"
+            "用于文档生成器/项目分析类 Skill。"
+        ),
+    )
     publish: Optional[Dict[str, Any]] = Field(
         None,
         description="非空时在试跑通过后调 SkillPublisher 上架到本 MODstore",
@@ -1692,10 +2351,24 @@ async def workbench_vibe_code_skill(
         try:
             from modstore_server.integrations.vibe_adapter import (
                 VibeIntegrationError,
+                VibePathError,
+                ensure_within_workspace,
                 get_vibe_coder,
             )
         except ImportError as exc:
             return {"ok": False, "error": f"未启用 vibe-coding 集成: {exc}"}
+
+        # Validate project_root against the user workspace boundary.
+        resolved_project_root: Optional[str] = None
+        if body.project_root and body.project_root.strip():
+            try:
+                resolved_project_root = str(
+                    ensure_within_workspace(body.project_root.strip(), user_id=int(user.id or 0))
+                )
+            except VibePathError as exc:
+                return {"ok": False, "error": f"project_root 路径无效: {exc}"}
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"project_root 校验失败: {exc}"}
 
         sf2 = get_session_factory()
         with sf2() as session:
@@ -1714,14 +2387,39 @@ async def workbench_vibe_code_skill(
                     body.brief.strip(),
                     mode=body.mode,
                     skill_id=(body.skill_id or None),
+                    project_root=resolved_project_root,
                 )
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": f"vibe-coding 生成失败: {exc}"}
 
+            # Pre-compute project analysis and inject as run_input["project_analysis"]
+            # so the generated Skill can process it without hitting the filesystem.
+            run_input_final = dict(body.run_input or {})
+            if resolved_project_root and "project_analysis" not in run_input_final:
+                try:
+                    from vibe_coding.code_factory import analyze_project  # type: ignore[import-not-found]
+                    import json as _json
+                    analysis = analyze_project(resolved_project_root)
+                    run_input_final["project_analysis"] = _json.loads(
+                        _json.dumps({
+                            "root_name": analysis.root_name,
+                            "manifests": analysis.manifests,
+                            "top_level": analysis.top_level,
+                            "languages": analysis.languages,
+                            "tech_stack": analysis.tech_stack,
+                            "entry_points": analysis.entry_points,
+                            "config_files": analysis.config_files,
+                            "readme_snippet": analysis.readme_snippet,
+                            "git_info": analysis.git_info,
+                        }, ensure_ascii=False)
+                    )
+                except Exception:  # noqa: BLE001
+                    pass  # analysis is optional; proceed without it
+
             sid = getattr(skill, "skill_id", "") or ""
             run_dict: Optional[Dict[str, Any]] = None
             try:
-                run_obj = coder.run(sid, dict(body.run_input or {}))
+                run_obj = coder.run(sid, run_input_final)
                 run_dict = (
                     run_obj.to_dict()
                     if hasattr(run_obj, "to_dict") and callable(run_obj.to_dict)
@@ -1752,6 +2450,7 @@ async def workbench_vibe_code_skill(
                 "skill": skill_dict,
                 "run": run_dict,
                 "publish": publish_dict,
+                "project_root_used": resolved_project_root,
             }
 
     out = await asyncio.to_thread(_do)
@@ -2050,6 +2749,16 @@ class EmployeeBenchRequest(BaseModel):
     employee_id: str = Field(..., description="员工包 ID（同 pack_id）")
     provider: Optional[str] = Field(None)
     model: Optional[str] = Field(None)
+    per_dimension_ids: Optional[Dict[str, str]] = Field(
+        None,
+        description=(
+            "五维专属评分员工包映射 {维度键: employee_id}；"
+            "有效键：manifest_compliance / declaration_completeness / "
+            "api_testability_static / security_and_size / metadata_quality。"
+            "合并优先级：环境变量 MODSTORE_AUDIT_DIM_* → LLM 自动从评审池挑选 → 本字段。"
+            "未填满的维度可用服务端评审池（MODSTORE_BENCH_REVIEWER_POOL / *_FROM_CATALOG）自动补位。"
+        ),
+    )
 
 
 class EmployeePublishRequest(BaseModel):
@@ -2071,11 +2780,12 @@ async def employee_bench_test(
     4. 返回完整报告，前端据此决定是否允许上架
     """
     from modstore_server.employee_bench import generate_bench_tasks, run_and_score_bench
-    from modstore_server.mod_scaffold_runner import modstore_library_path
 
     employee_id = (body.employee_id or "").strip()
     if not employee_id:
         raise HTTPException(400, "employee_id 不能为空")
+
+    materialize_employee_pack_if_missing(employee_id)
 
     # 从本地库读 manifest 获取 brief + panel_summary
     pack_dir = modstore_library_path() / employee_id
@@ -2097,24 +2807,37 @@ async def employee_bench_test(
 
     sf = get_session_factory()
     with sf() as db:
-        prov, mdl, err = await resolve_llm_provider_model_auto(db, user, body.provider, body.model)
-        if err:
-            raise HTTPException(400, err)
+        from modstore_server.services.llm import resolve_platform_bench_llm
+        prov, mdl = resolve_platform_bench_llm()
+        if not prov or not mdl:
+            raise HTTPException(
+                503,
+                "基准测试需要平台 LLM 密钥（服务端环境变量），当前未配置。"
+                "请联系运维设置 MODSTORE_EMPLOYEE_BENCH_PROVIDER + MODSTORE_EMPLOYEE_BENCH_MODEL "
+                "及对应供应商的 API Key 环境变量。",
+            )
 
-        task_list = await generate_bench_tasks(
-            brief or employee_id,
-            panel_summary,
-            db=db,
-            user_id=user.id,
-            provider=prov,
-            model=mdl,
-        )
+        try:
+            task_list = await generate_bench_tasks(
+                brief or employee_id,
+                panel_summary,
+                db=db,
+                user_id=user.id,
+                provider=prov,
+                model=mdl,
+                use_platform_dispatch=True,
+                strict=True,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(502, f"基准任务生成失败（LLM 调用）：{exc}") from exc
 
         report = await run_and_score_bench(
             employee_id,
             task_list,
             db=db,
             user=user,
+            bench_llm_override=(prov, mdl),
+            per_dimension_ids=body.per_dimension_ids,
         )
 
     return {"ok": True, "employee_id": employee_id, **report}
@@ -2129,8 +2852,7 @@ async def employee_publish(
     将本地库中的员工包重建 zip 并写入商店目录（catalog_store + catalog_items）。
     调用方应先通过 /employee-bench-test 且 passed=true，再调此接口。
     """
-    from modstore_server.mod_scaffold_runner import modstore_library_path
-    from modstore_server.catalog_store import append_package
+    from modstore_server.catalog_store import append_package, package_manifest_alignment_errors
     from modstore_server.catalog_sync import upsert_catalog_item_from_xc_package_dict
     from modstore_server.models import CatalogItem
 
@@ -2138,23 +2860,25 @@ async def employee_publish(
     if not employee_id:
         raise HTTPException(400, "employee_id 不能为空")
 
+    materialize_employee_pack_if_missing(employee_id)
+
     pack_dir = modstore_library_path() / employee_id
     mf_path = pack_dir / "manifest.json"
     if not mf_path.is_file():
         raise HTTPException(404, f"员工包不存在: {employee_id}")
 
     try:
-        raw_mf = json.loads(mf_path.read_text(encoding="utf-8"))
+        raw_mf = _load_registry_aligned_employee_manifest(pack_dir, employee_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"manifest.json 读取失败: {exc}") from exc
 
     # 重建 zip
     try:
-        zip_bytes = build_employee_pack_zip(employee_id, raw_mf)
+        pkg_id = str(raw_mf.get("id") or employee_id).strip() or employee_id
+        zip_bytes = build_employee_pack_zip(pkg_id, raw_mf)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"员工包打包失败: {exc}") from exc
 
-    pkg_id = str(raw_mf.get("id") or employee_id).strip() or employee_id
     version = str(raw_mf.get("version") or "1.0.0").strip()
     rec = {
         "id": pkg_id,
@@ -2175,6 +2899,9 @@ async def employee_publish(
         tmp_path = Path(tmp.name)
 
     try:
+        align_errs = package_manifest_alignment_errors(rec, tmp_path)
+        if align_errs:
+            raise HTTPException(400, "员工包 metadata 与包内 manifest 不一致: " + "; ".join(align_errs))
         saved = append_package(rec, tmp_path)
     except Exception as exc:  # noqa: BLE001
         tmp_path.unlink(missing_ok=True)
@@ -2225,6 +2952,13 @@ class EmployeeSyncTestRequest(BaseModel):
     model: Optional[str] = Field(None)
     price: float = Field(0.0)
     industry: str = Field("通用", max_length=64)
+    per_dimension_ids: Optional[Dict[str, str]] = Field(
+        None,
+        description=(
+            "五维专属评分员工包映射 {维度键: employee_id}；"
+            "与环境变量、自动评审池补位规则同 employee-bench-test。"
+        ),
+    )
 
 
 @router.post("/employee-sync-test", summary="员工同步测试：bench→发布→推送到宿主安装")
@@ -2242,14 +2976,15 @@ async def employee_sync_test(
     import httpx
 
     from modstore_server.employee_bench import generate_bench_tasks, run_and_score_bench
-    from modstore_server.mod_scaffold_runner import modstore_library_path
-    from modstore_server.catalog_store import append_package
+    from modstore_server.catalog_store import append_package, package_manifest_alignment_errors
     from modstore_server.catalog_sync import upsert_catalog_item_from_xc_package_dict
     from modstore_server.models import CatalogItem
 
     employee_id = (body.employee_id or "").strip()
     if not employee_id:
         raise HTTPException(400, "employee_id 不能为空")
+
+    materialize_employee_pack_if_missing(employee_id)
 
     # ── Step 1: 读取员工信息 ──────────────────────────────────────────────────
     pack_dir = modstore_library_path() / employee_id
@@ -2258,7 +2993,7 @@ async def employee_sync_test(
         raise HTTPException(404, f"员工包不存在: {employee_id}")
 
     try:
-        raw_mf = json.loads(mf_path.read_text(encoding="utf-8"))
+        raw_mf = _load_registry_aligned_employee_manifest(pack_dir, employee_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"manifest.json 读取失败: {exc}") from exc
 
@@ -2268,22 +3003,41 @@ async def employee_sync_test(
     if isinstance(rows, list) and rows and isinstance(rows[0], dict):
         panel_summary = str(rows[0].get("panel_summary") or "").strip()[:400]
 
-    # ── Step 2: bench test ────────────────────────────────────────────────────
+    # ── Step 2: bench test using platform model ───────────────────────────────
+    from modstore_server.services.llm import resolve_platform_bench_llm
+    prov, mdl = resolve_platform_bench_llm()
+    if not prov or not mdl:
+        raise HTTPException(
+            503,
+            "同步测试需要平台 LLM 密钥（服务端环境变量），当前未配置。"
+            "请联系运维设置 MODSTORE_EMPLOYEE_BENCH_PROVIDER + MODSTORE_EMPLOYEE_BENCH_MODEL "
+            "及对应供应商的 API Key 环境变量。",
+        )
+
     sf = get_session_factory()
     with sf() as db:
-        prov, mdl, err = await resolve_llm_provider_model_auto(db, user, body.provider, body.model)
-        if err:
-            raise HTTPException(400, err)
+        try:
+            task_list = await generate_bench_tasks(
+                brief or employee_id,
+                panel_summary,
+                db=db,
+                user_id=user.id,
+                provider=prov,
+                model=mdl,
+                use_platform_dispatch=True,
+                strict=True,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(502, f"基准任务生成失败（LLM 调用）：{exc}") from exc
 
-        task_list = await generate_bench_tasks(
-            brief or employee_id,
-            panel_summary,
+        report = await run_and_score_bench(
+            employee_id,
+            task_list,
             db=db,
-            user_id=user.id,
-            provider=prov,
-            model=mdl,
+            user=user,
+            bench_llm_override=(prov, mdl),
+            per_dimension_ids=body.per_dimension_ids,
         )
-        report = await run_and_score_bench(employee_id, task_list, db=db, user=user)
 
     if not report.get("passed"):
         return {
@@ -2294,11 +3048,11 @@ async def employee_sync_test(
         }
 
     # ── Step 3: 发布到 MODstore catalog ─────────────────────────────────────
-    pkg_id = str(raw_mf.get("id") or employee_id).strip()
+    pkg_id = str(raw_mf.get("id") or employee_id).strip() or employee_id
     version = str(raw_mf.get("version") or "1.0.0").strip()
 
     try:
-        zip_bytes = build_employee_pack_zip(employee_id, raw_mf)
+        zip_bytes = build_employee_pack_zip(pkg_id, raw_mf)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"员工包打包失败: {exc}") from exc
 
@@ -2321,6 +3075,9 @@ async def employee_sync_test(
         tmp_path_str = tmp.name
 
     try:
+        align_errs = package_manifest_alignment_errors(rec, Path(tmp_path_str))
+        if align_errs:
+            raise HTTPException(400, "员工包 metadata 与包内 manifest 不一致: " + "; ".join(align_errs))
         saved = append_package(rec, Path(tmp_path_str))
     except Exception as exc:  # noqa: BLE001
         Path(tmp_path_str).unlink(missing_ok=True)
@@ -2376,3 +3133,323 @@ async def employee_sync_test(
         "catalog": {"ok": True, "stored_filename": saved.get("stored_filename") or ""},
         "fhd_install": fhd_result,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 员工编辑器保存 / 导出：接受前端当前 manifest，持久化或直接返回完整 .xcemp zip
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class EmployeeSaveBody(BaseModel):
+    manifest: Dict[str, Any] = Field(..., description="员工完整 manifest（employee_config_v2 结构）")
+    employee_id: Optional[str] = Field(None, max_length=128, description="已有员工ID；为空时从 manifest.identity.id 读取")
+    provider: Optional[str] = Field(None, max_length=64, description="注册 vibe-coding Skill 用的 LLM 供应商（为空则尝试用户默认）")
+    model: Optional[str] = Field(None, max_length=128, description="注册 vibe-coding Skill 用的 LLM 模型")
+    register_skills: bool = Field(True, description="是否同时注册 vibe-coding ESkill（需要 LLM；失败不影响保存）")
+
+
+@router.post("/employee-save", summary="保存/持久化编辑器当前 manifest 到服务器库并注册 ESkill")
+async def employee_save(
+    body: EmployeeSaveBody,
+    user: User = Depends(_get_current_user),
+):
+    """把前端编辑器的当前 manifest 保存到 library/<pack_id>，解压运行时文件，
+    并通过 vibe-coding 将 cognition.skills 注册为真实可执行 ESkill。
+
+    register_skills=true（默认）时会调用 LLM 为每个 skill 生成 Python 代码并在数据库创建 ESkill 记录。
+    返回保存的 pack_id、已注册 ESkill 数量和下载元信息。
+    """
+    import re as _re
+    import tempfile as _tmp
+    import zipfile as _zipfile
+    from modstore_server.employee_ai_scaffold import build_employee_pack_zip
+    from modstore_server.catalog_store import append_package
+    from modstore_server.catalog_sync import upsert_catalog_item_from_xc_package_dict
+
+    mf = body.manifest
+    if not isinstance(mf, dict):
+        raise HTTPException(400, "manifest 必须是 JSON 对象")
+
+    # Resolve pack_id: body > manifest.identity.id > manifest.id
+    raw_id = (
+        (body.employee_id or "").strip()
+        or str((mf.get("identity") or {}).get("id") or "").strip()
+        or str(mf.get("id") or "").strip()
+    )
+    if not raw_id:
+        raise HTTPException(400, "manifest 中缺少 identity.id 或顶层 id 字段")
+    pack_id = _re.sub(r"[^a-z0-9._-]", "-", raw_id.lower()).strip("-")[:48]
+    if not pack_id:
+        raise HTTPException(400, f"无法从 employee_id/manifest.id 生成合法 pack_id: {raw_id!r}")
+
+    mf["id"] = mf.get("id") or pack_id
+
+    # ── 0. 画布形态 → 登记形态规范化 ─────────────────────────────────────
+    mf, registry_errs = normalize_editor_manifest_for_registry(mf, pack_id)
+    if registry_errs:
+        _LOG.info("employee_save: manifest 校验警告 pack=%s: %s", pack_id, registry_errs)
+    ref_warnings: List[str] = []
+    sf_ref = get_session_factory()
+    with sf_ref() as db_ref:
+        try:
+            from modstore_server.employee_pack_workflow_bundle import embed_workflow_bundles_in_manifest
+            embed_workflow_bundles_in_manifest(db_ref, mf)
+        except Exception as _bundle_exc:  # noqa: BLE001
+            _LOG.warning("employee_save: embed bundles failed pack=%s: %s", pack_id, _bundle_exc)
+            ref_warnings = _write_workflow_reference_report(db_ref, user, mf)
+    # 仅当规范化后 artifact 仍不是 employee_pack 时才视为致命错误
+    from modman.artifact_constants import normalize_artifact
+    if normalize_artifact(mf) != "employee_pack":
+        raise HTTPException(
+            400,
+            f"manifest 规范化后 artifact 仍无效；校验详情: {'; '.join(registry_errs)}"
+        )
+
+    # ── 1. Build full zip (includes blueprints.py + employee.py) ──────────────
+    try:
+        zip_bytes = build_employee_pack_zip(pack_id, mf)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"员工包打包失败: {exc}") from exc
+
+    # ── 2. Extract to library so .py files land on disk ───────────────────────
+    lib = modstore_library_path()
+    pack_dir = lib / pack_id
+    try:
+        with _tmp.NamedTemporaryFile(suffix=".xcemp", delete=False) as tmp:
+            tmp.write(zip_bytes)
+            tmp_zip_path = Path(tmp.name)
+        # Extract everything inside the zip's sub-directory into pack_dir.
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        with _zipfile.ZipFile(tmp_zip_path, "r") as zf:
+            for member in zf.namelist():
+                # member looks like "pack_id/backend/employees/emp.py"
+                parts = member.split("/", 1)
+                if len(parts) == 2 and parts[1]:
+                    dest = pack_dir / parts[1].replace("/", Path.sep if hasattr(Path, "sep") else "/")  # type: ignore[attr-defined]
+                    dest = pack_dir / Path(parts[1])
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if not member.endswith("/"):
+                        dest.write_bytes(zf.read(member))
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("employee_save: zip 解压失败 pack=%s: %s", pack_id, exc)
+    finally:
+        try:
+            tmp_zip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # ── 2b. Rehydrate bundled workflow/script-workflow definitions ─────────────
+    try:
+        from modstore_server.mod_scaffold_runner import rehydrate_employee_pack_bundles
+        sf_rh = get_session_factory()
+        with sf_rh() as db_rh:
+            rehydrate_employee_pack_bundles(pack_id, db=db_rh, user=user)
+            # Reload manifest in case IDs were rewritten
+            mf_path_rh = pack_dir / "manifest.json"
+            if mf_path_rh.is_file():
+                mf = json.loads(mf_path_rh.read_text(encoding="utf-8"))
+    except Exception as _rh_exc:  # noqa: BLE001
+        _LOG.warning("employee_save: rehydrate bundles failed pack=%s: %s", pack_id, _rh_exc)
+
+    # ── 3. Register vibe-coding ESkill for each cognition.skill ──────────────
+    eskill_result: Dict[str, Any] = {"registered": 0, "skipped": False, "error": ""}
+    if body.register_skills:
+        try:
+            from modstore_server.employee_skill_register import register_employee_pack_as_eskills
+            from modstore_server.mod_scaffold_runner import resolve_llm_provider_model_auto
+
+            sf_reg = get_session_factory()
+            with sf_reg() as db_reg:
+                prov, mdl, perr = await resolve_llm_provider_model_auto(
+                    db_reg, user, body.provider, body.model
+                )
+            if perr:
+                eskill_result["skipped"] = True
+                eskill_result["error"] = f"LLM 解析失败（跳过 Skill 注册）: {perr}"
+            else:
+                brief = str(
+                    mf.get("description")
+                    or (mf.get("identity") or {}).get("description")
+                    or mf.get("name")
+                    or pack_id
+                )
+                panel_summary = ""
+                wf_rows = mf.get("workflow_employees") or []
+                if isinstance(wf_rows, list) and wf_rows and isinstance(wf_rows[0], dict):
+                    panel_summary = str(wf_rows[0].get("panel_summary") or "")
+
+                sf_sk = get_session_factory()
+                with sf_sk() as db_sk:
+                    specs = await register_employee_pack_as_eskills(
+                        db_sk,
+                        user,
+                        pack_dir=pack_dir,
+                        brief=brief,
+                        panel_summary=panel_summary,
+                        provider=prov,
+                        model=mdl,
+                    )
+                eskill_result["registered"] = len(specs)
+                # Write eskill IDs back into manifest's cognition.skills
+                if specs:
+                    v2 = mf.get("employee_config_v2") if isinstance(mf.get("employee_config_v2"), dict) else {}
+                    cog = v2.get("cognition") if isinstance(v2.get("cognition"), dict) else {}
+                    existing_skills = cog.get("skills") if isinstance(cog.get("skills"), list) else []
+                    # Merge: update existing entries with eskill_id where name matches
+                    name_to_spec = {s["name"]: s for s in specs}
+                    updated = []
+                    for sk in existing_skills:
+                        sk_dict = dict(sk) if isinstance(sk, dict) else {}
+                        matched = name_to_spec.get(sk_dict.get("name") or "")
+                        if matched:
+                            sk_dict["eskill_id"] = matched["eskill_id"]
+                            sk_dict["vibe_skill_id"] = matched.get("vibe_skill_id") or ""
+                        updated.append(sk_dict)
+                    # Append any new ones not already in the list
+                    existing_names = {s.get("name") or "" for s in updated}
+                    for spec in specs:
+                        if spec["name"] not in existing_names:
+                            updated.append({
+                                "name": spec["name"],
+                                "brief": spec.get("output_var") or spec["name"],
+                                "eskill_id": spec["eskill_id"],
+                                "vibe_skill_id": spec.get("vibe_skill_id") or "",
+                            })
+                    cog["skills"] = updated
+                    v2["cognition"] = cog
+                    mf["employee_config_v2"] = v2
+                    # Persist updated manifest
+                    mf_path = pack_dir / "manifest.json"
+                    mf_path.write_text(json.dumps(mf, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("employee_save: Skill 注册异常（保存继续）pack=%s: %s", pack_id, exc)
+            eskill_result["skipped"] = True
+            eskill_result["error"] = str(exc)[:400]
+
+    # ── 4. Rebuild catalog zip with (possibly updated) manifest ──────────────
+    try:
+        zip_bytes = build_employee_pack_zip(pack_id, mf)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"员工包打包失败: {exc}") from exc
+
+    version = str(mf.get("version") or (mf.get("identity") or {}).get("version") or "1.0.0").strip()
+    name = str(mf.get("name") or (mf.get("identity") or {}).get("name") or pack_id).strip()
+    rec = {
+        "id": pack_id,
+        "name": name,
+        "version": version,
+        "description": str(mf.get("description") or (mf.get("identity") or {}).get("description") or ""),
+        "artifact": "employee_pack",
+        "industry": str(mf.get("industry") or (mf.get("commerce") or {}).get("industry") or "通用"),
+        "release_channel": "stable",
+        "commerce": mf.get("commerce") or {"mode": "free", "price": 0},
+        "license": {"type": "personal", "verify_url": None},
+    }
+    with _tmp.NamedTemporaryFile(suffix=".xcemp", delete=False) as tmp:
+        tmp.write(zip_bytes)
+        tmp_path = Path(tmp.name)
+    try:
+        align_errs = package_manifest_alignment_errors(rec, tmp_path)
+        if align_errs:
+            raise HTTPException(400, "员工包 metadata 与包内 manifest 不一致: " + "; ".join(align_errs))
+        saved = append_package(rec, tmp_path)
+    except Exception as exc:  # noqa: BLE001
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(500, f"写入 catalog_store 失败: {exc}") from exc
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    sf = get_session_factory()
+    with sf() as db:
+        try:
+            upsert_catalog_item_from_xc_package_dict(db, saved, author_id=user.id)
+            row = db.query(CatalogItem).filter(CatalogItem.pkg_id == pack_id).first()
+            if not row:
+                row = CatalogItem(pkg_id=pack_id, author_id=user.id)
+                db.add(row)
+            row.version = saved.get("version") or version
+            row.name = saved.get("name") or name
+            row.description = saved.get("description") or rec["description"]
+            row.price = 0.0
+            row.artifact = "employee_pack"
+            row.industry = saved.get("industry") or rec["industry"]
+            row.stored_filename = saved.get("stored_filename") or ""
+            row.sha256 = saved.get("sha256") or ""
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            raise HTTPException(500, f"写入数据库失败: {exc}") from exc
+
+    return {
+        "ok": True,
+        "pack_id": pack_id,
+        "version": version,
+        "name": name,
+        "stored_filename": saved.get("stored_filename") or "",
+        "eskill_registered": eskill_result["registered"],
+        "eskill_skipped": eskill_result["skipped"],
+        "eskill_error": eskill_result["error"],
+        "manifest": mf,  # Return updated manifest (with eskill_id written back)
+        "manifest_warnings": (registry_errs if registry_errs else []) + ref_warnings,
+    }
+
+
+class EmployeeExportBody(BaseModel):
+    manifest: Dict[str, Any] = Field(..., description="员工完整 manifest")
+    employee_id: Optional[str] = Field(None, max_length=128)
+
+
+@router.post("/employee-export", summary="根据当前 manifest 生成完整 .xcemp 并下载（不落盘）")
+async def employee_export(
+    body: EmployeeExportBody,
+    user: User = Depends(_get_current_user),
+):
+    """接收前端当前 manifest，用后端模板生成完整 .xcemp（含 blueprints.py + employee.py），直接返回 zip 流。
+    不写入数据库，仅供本地查看/调试用。
+    """
+    import re as _re
+
+    mf = body.manifest
+    if not isinstance(mf, dict):
+        raise HTTPException(400, "manifest 必须是 JSON 对象")
+
+    raw_id = (
+        (body.employee_id or "").strip()
+        or str((mf.get("identity") or {}).get("id") or "").strip()
+        or str(mf.get("id") or "").strip()
+    )
+    if not raw_id:
+        raise HTTPException(400, "manifest 中缺少 identity.id 或顶层 id 字段")
+    pack_id = _re.sub(r"[^a-z0-9._-]", "-", raw_id.lower()).strip("-")[:48] or "employee"
+    mf["id"] = mf.get("id") or pack_id
+
+    # 画布形态 → 登记形态规范化（补顶层 artifact/name/version、employee、employee_config_v2）
+    mf, registry_errs = normalize_editor_manifest_for_registry(mf, pack_id)
+    if registry_errs:
+        _LOG.info("employee_export: manifest 校验警告 pack=%s: %s", pack_id, registry_errs)
+    ref_warnings: List[str] = []
+    sf_ref = get_session_factory()
+    with sf_ref() as db_ref:
+        try:
+            from modstore_server.employee_pack_workflow_bundle import embed_workflow_bundles_in_manifest
+            embed_workflow_bundles_in_manifest(db_ref, mf)
+        except Exception as _bundle_exc:  # noqa: BLE001
+            _LOG.warning("employee_export: embed bundles failed pack=%s: %s", pack_id, _bundle_exc)
+            ref_warnings = _write_workflow_reference_report(db_ref, user, mf)
+
+    try:
+        zip_bytes = build_employee_pack_zip(pack_id, mf)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"员工包打包失败: {exc}") from exc
+
+    # 使用整包 Response 而非 StreamingResponse(BytesIO)：部分反向代理在 HTTP/2 下对「流 + Content-Length」
+    # 处理不当会触发浏览器 net::ERR_HTTP2_PROTOCOL_ERROR；zip 已完全在内存中，无需分块流式。
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{pack_id}.xcemp"',
+            # 把校验警告通过响应头带回，便于前端或调试工具快速查看
+            "X-Manifest-Warnings": "; ".join((registry_errs + ref_warnings)[:5]) if (registry_errs or ref_warnings) else "",
+        },
+    )

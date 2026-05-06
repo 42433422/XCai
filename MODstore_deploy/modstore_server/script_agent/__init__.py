@@ -12,6 +12,8 @@ context_collector / planner / code_writer / observer / repairer / agent_loop。
 __all__ = [
     "sandbox_runner",
     "sandbox_host",
+    "sandbox_preamble",
+    "docker_runner",
     "static_checker",
     "package_allowlist",
     "runtime_sdk",
