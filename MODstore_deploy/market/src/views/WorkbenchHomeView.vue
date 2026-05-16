@@ -42,11 +42,22 @@
       </header>
 
         <section v-if="wbSidebar.activeMode !== 'voice'" class="wb-mode-scene" :style="directFontPxStyle">
-              <div v-if="!directMessages.length" class="wb-direct-empty-title">
+              <div v-if="tierPanelOpen && wbSidebar.activeMode === 'direct'" class="wb-scene-panel">
+                <ConsumptionTierControl v-model="consumptionTier" />
+              </div>
+              <div v-if="empPanelOpen && wbSidebar.activeMode === 'direct'" class="wb-scene-panel">
+                <label class="wb-scene-panel-label" for="wb-direct-employee-select">员工</label>
+                <select v-model="directChatEmployeeId" class="wb-scene-employee-select" :disabled="directLoading">
+                  <option value="">不绑定员工</option>
+                  <option v-for="opt in directEmployeeOptions" :key="opt.id" :value="opt.id">{{ opt.name }}</option>
+                </select>
+              </div>
+              <div v-if="wbSidebar.activeMode === 'direct' && !directMessages.length" class="wb-direct-empty-title">
                 <h1 class="wb-direct-title">{{ activeBot ? activeBot.name : '有什么想问的？' }}</h1>
                 <p class="wb-direct-sub">{{ activeBot?.desc || '像聊天一样提问，我直接帮你分析、总结和给出可执行答案。' }}</p>
               </div>
               <div
+                v-if="wbSidebar.activeMode === 'direct'"
                 class="wb-direct-shell"
                 :class="{ 'wb-direct-shell--empty': !directMessages.length }"
               >
@@ -451,10 +462,11 @@
                 @close="showMediaGen = false"
                 @insert="insertGeneratedToChat"
               />
-            </section>
 
-            <section v-if="wbSidebar.activeMode === 'make'" class="wb-mode-scene wb-make-scene">
-      <header class="wb-make-hero">
+            <div v-if="tierPanelOpen && wbSidebar.activeMode === 'make'" class="wb-scene-panel">
+              <ConsumptionTierControl v-model="consumptionTier" />
+            </div>
+      <header v-if="wbSidebar.activeMode === 'make'" class="wb-make-hero">
         <p v-if="greetingLine" class="wb-hero-kicker">{{ greetingLine }}</p>
         <h1 class="wb-hero-title">{{ makeHeroTitle }}</h1>
       </header>
