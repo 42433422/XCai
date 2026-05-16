@@ -106,7 +106,7 @@
           </div>
           <div class="node-category">
             <h4>AI员工</h4>
-            <div v-for="employee in employees" :key="employee.id" class="node-item" @click="addEmployeeNode(employee.id, employee.name)">
+            <div v-for="employee in employees" :key="employee.id" class="node-item" @click="addEmployeeNode(employee.id, employee.name ?? '')">
               <div class="node-icon employee-node">员工</div>
               <span>{{ employee.name }}</span>
             </div>
@@ -406,25 +406,25 @@
         <h2 class="modal-title">节点配置</h2>
         <div class="form-group">
           <label class="label">节点名称</label>
-          <input v-model="selectedNode.name" class="input" />
+          <input v-model="selectedNodeForTemplate.name" class="input" />
         </div>
-        <div v-if="selectedNode.node_type === 'employee'" class="form-group">
+        <div v-if="selectedNodeForTemplate.node_type === 'employee'" class="form-group">
           <label class="label">员工 ID</label>
-          <input v-model="selectedNode.config.employee_id" class="input" />
+          <input v-model="selectedNodeForTemplate.config.employee_id" class="input" />
         </div>
-        <div v-if="selectedNode.node_type === 'employee'" class="form-group">
+        <div v-if="selectedNodeForTemplate.node_type === 'employee'" class="form-group">
           <label class="label">任务类型</label>
-          <select v-model="selectedNode.config.task" class="input">
+          <select v-model="selectedNodeForTemplate.config.task" class="input">
             <option value="analyze_document">分析文档</option>
             <option value="process_data">处理数据</option>
             <option value="generate_report">生成报告</option>
           </select>
         </div>
-        <template v-if="selectedNode.node_type === 'knowledge_search'">
+        <template v-if="selectedNodeForTemplate.node_type === 'knowledge_search'">
           <div class="form-group">
             <label class="label">检索文本（支持 ${'$'}{nodes.foo.bar} 模板）</label>
             <input
-              v-model="selectedNode.config.query"
+              v-model="selectedNodeForTemplate.config.query"
               class="input"
               placeholder="例如：${'$'}{nodes.start.user_query} 或固定文本"
             />
@@ -432,23 +432,23 @@
           <div class="form-group">
             <label class="label">集合 ID 列表（逗号分隔；留空表示按身份自动可见）</label>
             <input
-              :value="(selectedNode.config.collection_ids || []).join(',')"
+              :value="(selectedNodeForTemplate.config.collection_ids || []).join(',')"
               class="input"
               placeholder="例如：12,18"
-              @input="(e: any) => selectedNode.config.collection_ids = String(e?.target?.value || '').split(',').map((x: string) => Number(x.trim())).filter((n: number) => !isNaN(n) && n > 0)"
+              @input="(e: any) => selectedNodeForTemplate.config.collection_ids = String(e?.target?.value || '').split(',').map((x: string) => Number(x.trim())).filter((n: number) => !isNaN(n) && n > 0)"
             />
           </div>
           <div class="form-group">
             <label class="label">top_k</label>
-            <input v-model.number="selectedNode.config.top_k" type="number" min="1" max="20" class="input" />
+            <input v-model.number="selectedNodeForTemplate.config.top_k" type="number" min="1" max="20" class="input" />
           </div>
           <div class="form-group">
             <label class="label">最低分数（0–1，越高越严）</label>
-            <input v-model.number="selectedNode.config.min_score" type="number" min="0" max="1" step="0.05" class="input" />
+            <input v-model.number="selectedNodeForTemplate.config.min_score" type="number" min="0" max="1" step="0.05" class="input" />
           </div>
           <div class="form-group">
             <label class="label">输出变量名</label>
-            <input v-model="selectedNode.config.output_var" class="input" placeholder="knowledge" />
+            <input v-model="selectedNodeForTemplate.config.output_var" class="input" placeholder="knowledge" />
           </div>
         </template>
         <div class="modal-actions">
@@ -464,11 +464,83 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
+import { filterOutPlannedDutyEmployees } from '../utils/workbenchEmployeeFilter'
 import { computeGraphSummary, buildMermaidFlowchart } from '../workflowMermaid'
 import { WORKFLOW_SANDBOX_PRESETS } from '../workflowSandboxPresets'
+import { errMessage } from '../utils/errMessage'
 
 const route = useRoute()
 const router = useRouter()
+
+interface WorkflowRow {
+  id: number
+  name?: string
+  description?: string
+  is_active?: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+interface EmployeeRow {
+  id: number | string
+  name?: string
+  [key: string]: unknown
+}
+
+interface WorkflowNodeRow {
+  id: number
+  workflow_id?: number
+  name?: string
+  node_type?: string
+  config?: Record<string, any>
+  position_x: number
+  position_y: number
+}
+
+interface WorkflowEdgeRow {
+  id: number
+  source_node_id?: number
+  target_node_id?: number
+  condition?: string | null
+}
+
+interface ExecutionRow {
+  id: number
+  workflow_id?: number
+  status?: string
+  started_at?: string
+  completed_at?: string
+  error_message?: string
+  output_data?: unknown
+}
+
+interface TriggerRow {
+  id: number
+  workflow_id?: number
+  trigger_type?: string
+  trigger_key?: string
+  is_active?: boolean
+  config?: Record<string, any>
+}
+
+interface WorkflowSandboxReport {
+  ok?: boolean
+  validate_only?: boolean
+  issues?: unknown[]
+  errors?: unknown[]
+  warnings?: unknown[]
+  steps?: Array<Record<string, any>>
+  output?: Record<string, unknown>
+}
+
+interface RealPrecheck {
+  ok?: boolean
+  checkedCount?: number
+  missingConfigCount?: number
+  statusErrorCount?: number
+  issues?: unknown[]
+  nodeIds?: number[]
+}
 
 // 状态管理
 const activeTab = ref('list')
@@ -478,12 +550,12 @@ const bulkDeleteInactiveBusy = ref(false)
 const purgeAutomationBusy = ref(false)
 const message = ref('')
 const messageOk = ref(true)
-const workflows = ref([])
-const employees = ref([])
-const executions = ref([])
+const workflows = ref<WorkflowRow[]>([])
+const employees = ref<EmployeeRow[]>([])
+const executions = ref<ExecutionRow[]>([])
 
 const triggersWorkflowId = ref(0)
-const triggerRows = ref([])
+const triggerRows = ref<TriggerRow[]>([])
 const triggersLoading = ref(false)
 const triggersMsg = ref('')
 const triggersMsgOk = ref(true)
@@ -492,7 +564,7 @@ const triggersWebhookJson = ref('{\n  "source": "webhook"\n}')
 
 // 沙盒
 const sandboxEmployeeId = ref('')
-const sandboxWorkflowCandidates = ref([])
+const sandboxWorkflowCandidates = ref<Array<{ id: number; name?: string; source?: string }>>([])
 const sandboxMappingLoading = ref(false)
 const sandboxMappingError = ref('')
 const sandboxMappingNodeHits = ref(0)
@@ -501,35 +573,45 @@ const sandboxWorkflowId = ref(0)
 const sandboxInputJson = ref('{\n  "topic": "示例主题"\n}')
 const sandboxLoading = ref(false)
 const sandboxAutoCreateBusy = ref(false)
-const sandboxReport = ref(null)
+const sandboxReport = ref<WorkflowSandboxReport | null>(null)
 const sandboxError = ref('')
-const lastRunMeta = ref({ mode: '', startedAt: '', precheck: null })
+const lastRunMeta = ref<{ mode: string; startedAt: string; precheck: RealPrecheck | null }>({ mode: '', startedAt: '', precheck: null })
 /** 沙盒页展示用的服务端图快照（与画布未保存修改可能不一致） */
-const decomposeNodes = ref([])
-const decomposeEdges = ref([])
+const decomposeNodes = ref<WorkflowNodeRow[]>([])
+const decomposeEdges = ref<WorkflowEdgeRow[]>([])
 const decomposeLoading = ref(false)
 const sandboxPresetId = ref('topic')
 
 // 编辑器状态
-const currentWorkflow = ref(null)
-const nodes = ref([])
-const edges = ref([])
+const currentWorkflow = ref<WorkflowRow | null>(null)
+const nodes = ref<WorkflowNodeRow[]>([])
+const edges = ref<WorkflowEdgeRow[]>([])
 const focusedNodeId = ref(0)
 
 // 拖拽状态
 const dragging = ref(false)
-const dragNode = ref(null)
+const dragNode = ref<WorkflowNodeRow | null>(null)
 const dragOffset = ref({ x: 0, y: 0 })
 
 // 连接状态
 const connecting = ref(false)
-const connectStart = ref(null)
+const connectStart = ref<number | null>(null)
 const connectStartPort = ref('')
 
 // 弹窗状态
 const showCreateModal = ref(false)
 const showNodeConfigModal = ref(false)
-const selectedNode = ref(null)
+const selectedNode = ref<WorkflowNodeRow | null>(null)
+const selectedNodeForTemplate = computed(() => {
+  const n = selectedNode.value
+  if (n) {
+    if (!n.config) n.config = {}
+    return n as WorkflowNodeRow & { config: Record<string, any> }
+  }
+  return { id: 0, name: '', node_type: '', config: {}, position_x: 0, position_y: 0 } as WorkflowNodeRow & {
+    config: Record<string, any>
+  }
+})
 
 // 新工作流表单
 const newWorkflow = ref({
@@ -542,16 +624,16 @@ const homeLlmHint = ref('')
 /** 从工作台首页带入的制作类型（mod / employee / workflow） */
 const homeIntentHint = ref('')
 
-const INTENT_FROM_HOME = {
+const INTENT_FROM_HOME: Record<string, string> = {
   mod: '从首页带入：做 Mod（仓库 + 行业 JSON + 员工命名）',
   employee: '从首页带入：做员工',
   workflow: '从首页带入：生成 Skill 组',
 }
 
 // 画布引用
-const canvas = ref(null)
-const connections = ref(null)
-const workflowDetailCache = new Map()
+const canvas = ref<HTMLElement | null>(null)
+const connections = ref<HTMLElement | null>(null)
+const workflowDetailCache = new Map<number, any>()
 
 const realRunDisabledReason = computed(() => {
   if (sandboxLoading.value) return '当前正在运行，请等待完成后再发起真实测试。'
@@ -572,7 +654,7 @@ const realPrecheckSummary = computed(() => {
 })
 
 // 消息提示
-function flash(msg, ok = true) {
+function flash(msg: string, ok = true) {
   message.value = msg
   messageOk.value = ok
   setTimeout(() => { message.value = '' }, 5000)
@@ -668,13 +750,13 @@ async function purgeAutomationWorkbenchFull() {
 
   purgeAutomationBusy.value = true
   resetAutomationWorkbenchLocalState()
-  const failed = []
+  const failed: Array<{ id: number; err: string }> = []
   try {
     for (const id of ids) {
       try {
         await api.deleteWorkflow(id)
       } catch (e) {
-        failed.push({ id, err: e?.message || String(e) })
+        failed.push({ id, err: (e as Error)?.message || String(e) })
       }
     }
     if (failed.length) {
@@ -695,37 +777,38 @@ async function purgeAutomationWorkbenchFull() {
 }
 
 // 日期格式化
-function formatDate(iso) {
+function formatDate(iso: string | undefined) {
   if (!iso) return ''
   return new Date(iso).toLocaleString('zh-CN')
 }
 
 // 获取节点类型标签
-function getNodeTypeLabel(type) {
-  const labels = {
+function getNodeTypeLabel(type: string | undefined) {
+  const labels: Record<string, string> = {
     start: '开始节点',
     end: '结束节点',
     employee: '员工节点',
     condition: '条件节点',
     knowledge_search: '知识检索节点'
   }
-  return labels[type] || type
+  return (type && labels[type]) || type || '未知节点'
 }
 
 // 获取状态标签
-function getStatusLabel(status) {
-  const labels = {
+function getStatusLabel(status: string | undefined) {
+  const labels: Record<string, string> = {
     pending: '待执行',
     running: '执行中',
     completed: '已完成',
     failed: '失败'
   }
-  return labels[status] || status
+  return (status && labels[status]) || status || '未知'
 }
 
 // 获取工作流名称
-function getWorkflowName(workflowId) {
-  const workflow = workflows.value.find(w => w.id === workflowId)
+function getWorkflowName(workflowId: number | undefined) {
+  if (workflowId == null || !Number.isFinite(Number(workflowId))) return '未知工作流'
+  const workflow = workflows.value.find((w) => w.id === workflowId)
   return workflow ? workflow.name : '未知工作流'
 }
 
@@ -734,32 +817,32 @@ async function loadWorkflows() {
   loading.value = true
   try {
     const res = await api.listWorkflows()
-    workflows.value = res
+    workflows.value = Array.isArray(res) ? (res as WorkflowRow[]) : []
   } catch (e) {
-    flash('加载工作流失败: ' + (e.message || String(e)), false)
+    flash('加载工作流失败: ' + ((e as Error)?.message || String(e)), false)
     workflows.value = []
   } finally {
     loading.value = false
   }
 }
 
-function parsePositiveInt(v) {
+function parsePositiveInt(v: unknown): number {
   const n = parseInt(String(v ?? ''), 10)
   return Number.isFinite(n) && n > 0 ? n : 0
 }
 
-function pickEmployeeNameById(empId) {
+function pickEmployeeNameById(empId: unknown): string {
   const e = (employees.value || []).find((x) => String(x?.id) === String(empId))
   const name = e?.name
   return typeof name === 'string' ? name.trim() : ''
 }
 
-function workflowEmployeesFromModRow(modRow) {
+function workflowEmployeesFromModRow(modRow: any): any[] {
   const arr = modRow?.workflow_employees
   return Array.isArray(arr) ? arr : []
 }
 
-function employeeMatchesManifestEntry(entry, employeeId, employeeName) {
+function employeeMatchesManifestEntry(entry: any, employeeId: unknown, employeeName: string): boolean {
   if (!entry || typeof entry !== 'object') return false
   const eid = String(entry.id || '').trim()
   if (eid && employeeIdMatches(eid, employeeId)) return true
@@ -774,14 +857,14 @@ function employeeMatchesManifestEntry(entry, employeeId, employeeName) {
   )
 }
 
-async function getWorkflowDetailCached(workflowId) {
+async function getWorkflowDetailCached(workflowId: number): Promise<any> {
   if (workflowDetailCache.has(workflowId)) return workflowDetailCache.get(workflowId)
   const detail = await api.getWorkflow(workflowId)
   workflowDetailCache.set(workflowId, detail)
   return detail
 }
 
-function employeeIdMatches(a, b) {
+function employeeIdMatches(a: unknown, b: unknown): boolean {
   const x = String(a || '').trim()
   const y = String(b || '').trim()
   if (!x || !y) return false
@@ -789,10 +872,10 @@ function employeeIdMatches(a, b) {
   return x.endsWith(`-${y}`) || x.endsWith(`_${y}`) || y.endsWith(`-${x}`) || y.endsWith(`_${x}`)
 }
 
-async function rebuildSandboxWorkflowCandidatesFallback(employeeId) {
-  const byId = new Map()
-  const nodeHitIds = new Set()
-  const manifestHitIds = new Set()
+async function rebuildSandboxWorkflowCandidatesFallback(employeeId: string) {
+  const byId = new Map<number, { id: number; name: string; source: string }>()
+  const nodeHitIds = new Set<number>()
+  const manifestHitIds = new Set<number>()
   const employeeName = pickEmployeeNameById(employeeId)
   for (const w of workflows.value || []) {
     let detail = null
@@ -802,7 +885,7 @@ async function rebuildSandboxWorkflowCandidatesFallback(employeeId) {
       continue
     }
     const wsNodes = Array.isArray(detail?.nodes) ? detail.nodes : []
-    const hit = wsNodes.some((n) => {
+    const hit = wsNodes.some((n: any) => {
       if (!n || typeof n !== 'object') return false
       if (n.node_type !== 'employee') return false
       const cfg = n.config && typeof n.config === 'object' ? n.config : {}
@@ -852,19 +935,19 @@ async function rebuildSandboxWorkflowCandidates() {
   const employeeId = String(sandboxEmployeeId.value).trim()
   sandboxMappingLoading.value = true
   try {
-    let rows = []
+    let rows: Array<{ id: number; name: string; source: string }> = []
     let nodeHits = 0
     let manifestHits = 0
     try {
       const res = await api.listWorkflowsByEmployee(employeeId)
       const allRows = Array.isArray(res?.workflows) ? res.workflows : []
       rows = allRows
-        .map((x) => ({
+        .map((x: any) => ({
           id: parsePositiveInt(x?.id),
           name: String(x?.name || '').trim() || `工作流 ${x?.id}`,
           source: String(x?.source || ''),
         }))
-        .filter((x) => x.id > 0)
+        .filter((x: { id: number }) => x.id > 0)
       nodeHits = parsePositiveInt(res?.node_hits)
       manifestHits = parsePositiveInt(res?.manifest_hits)
     } catch (e) {
@@ -872,7 +955,7 @@ async function rebuildSandboxWorkflowCandidates() {
       rows = fallback.rows
       nodeHits = fallback.nodeHits
       manifestHits = fallback.manifestHits
-      sandboxMappingError.value = `映射服务不可用，已启用本地回退：${e?.message || String(e)}`
+      sandboxMappingError.value = `映射服务不可用，已启用本地回退：${errMessage(e)}`
     }
 
     sandboxWorkflowCandidates.value = rows
@@ -883,7 +966,7 @@ async function rebuildSandboxWorkflowCandidates() {
       await loadDecomposeGraph(rows[0].id)
     }
   } catch (e) {
-    sandboxMappingError.value = e?.message || String(e)
+    sandboxMappingError.value = errMessage(e)
   } finally {
     sandboxMappingLoading.value = false
   }
@@ -1002,7 +1085,7 @@ async function createSandboxWorkflowForEmployee() {
       flash(`已生成测试工作流（id=${wid}），可直接进行 Mock / 真实测试`, true)
     }
   } catch (e) {
-    const msg = String(e?.message || e || '')
+    const msg = errMessage(e)
     if (msg.includes('缺少认证凭证') || msg.includes('无效的认证凭证') || msg.includes('401')) {
       flash('自动生成工作流失败：登录已失效，请重新登录工作台后重试', false)
       return
@@ -1046,9 +1129,11 @@ async function loadEmployees() {
         sourceLabel: '本地包目录',
       })
     }
-    employees.value = [...merged.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-CN'))
+    employees.value = filterOutPlannedDutyEmployees([...merged.values()]).sort((a, b) =>
+      String(a.name).localeCompare(String(b.name), 'zh-CN'),
+    )
   } catch (e) {
-    flash('加载员工失败: ' + (e.message || String(e)), false)
+    flash('加载员工失败: ' + errMessage(e), false)
     employees.value = []
   }
 }
@@ -1074,7 +1159,7 @@ async function loadExecutions() {
     parts.sort((a, b) => new Date(b.started_at || 0).getTime() - new Date(a.started_at || 0).getTime())
     executions.value = parts
   } catch (e) {
-    flash('加载执行记录失败: ' + (e.message || String(e)), false)
+    flash('加载执行记录失败: ' + errMessage(e), false)
     executions.value = []
   } finally {
     loading.value = false
@@ -1092,7 +1177,7 @@ async function loadTriggersPanel() {
     await refreshTriggersList()
   } catch (e) {
     triggersMsgOk.value = false
-    triggersMsg.value = e?.message || String(e)
+    triggersMsg.value = errMessage(e)
   } finally {
     triggersLoading.value = false
   }
@@ -1111,7 +1196,7 @@ async function refreshTriggersList() {
 function onTriggersWorkflowChange() {
   refreshTriggersList().catch((e) => {
     triggersMsgOk.value = false
-    triggersMsg.value = e?.message || String(e)
+    triggersMsg.value = errMessage(e)
   })
 }
 
@@ -1131,7 +1216,7 @@ async function addCronTrigger() {
     await refreshTriggersList()
   } catch (e) {
     triggersMsgOk.value = false
-    triggersMsg.value = e?.message || String(e)
+    triggersMsg.value = errMessage(e)
   }
 }
 
@@ -1151,11 +1236,11 @@ async function addWebhookTrigger() {
     await refreshTriggersList()
   } catch (e) {
     triggersMsgOk.value = false
-    triggersMsg.value = e?.message || String(e)
+    triggersMsg.value = errMessage(e)
   }
 }
 
-async function removeTriggerRow(triggerId) {
+async function removeTriggerRow(triggerId: number) {
   const wid = Number(triggersWorkflowId.value)
   if (!wid || !triggerId) return
   try {
@@ -1165,7 +1250,7 @@ async function removeTriggerRow(triggerId) {
     await refreshTriggersList()
   } catch (e) {
     triggersMsgOk.value = false
-    triggersMsg.value = e?.message || String(e)
+    triggersMsg.value = errMessage(e)
   }
 }
 
@@ -1185,11 +1270,11 @@ async function testWebhookTrigger() {
     triggersMsg.value = `Webhook 测试成功：${JSON.stringify(res).slice(0, 500)}`
   } catch (e) {
     triggersMsgOk.value = false
-    triggersMsg.value = e?.message || String(e)
+    triggersMsg.value = errMessage(e)
   }
 }
 
-async function loadDecomposeGraph(workflowId) {
+async function loadDecomposeGraph(workflowId: number) {
   if (!workflowId) {
     decomposeNodes.value = []
     decomposeEdges.value = []
@@ -1208,27 +1293,28 @@ async function loadDecomposeGraph(workflowId) {
   }
 }
 
-function applySandboxPreset(id) {
+function applySandboxPreset(id: string) {
   const p = WORKFLOW_SANDBOX_PRESETS.find((x) => x.id === id)
   if (!p) return
   sandboxInputJson.value = JSON.stringify(p.input_data, null, 2)
 }
 
-function onSandboxPresetChange(ev) {
-  const v = ev?.target?.value
+function onSandboxPresetChange(ev: Event) {
+  const t = ev.target as HTMLSelectElement | null
+  const v = t?.value
   if (typeof v !== 'string') return
   sandboxPresetId.value = v
   applySandboxPreset(v)
 }
 
-async function openSandboxFor(workflowId) {
+async function openSandboxFor(workflowId: number) {
   const wid = parsePositiveInt(workflowId)
   if (wid > 0) {
     try {
       const detail = await getWorkflowDetailCached(wid)
-      const nodes = Array.isArray(detail?.nodes) ? detail.nodes : []
+      const nodes: WorkflowNodeRow[] = Array.isArray(detail?.nodes) ? (detail.nodes as WorkflowNodeRow[]) : []
       const eNode = nodes.find((n) => n?.node_type === 'employee' && n?.config?.employee_id)
-      if (eNode) sandboxEmployeeId.value = String(eNode.config.employee_id).trim()
+      if (eNode) sandboxEmployeeId.value = String(eNode.config?.employee_id ?? '').trim()
     } catch {
       /* ignore */
     }
@@ -1329,8 +1415,8 @@ function parseSandboxInput() {
   try {
     const o = JSON.parse(raw)
     return typeof o === 'object' && o !== null && !Array.isArray(o) ? o : {}
-  } catch (e) {
-    throw new Error('运行变量须为合法 JSON 对象: ' + (e.message || String(e)))
+  } catch (e: unknown) {
+    throw new Error('运行变量须为合法 JSON 对象: ' + errMessage(e))
   }
 }
 
@@ -1338,7 +1424,7 @@ async function runSandboxValidate() {
   await runSandbox('validate')
 }
 
-async function runSandbox(mode) {
+async function runSandbox(mode: 'validate' | 'mock' | 'real') {
   if (!sandboxWorkflowId.value) {
     flash('请先选择员工和关联工作流', false)
     return
@@ -1367,8 +1453,8 @@ async function runSandbox(mode) {
     } else {
       flash('Mock 测试完成', true)
     }
-  } catch (e) {
-    sandboxError.value = e.message || String(e)
+  } catch (e: unknown) {
+    sandboxError.value = errMessage(e)
     flash(sandboxError.value, false)
     if (mode === 'real') {
       await autoLocateLikelyEmployeeNode()
@@ -1403,14 +1489,14 @@ async function runSandboxReal() {
   await runSandbox('real')
 }
 
-async function runRealPrecheck(workflowId) {
+async function runRealPrecheck(workflowId: number) {
   const detail = await getWorkflowDetailCached(workflowId)
-  const wsNodes = Array.isArray(detail?.nodes) ? detail.nodes : []
+  const wsNodes: WorkflowNodeRow[] = Array.isArray(detail?.nodes) ? (detail.nodes as WorkflowNodeRow[]) : []
   const empNodes = wsNodes.filter((n) => n && n.node_type === 'employee')
-  const issues = []
-  const missingConfig = []
-  const statusErrors = []
-  const issueNodeIds = []
+  const issues: string[] = []
+  const missingConfig: string[] = []
+  const statusErrors: string[] = []
+  const issueNodeIds: number[] = []
   for (const n of empNodes) {
     const cfg = n && typeof n.config === 'object' ? n.config : {}
     const eid = String(cfg.employee_id || '').trim()
@@ -1428,8 +1514,8 @@ async function runRealPrecheck(workflowId) {
         statusErrors.push(`员工 ${eid} 状态异常：${st.status}`)
         issueNodeIds.push(parsePositiveInt(n.id))
       }
-    } catch (e) {
-      statusErrors.push(`员工 ${eid} 状态检查失败：${e?.message || String(e)}`)
+    } catch (e: unknown) {
+      statusErrors.push(`员工 ${eid} 状态检查失败：${errMessage(e)}`)
       issueNodeIds.push(parsePositiveInt(n.id))
     }
   }
@@ -1444,7 +1530,7 @@ async function runRealPrecheck(workflowId) {
   }
 }
 
-async function autoLocateLikelyEmployeeNode(preferredNodeIds = []) {
+async function autoLocateLikelyEmployeeNode(preferredNodeIds: number[] = []) {
   const targetWorkflowId = parsePositiveInt(sandboxWorkflowId.value)
   if (!targetWorkflowId) return
   let targetNodeId = parsePositiveInt(preferredNodeIds[0])
@@ -1489,8 +1575,8 @@ async function createWorkflow() {
     homeLlmHint.value = ''
     homeIntentHint.value = ''
     await loadWorkflows()
-  } catch (e) {
-    flash('创建工作流失败: ' + (e.message || String(e)), false)
+  } catch (e: unknown) {
+    flash('创建工作流失败: ' + errMessage(e), false)
   }
 }
 
@@ -1502,11 +1588,11 @@ watch(showCreateModal, (open) => {
 })
 
 // 编辑工作流
-function openV2Editor(workflowId) {
+function openV2Editor(workflowId: number) {
   router.push({ name: 'workflow-v2-editor', params: { id: String(workflowId) } })
 }
 
-async function editWorkflow(workflowId) {
+async function editWorkflow(workflowId: number) {
   loading.value = true
   try {
     const res = await api.getWorkflow(workflowId)
@@ -1515,8 +1601,8 @@ async function editWorkflow(workflowId) {
     edges.value = res.edges
     activeTab.value = 'editor'
     await loadDecomposeGraph(workflowId)
-  } catch (e) {
-    flash('加载工作流失败: ' + (e.message || String(e)), false)
+  } catch (e: unknown) {
+    flash('加载工作流失败: ' + errMessage(e), false)
   } finally {
     loading.value = false
   }
@@ -1539,8 +1625,8 @@ async function saveWorkflow() {
     for (const n of nodes.value) {
       const created = await api.addWorkflowNode(
         wid,
-        n.node_type,
-        n.name,
+        String(n.node_type ?? 'start'),
+        String(n.name ?? ''),
         n.config || {},
         n.position_x ?? 0,
         n.position_y ?? 0,
@@ -1556,26 +1642,26 @@ async function saveWorkflow() {
     }
     await editWorkflow(wid)
     flash('已同步到服务端，可进行沙盒测试或生产执行')
-  } catch (e) {
-    flash('保存失败: ' + (e.message || String(e)), false)
+  } catch (e: unknown) {
+    flash('保存失败: ' + errMessage(e), false)
   } finally {
     loading.value = false
   }
 }
 
 // 切换工作流状态
-async function toggleWorkflowStatus(workflowId, isActive) {
+async function toggleWorkflowStatus(workflowId: number, isActive: boolean) {
   try {
     await api.updateWorkflow(workflowId, null, null, isActive)
     flash(`工作流已${isActive ? '激活' : '停用'}`)
     await loadWorkflows()
-  } catch (e) {
-    flash('更新工作流状态失败: ' + (e.message || String(e)), false)
+  } catch (e: unknown) {
+    flash('更新工作流状态失败: ' + errMessage(e), false)
   }
 }
 
 // 删除工作流
-async function deleteWorkflow(workflowId) {
+async function deleteWorkflow(workflowId: number) {
   if (!confirm('确定要删除这个工作流吗？')) {
     return
   }
@@ -1584,8 +1670,8 @@ async function deleteWorkflow(workflowId) {
     await api.deleteWorkflow(workflowId)
     flash('工作流删除成功')
     await loadWorkflows()
-  } catch (e) {
-    flash('删除工作流失败: ' + (e.message || String(e)), false)
+  } catch (e: unknown) {
+    flash('删除工作流失败: ' + errMessage(e), false)
   }
 }
 
@@ -1621,8 +1707,8 @@ async function bulkDeleteInactiveWorkflows() {
     if (activeTab.value === 'triggers' && triggersWorkflowId.value) {
       await onTriggersWorkflowChange()
     }
-  } catch (e) {
-    flash(`批量删除中断（已删 ${okCount} 个）：${e.message || String(e)}`, false)
+  } catch (e: unknown) {
+    flash(`批量删除中断（已删 ${okCount} 个）：${errMessage(e)}`, false)
     await loadWorkflows()
   } finally {
     bulkDeleteInactiveBusy.value = false
@@ -1630,19 +1716,19 @@ async function bulkDeleteInactiveWorkflows() {
 }
 
 // 执行工作流（生产路径，写入执行记录）
-async function executeWorkflow(workflowId) {
+async function executeWorkflow(workflowId: number) {
   try {
     await api.executeWorkflow(workflowId, {})
     flash('工作流执行成功')
     activeTab.value = 'executions'
     await loadExecutions()
-  } catch (e) {
-    flash('执行工作流失败: ' + (e.message || String(e)), false)
+  } catch (e: unknown) {
+    flash('执行工作流失败: ' + errMessage(e), false)
   }
 }
 
 // 添加节点
-function addNode(type) {
+function addNode(type: string) {
   const node = {
     id: Date.now(),
     node_type: type,
@@ -1655,7 +1741,7 @@ function addNode(type) {
 }
 
 // 添加员工节点
-function addEmployeeNode(employeeId, employeeName) {
+function addEmployeeNode(employeeId: string | number, employeeName: string) {
   const node = {
     id: Date.now(),
     node_type: 'employee',
@@ -1690,7 +1776,7 @@ function addKnowledgeSearchNode() {
 }
 
 // 删除节点
-function deleteNode(nodeId) {
+function deleteNode(nodeId: number) {
   // 删除节点
   nodes.value = nodes.value.filter(node => node.id !== nodeId)
   // 删除相关的边
@@ -1700,7 +1786,7 @@ function deleteNode(nodeId) {
 }
 
 // 显示节点配置
-function showNodeConfig(nodeId) {
+function showNodeConfig(nodeId: number) {
   const node = nodes.value.find(n => n.id === nodeId)
   if (node) {
     selectedNode.value = JSON.parse(JSON.stringify(node))
@@ -1710,20 +1796,22 @@ function showNodeConfig(nodeId) {
 
 // 保存节点配置
 function saveNodeConfig() {
-  if (selectedNode.value) {
-    const index = nodes.value.findIndex(n => n.id === selectedNode.value.id)
+  const sel = selectedNode.value
+  if (sel) {
+    const index = nodes.value.findIndex((n) => n.id === sel.id)
     if (index !== -1) {
-      nodes.value[index] = JSON.parse(JSON.stringify(selectedNode.value))
+      nodes.value[index] = JSON.parse(JSON.stringify(sel))
     }
     showNodeConfigModal.value = false
   }
 }
 
 // 开始拖拽
-function startDrag(event, node) {
+function startDrag(event: MouseEvent, node: WorkflowNodeRow) {
   dragging.value = true
   dragNode.value = node
-  const rect = event.target.getBoundingClientRect()
+  const el = event.target as HTMLElement
+  const rect = el.getBoundingClientRect()
   dragOffset.value = {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top
@@ -1731,14 +1819,14 @@ function startDrag(event, node) {
 }
 
 // 开始连接
-function startConnect(event, nodeId, port) {
+function startConnect(event: MouseEvent, nodeId: number, port: string) {
   connecting.value = true
   connectStart.value = nodeId
   connectStartPort.value = port
 }
 
 // 获取边的路径
-function getEdgePath(edge) {
+function getEdgePath(edge: WorkflowEdgeRow) {
   const sourceNode = nodes.value.find(n => n.id === edge.source_node_id)
   const targetNode = nodes.value.find(n => n.id === edge.target_node_id)
   if (!sourceNode || !targetNode) return ''
@@ -1747,13 +1835,14 @@ function getEdgePath(edge) {
 }
 
 // 选择边
-function selectEdge(edgeId) {
+function selectEdge(edgeId: number) {
   // 这里可以添加边的编辑逻辑
   console.log('Selected edge:', edgeId)
 }
 
 // 监听鼠标移动
-function onMouseMove(event) {
+function onMouseMove(event: MouseEvent) {
+  if (!canvas.value) return
   if (dragging.value && dragNode.value) {
     const canvasRect = canvas.value.getBoundingClientRect()
     dragNode.value.position_x = event.clientX - canvasRect.left - dragOffset.value.x
@@ -1771,8 +1860,9 @@ function onMouseUp() {
 }
 
 // 监听点击
-function onCanvasClick(event) {
-  if (!event.target.closest('.workflow-node') && !event.target.closest('.connection-line')) {
+function onCanvasClick(event: MouseEvent) {
+  const t = event.target as HTMLElement | null
+  if (!t?.closest('.workflow-node') && !t?.closest('.connection-line')) {
     // 点击空白处，取消选择
   }
 }

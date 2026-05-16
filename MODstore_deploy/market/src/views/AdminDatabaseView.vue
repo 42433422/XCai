@@ -150,19 +150,59 @@ const loadingDb = ref(false)
 const message = ref('')
 const messageOk = ref(true)
 
-const dbUsers = ref([])
-const dbWallets = ref([])
-const dbCatalog = ref([])
-const dbTransactions = ref([])
-const pendingRefunds = ref([])
+interface RefundAdminRow {
+  id: number | string
+  user_id?: number | string
+  order_no?: string
+  amount?: number
+  reason?: string
+  created_at?: string
+}
+interface AdminUserRow {
+  id: number | string
+  username?: string
+  email?: string
+  is_admin?: boolean
+  created_at?: string
+}
+interface WalletRow {
+  id: number | string
+  user_id?: number | string
+  balance: number
+  updated_at?: string
+}
+interface CatalogRow {
+  id: number | string
+  name?: string
+  pkg_id?: string
+  version?: string
+  price: number
+  downloads?: number
+  created_at?: string
+}
+interface TransactionRow {
+  id: number | string
+  user_id?: number | string
+  amount: number
+  txn_type?: string
+  status?: string
+  description?: string
+  created_at?: string
+}
 
-function flash(msg, ok = true) {
+const dbUsers = ref<AdminUserRow[]>([])
+const dbWallets = ref<WalletRow[]>([])
+const dbCatalog = ref<CatalogRow[]>([])
+const dbTransactions = ref<TransactionRow[]>([])
+const pendingRefunds = ref<RefundAdminRow[]>([])
+
+function flash(msg: string, ok = true) {
   message.value = msg
   messageOk.value = ok
   setTimeout(() => { message.value = '' }, 5000)
 }
 
-function formatTime(iso) {
+function formatTime(iso: string | undefined): string {
   if (!iso) return '—'
   const d = new Date(iso)
   return d.toLocaleString('zh-CN', {
@@ -191,31 +231,31 @@ async function loadDatabase() {
     const [refundsR, usersR, walletsR, catalogR, txnsR] = settled
 
     if (refundsR.status === 'fulfilled') {
-      pendingRefunds.value = refundsR.value.refunds || []
+      pendingRefunds.value = (refundsR.value.refunds || []) as RefundAdminRow[]
     } else {
       pendingRefunds.value = []
       errs.push(`${labels[0]}: ${errMsg(refundsR.reason)}`)
     }
     if (usersR.status === 'fulfilled') {
-      dbUsers.value = usersR.value.users || []
+      dbUsers.value = (usersR.value.users || []) as AdminUserRow[]
     } else {
       dbUsers.value = []
       errs.push(`${labels[1]}: ${errMsg(usersR.reason)}`)
     }
     if (walletsR.status === 'fulfilled') {
-      dbWallets.value = walletsR.value.items || []
+      dbWallets.value = (walletsR.value.items || []) as WalletRow[]
     } else {
       dbWallets.value = []
       errs.push(`${labels[2]}: ${errMsg(walletsR.reason)}`)
     }
     if (catalogR.status === 'fulfilled') {
-      dbCatalog.value = catalogR.value.items || []
+      dbCatalog.value = (catalogR.value.items || []) as CatalogRow[]
     } else {
       dbCatalog.value = []
       errs.push(`${labels[3]}: ${errMsg(catalogR.reason)}`)
     }
     if (txnsR.status === 'fulfilled') {
-      dbTransactions.value = txnsR.value.items || []
+      dbTransactions.value = (txnsR.value.items || []) as TransactionRow[]
     } else {
       dbTransactions.value = []
       errs.push(`${labels[4]}: ${errMsg(txnsR.reason)}`)
@@ -229,12 +269,12 @@ async function loadDatabase() {
   }
 }
 
-async function reviewRefund(row, action) {
+async function reviewRefund(row: RefundAdminRow, action: 'approve' | 'reject') {
   const verb = action === 'approve' ? '通过' : '拒绝'
   const note = window.prompt(`确认${verb}退款申请 #${row.id}？可填写管理员备注：`, '') ?? null
   if (note === null) return
   try {
-    await api.refundsAdminReview(row.id, action, note)
+    await api.refundsAdminReview(Number(row.id), action, note)
     flash(`退款申请 #${row.id} 已${verb}`)
     await loadDatabase()
   } catch (e) {

@@ -20,6 +20,12 @@ export type NodeKind =
   | 'eskill'
   | 'vibe_skill'
   | 'vibe_workflow'
+  | 'http_request'
+  | 'code_execute'
+  | 'data_transform'
+  | 'loop'
+  | 'parallel'
+  | 'sub_workflow'
 
 export type NodeCategory = 'flow' | 'employee' | 'logic' | 'integration' | 'trigger' | 'data'
 

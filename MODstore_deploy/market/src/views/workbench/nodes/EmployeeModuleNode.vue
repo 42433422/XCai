@@ -24,8 +24,9 @@ const summary = computed(() => {
     return sp ? sp.slice(0, 60) + (sp.length > 60 ? '…' : '') : '未填写提示词'
   }
   if (props.data.moduleKind === 'skills') {
-    const arr = s as unknown[]
-    return Array.isArray(arr) && arr.length ? `${arr.length} 个技能` : '暂无技能'
+    const rawSlice: unknown = s
+    const arr = Array.isArray(rawSlice) ? rawSlice : []
+    return arr.length ? `${arr.length} 个技能` : '暂无技能'
   }
   if (props.data.moduleKind === 'workflow_heart') {
     const wf = s as Record<string, unknown>

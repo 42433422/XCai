@@ -2,7 +2,7 @@ import { ref, computed } from 'vue'
 
 const hostUrl = ref('')
 const connected = ref(false)
-const hostInfo = ref(null)
+const hostInfo = ref<Record<string, unknown> | null>(null)
 
 export function useHostConnection() {
   const statusText = computed(() => {
@@ -14,7 +14,7 @@ export function useHostConnection() {
     return connected.value ? 'ok' : 'pending'
   })
 
-  function setConnected(url, info) {
+  function setConnected(url: string, info: Record<string, unknown> | null = null) {
     hostUrl.value = url
     connected.value = true
     hostInfo.value = info

@@ -378,15 +378,22 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
+import { api } from '@/api'
 
 const router = useRouter()
 
 /** ``public/hero-video.mp4``，随 Vite ``base``（如 ``/market/``）解析 */
 const heroVideoUrl = `${import.meta.env.BASE_URL}hero-video.mp4`
 
+interface MarketItem {
+  id: number | string
+  name: string
+  description?: string
+  price: number
+}
+
 const loading = ref(false)
-const items = ref([])
+const items = ref<MarketItem[]>([])
 const isLoggedIn = ref(false)
 const username = ref('')
 const userEmail = ref('')
@@ -410,7 +417,7 @@ const uploadForm = ref({
   origin_type: 'original',
   ip_risk_level: 'low',
 })
-const uploadFile = ref(null)
+const uploadFile = ref<File | null>(null)
 const uploadError = ref('')
 const uploadSuccess = ref(false)
 const uploading = ref(false)
@@ -433,7 +440,7 @@ const workbenchLink = computed(() =>
     : { path: '/login', query: { redirect: '/workbench' } },
 )
 
-function truncate(str, len) {
+function truncate(str: string | undefined | null, len: number): string {
   if (!str) return ''
   return str.length > len ? str.slice(0, len) + '...' : str
 }
@@ -460,8 +467,9 @@ async function refreshLandingAuth() {
   }
 }
 
-function handleFileChange(event) {
-  uploadFile.value = event.target.files[0]
+function handleFileChange(event: Event) {
+  const input = event.target as HTMLInputElement | null
+  uploadFile.value = input?.files?.[0] ?? null
 }
 
 async function submitContact() {
@@ -481,7 +489,7 @@ async function submitContact() {
     contactSuccess.value = true
     contactForm.value = { name: '', email: '', phone: '', company: '', message: '' }
   } catch (e) {
-    contactError.value = e?.message || '提交失败，请稍后重试'
+    contactError.value = (e as Error)?.message || '提交失败，请稍后重试'
   } finally {
     contactSubmitting.value = false
   }
@@ -555,7 +563,7 @@ async function uploadEmployee() {
       showUploadModal.value = false
     }, 3000)
   } catch (error) {
-    uploadError.value = error.message || '上传失败，请重试'
+    uploadError.value = (error as Error)?.message || '上传失败，请重试'
   } finally {
     uploading.value = false
   }
@@ -565,7 +573,7 @@ onMounted(async () => {
   await refreshLandingAuth()
   try {
     const res = await api.catalog('', '', 4, 0)
-    items.value = res.items
+    items.value = (res?.items ?? []) as MarketItem[]
   } catch {
     items.value = []
   }

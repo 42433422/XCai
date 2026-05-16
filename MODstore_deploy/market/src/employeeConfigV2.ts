@@ -12,7 +12,11 @@ function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v))
 }
 
-export function createEmptyEmployeeConfigV2(): EmployeeConfigRecord {
+export function createEmptyEmployeeConfigV2(opts?: {
+  model?: Partial<{ provider: string; model_name: string }>
+}): EmployeeConfigRecord {
+  const provider = String(opts?.model?.provider ?? '').trim() || 'auto'
+  const model_name = String(opts?.model?.model_name ?? '').trim() || 'auto'
   return {
     identity: clone(DEFAULT_IDENTITY),
     perception: undefined,
@@ -29,8 +33,8 @@ export function createEmptyEmployeeConfigV2(): EmployeeConfigRecord {
         behavior_rules: [],
         few_shot_examples: [],
         model: {
-          provider: 'deepseek',
-          model_name: 'deepseek-chat',
+          provider,
+          model_name,
           temperature: 0.7,
           max_tokens: 4000,
           top_p: 0.9,
@@ -179,8 +183,11 @@ export function validateEmployeeConfigV2(config: unknown): { valid: boolean; err
     errs.push('role.tone 仅支持 formal/friendly/professional/casual')
   }
   const provider = String(c?.cognition?.agent?.model?.provider || '')
-  if (provider && !['deepseek', 'openai', 'anthropic', 'local'].includes(provider)) {
-    errs.push('model.provider 仅支持 deepseek/openai/anthropic/local')
+  if (
+    provider &&
+    !['deepseek', 'openai', 'anthropic', 'local', 'auto'].includes(provider)
+  ) {
+    errs.push('model.provider 仅支持 deepseek/openai/anthropic/local/auto')
   }
   const model = c?.cognition?.agent?.model || {}
   const temp = Number(model.temperature)

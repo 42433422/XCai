@@ -577,14 +577,14 @@ async function activate() {
   if (!workflowId.value) return
   try {
     await api.activateScriptWorkflow(workflowId.value)
-    router.push({ path: `/script-workflows/${workflowId.value}` })
+    router.push({ name: 'workbench-script-workflow-detail', params: { id: workflowId.value } })
   } catch (e: any) {
     alert('启用失败：' + (e.message || e))
   }
 }
 
 function goList() {
-  router.push({ path: '/script-workflows' })
+  router.push({ name: 'workbench-script-workflows' })
 }
 
 onMounted(async () => {

@@ -60,7 +60,7 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
+import { api } from '@/api'
 
 const router = useRouter()
 const username = ref('')
@@ -71,7 +71,7 @@ const loading = ref(false)
 const sendCodeLoading = ref(false)
 const err = ref('')
 const cooldown = ref(0)
-let tick = null
+let tick: ReturnType<typeof setInterval> | null = null
 
 const emailTrimmed = computed(() => email.value.trim())
 
@@ -112,7 +112,7 @@ async function sendCode() {
     await api.sendRegisterVerificationCode(emailTrimmed.value)
     startCooldown(60)
   } catch (e) {
-    err.value = e.message
+    err.value = (e as Error)?.message || String(e)
   } finally {
     sendCodeLoading.value = false
   }
@@ -135,7 +135,7 @@ async function doRegister() {
     await api.register(username.value, password.value, em, code)
     await router.replace('/workbench')
   } catch (e) {
-    err.value = e.message
+    err.value = (e as Error)?.message || String(e)
   } finally {
     loading.value = false
   }

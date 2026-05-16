@@ -16,7 +16,7 @@
       :is-speaking="isSpeaking"
       :is-work-mode="mode === 'operating'"
       :is-monitor-mode="mode === 'thinking' || mode === 'listening'"
-      :reduce-effects="mode === 'idle'"
+      :reduce-effects="shouldReduceEffects"
     />
     <!-- 未读红点 -->
     <span v-if="unreadCount > 0 && !isOpen" class="butler-ball__badge">
@@ -39,6 +39,10 @@ const { isOpen, mode, consentGiven, unreadCount } = storeToRefs(agentStore)
 const props = defineProps<{ isSpeaking?: boolean }>()
 
 const ballRef = ref<HTMLButtonElement | null>(null)
+const prefersReducedMotion =
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 // 拖拽逻辑
 let isDragging = false
@@ -47,6 +51,7 @@ let dragStartY = 0
 let pointerMoved = false
 
 const pos = computed(() => agentStore.position)
+const shouldReduceEffects = computed(() => prefersReducedMotion && mode.value === 'idle')
 
 function onPointerDown(e: PointerEvent) {
   if (e.button !== 0) return
@@ -123,6 +128,17 @@ onBeforeUnmount(() => {
   height: 64px;
   transform: scale(0.4) !important;
   transform-origin: center center;
+}
+
+/* 极小尺寸下外圈 halo、内圈描边会糊成「方框蓝边」，只保留球体本体渐变 */
+.butler-ball :deep(.jarvis-core::before) {
+  display: none;
+}
+
+.butler-ball :deep(.jarvis-sphere::before) {
+  opacity: 0;
+  border: none;
+  box-shadow: none;
 }
 
 .butler-ball:hover {

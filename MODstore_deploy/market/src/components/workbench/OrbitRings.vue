@@ -37,7 +37,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 
 const props = defineProps({
@@ -98,6 +98,8 @@ const modeClass = computed(() => {
   place-items: center;
   transform-style: preserve-3d;
   perspective: 1000px;
+  /* 限制内部 filter/shadow 的重绘范围，不向外传导 */
+  contain: paint;
 }
 
 .orbit-rings__wire {
@@ -131,11 +133,10 @@ const modeClass = computed(() => {
   z-index: 11;
 }
 
-/* 待机轻量模式：少Layers、少阴影动画、去掉 will-change _PROMOTION 开销 */
-.orbit-rings--lite .orbit-rings__wire {
-  will-change: auto;
-}
+/* 待机轻量：仅两圈细线 + 极慢旋转（animation 只用 transform），远比冻结阴影/多层文字便宜 */
 
+.orbit-rings--lite .orbit-rings__wire.ring-3,
+.orbit-rings--lite .orbit-rings__wire.ring-4,
 .orbit-rings--lite .orbit-rings__wire.ring-5,
 .orbit-rings--lite .orbit-rings__wire.ring-6,
 .orbit-rings--lite .orbit-rings__wire.ring-7,
@@ -143,40 +144,24 @@ const modeClass = computed(() => {
   display: none;
 }
 
+/* 待机：去掉弧形文字环（暂停后易糊成脏边），只保留少量同心线 */
+.orbit-rings--lite .orbit-rings__tool {
+  display: none;
+}
+
 .orbit-rings--lite .orbit-rings__wire.ring-1 {
-  animation-duration: 11s;
+  border-width: 2px;
+  animation-duration: 96s;
+  will-change: transform;
   box-shadow:
-    0 0 12px var(--orbit-glow-strong, rgba(0, 255, 255, 0.45)),
-    inset 0 0 10px var(--orbit-inset, rgba(0, 255, 255, 0.15));
+    0 0 14px var(--orbit-glow-strong, rgba(0, 255, 255, 0.38)),
+    inset 0 0 12px var(--orbit-inset, rgba(0, 255, 255, 0.12));
 }
 
 .orbit-rings--lite .orbit-rings__wire.ring-2 {
-  animation-duration: 14s;
-}
-
-.orbit-rings--lite .orbit-rings__wire.ring-3 {
-  animation-duration: 17s;
-}
-
-.orbit-rings--lite .orbit-rings__wire.ring-4 {
-  animation-duration: 20s;
-}
-
-.orbit-rings--lite .orbit-rings__tool {
-  will-change: auto;
-}
-
-.orbit-rings--lite .orbit-rings__tool.tool-ring-1 {
-  animation-duration: 28s;
-}
-
-.orbit-rings--lite .orbit-rings__tool.tool-ring-2 {
-  animation-duration: 36s;
-}
-
-.orbit-rings--lite .orbit-rings__tool-text {
-  animation: none;
-  filter: drop-shadow(0 0 4px var(--orbit-text-glow, rgba(0, 255, 255, 0.45)));
+  opacity: 0.55;
+  animation-duration: 132s;
+  will-change: transform;
 }
 
 .orbit-rings__wire.ring-2 {
@@ -239,7 +224,11 @@ const modeClass = computed(() => {
   opacity: 0.52;
   animation-duration: 22s;
   animation-direction: reverse;
-  animation-name: wbVoiceRingRotate, wbVoiceRingBreath;
+  animation-name: wbVoiceRingRotate;
+  /* 呼吸不再动画 box-shadow（外圈已有多层），保留中等强度静态光晕 */
+  box-shadow:
+    0 0 8px var(--orbit-glow, rgba(0, 255, 255, 0.26)),
+    inset 0 0 5px var(--orbit-inset, rgba(0, 255, 255, 0.09));
   z-index: 4;
 }
 
@@ -345,17 +334,6 @@ const modeClass = computed(() => {
 @keyframes wbVoiceRingRotateTiltY {
   0% { transform: translate(-50%, -50%) rotateY(68deg) rotateZ(360deg); }
   100% { transform: translate(-50%, -50%) rotateY(68deg) rotateZ(0deg); }
-}
-
-@keyframes wbVoiceRingBreath {
-  0%, 100% {
-    box-shadow: 0 0 4px var(--orbit-glow, rgba(0, 255, 255, 0.18));
-  }
-  50% {
-    box-shadow:
-      0 0 12px var(--orbit-glow, rgba(0, 255, 255, 0.34)),
-      inset 0 0 6px var(--orbit-inset, rgba(0, 255, 255, 0.12));
-  }
 }
 
 @keyframes wbVoiceCodeRingRotate1 {

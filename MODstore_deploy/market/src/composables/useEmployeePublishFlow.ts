@@ -1,5 +1,20 @@
-import { computed, ref } from 'vue'
+import { computed, ref, type Ref } from 'vue'
 import { api } from '../api'
+import type { WorkflowSandboxResponse } from '../types/api'
+
+export interface EmployeePublishFlowInputs {
+  form: Ref<{ industry?: string; price?: number; [extra: string]: unknown }>
+  selectedFile: Ref<File | null>
+  resolvedWorkflowId: Ref<number>
+  linkedModId: Ref<string>
+  listingHints: Ref<{ industryCoerced?: string; priceFromManifest?: number | null; [k: string]: unknown }>
+  employeeConfigV2: Ref<unknown>
+}
+
+export interface AuditReport {
+  summary?: { pass?: boolean; [k: string]: unknown }
+  [k: string]: unknown
+}
 
 export function useEmployeePublishFlow({
   form,
@@ -8,16 +23,16 @@ export function useEmployeePublishFlow({
   linkedModId,
   listingHints,
   employeeConfigV2,
-}) {
-  const publishWizardStep = ref('compose')
+}: EmployeePublishFlowInputs) {
+  const publishWizardStep = ref<'compose' | 'testing' | 'listing'>('compose')
   const listingDefaultsApplied = ref(false)
   const wfSandboxInputJson = ref('{\n  "topic": "示例主题"\n}')
   const wfSandboxLoading = ref(false)
   const wfSandboxErr = ref('')
-  const wfSandboxReport = ref(null)
+  const wfSandboxReport = ref<WorkflowSandboxResponse | null>(null)
   const wfSandboxOk = ref(false)
   const dockerLocalAck = ref(false)
-  const auditReport = ref(null)
+  const auditReport = ref<AuditReport | null>(null)
   const auditLoading = ref(false)
   const auditErr = ref('')
 
@@ -64,13 +79,13 @@ export function useEmployeePublishFlow({
       wfSandboxReport.value = r2
       wfSandboxOk.value = r2.ok === true
     } catch (e) {
-      wfSandboxErr.value = e.message || String(e)
+      wfSandboxErr.value = (e as Error)?.message || String(e)
     } finally {
       wfSandboxLoading.value = false
     }
   }
 
-  async function runFiveDimAuditClick(packageArtifact) {
+  async function runFiveDimAuditClick(packageArtifact: string) {
     if (!selectedFile.value || !sandboxGateOk.value) return
     auditLoading.value = true
     auditErr.value = ''
@@ -81,9 +96,9 @@ export function useEmployeePublishFlow({
       const meta: Record<string, unknown> = { employee_config_v2: employeeConfigV2.value }
       if (art === 'mod' || art === 'employee_pack') meta.artifact = art
       if (linkedModId.value) meta.probe_mod_id = linkedModId.value
-      auditReport.value = await api.auditPackage(selectedFile.value, meta)
+      auditReport.value = (await api.auditPackage(selectedFile.value, meta)) as AuditReport
     } catch (e) {
-      auditErr.value = e.message || String(e)
+      auditErr.value = (e as Error)?.message || String(e)
     } finally {
       auditLoading.value = false
     }

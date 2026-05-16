@@ -13,7 +13,7 @@
  * 顶层壳分桶（与 router/index.ts 的 component 一一对应）：
  *  - WorkbenchShell    → name === 'workbench-shell'（实际路径 /workbench/shell/...）
  *  - WorkbenchView     → /workbench、/workbench/home、/workbench/unified、/workbench/mod/* 等
- *  - WorkbenchHomeView → 根路径 / 或 name === 'home'
+ *                       也包括根路径 /（重定向到 /workbench/home 后由 WorkbenchView 承载）
  *  - 其他页面以 fullPath 作 key
  *
  * 历史坑：之前用 `startsWith('/workbench-shell')`（带连字符）想分出 WorkbenchShell，
@@ -31,7 +31,6 @@ export function resolveTopLevelRouterCacheKey(route: TopLevelRouteSnapshot): str
   const n = typeof route.name === 'string' ? route.name : route.name ? String(route.name) : ''
 
   if (n === 'workbench-shell') return 'cache-workbench-shell-v2'
-  if (p === '/workbench' || p.startsWith('/workbench/')) return 'cache-workbench-view'
-  if (n === 'home' || p === '/') return 'cache-workbench-home-root'
+  if (p === '/workbench' || p.startsWith('/workbench/') || p === '/') return 'cache-workbench-view'
   return route.fullPath || p || '/'
 }

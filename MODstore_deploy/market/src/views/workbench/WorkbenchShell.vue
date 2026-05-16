@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LeftRail from './panels/LeftRail.vue'
 import CanvasStage from './panels/CanvasStage.vue'
@@ -7,8 +7,11 @@ import RightRail from './panels/RightRail.vue'
 import { useWorkbenchStore } from '../../stores/workbench'
 import { useAuthStore } from '../../stores/auth'
 import { api } from '../../api'
+import { ApiError } from '../../infrastructure/http/client'
 import type { TargetKind } from '../../stores/workbench'
 import { createEmptyEmployeeConfigV2, upgradeLegacyToV2 } from '../../employeeConfigV2'
+import type { LlmStatusResponse } from '../../domain/llm/types'
+import { resolveDefaultEmployeeLlmFromStatusAndCatalog } from '../../domain/llm/defaultEmployeeLlm'
 
 const store = useWorkbenchStore()
 const auth = useAuthStore()
@@ -75,6 +78,23 @@ function firstPositiveNumber(...vals: unknown[]): number {
     if (Number.isFinite(n) && n > 0) return n
   }
   return 0
+}
+
+/** 新建或占位员工：默认厂商/模型与部署侧可用密钥对齐（平台优先） */
+async function buildEmptyEmployeeManifestForEditor(): Promise<Record<string, unknown>> {
+  try {
+    const [statusRaw, catalogRaw] = await Promise.all([
+      api.llmStatus().catch(() => null),
+      api.llmCatalog(false).catch(() => null),
+    ])
+    const picked = resolveDefaultEmployeeLlmFromStatusAndCatalog(
+      statusRaw as LlmStatusResponse | null,
+      catalogRaw as { providers?: Array<{ provider: string; models?: string[] }> } | null,
+    )
+    return createEmptyEmployeeConfigV2({ model: picked }) as Record<string, unknown>
+  } catch {
+    return createEmptyEmployeeConfigV2() as Record<string, unknown>
+  }
 }
 
 function normalizeEmployeePackManifest(
@@ -161,8 +181,8 @@ function normalizeEmployeePackManifest(
       behavior_rules: Array.isArray(v2Agent.behavior_rules) ? v2Agent.behavior_rules : [],
       few_shot_examples: Array.isArray(v2Agent.few_shot_examples) ? v2Agent.few_shot_examples : [],
       model: {
-        provider: firstNonEmpty(v2Model.provider, 'deepseek'),
-        model_name: firstNonEmpty(v2Model.model_name, 'deepseek-chat'),
+        provider: firstNonEmpty(v2Model.provider, 'auto'),
+        model_name: firstNonEmpty(v2Model.model_name, 'auto'),
         temperature: Number.isFinite(Number(v2Model.temperature)) ? Number(v2Model.temperature) : 0.7,
         max_tokens: Number.isFinite(Number(v2Model.max_tokens)) ? Number(v2Model.max_tokens) : 4000,
         top_p: Number.isFinite(Number(v2Model.top_p)) ? Number(v2Model.top_p) : 0.9,
@@ -203,11 +223,11 @@ async function loadTarget(kind: TargetKind, id: string | null) {
       const prefillRaw = sessionStorage.getItem('modstore_employee_prefill')
       if (prefillRaw) {
         try {
-          const prefill = JSON.parse(prefillRaw) as Record<string, unknown>
-          const prefillId = String(prefill.id ?? prefill['identity']?.['id'] ?? '')
+          const prefill = JSON.parse(prefillRaw) as Record<string, any>
+          const prefillId = String(prefill.id ?? prefill.identity?.id ?? '')
           if (prefillId === id || !prefillId) {
             sessionStorage.removeItem('modstore_employee_prefill')
-            const name = String(prefill.name ?? prefill['identity']?.['name'] ?? id)
+            const name = String(prefill.name ?? prefill.identity?.name ?? id)
             store.setTarget(kind, id, prefill, name)
             _snapshotBaseline(id, prefill)
             store.loadEligibleWorkflows()
@@ -222,7 +242,11 @@ async function loadTarget(kind: TargetKind, id: string | null) {
       try {
         pack = await api.getEmployeeManifest(id) as Record<string, unknown>
       } catch (err) {
-        loadError.value = `加载员工包失败：${(err as Error)?.message || String(err)}`
+        let extra = ''
+        if (err instanceof ApiError && err.status === 503) {
+          extra = '（503：请在 Network 中查看是同一路由还是 /api/llm/status、/api/llm/catalog 等。）'
+        }
+        loadError.value = `加载员工包失败：${(err as Error)?.message || String(err)}${extra}`
         pack = null
       }
       if (pack) {
@@ -230,13 +254,13 @@ async function loadTarget(kind: TargetKind, id: string | null) {
         store.setTarget(kind, id, manifest, displayName)
         _snapshotBaseline(id, manifest)
       } else {
-        const empty = createEmptyEmployeeConfigV2() as Record<string, unknown>
+        const empty = await buildEmptyEmployeeManifestForEditor()
         store.setTarget(kind, id, empty, id)
         _snapshotBaseline(id, empty)
       }
     } else if (kind === 'employee') {
-      // New employee
-      store.setTarget('employee', null, createEmptyEmployeeConfigV2() as Record<string, unknown>, '新员工')
+      // New employee：默认 cognition.agent.model 对齐当前账号可用平台/BYOK 厂商
+      store.setTarget('employee', null, await buildEmptyEmployeeManifestForEditor(), '新员工')
     } else {
       // workflow / mod / skill — placeholder targets
       store.setTarget(kind, id, {}, id ?? kind)
@@ -258,10 +282,8 @@ onMounted(async () => {
   // If coming from wb-home generation and manifest has no workflow linked, apply the generated wfId
   const wfId = Number(route.query.wfId ?? 0)
   if (wfId > 0) {
-    const curWfId = Number(
-      (store.target.manifest as Record<string, unknown>)
-        ?.collaboration?.workflow?.workflow_id ?? 0,
-    )
+    const mf = store.target.manifest as Record<string, any>
+    const curWfId = Number(mf?.collaboration?.workflow?.workflow_id ?? 0)
     if (curWfId === 0) {
       store.patchManifest('collaboration.workflow.workflow_id', wfId)
     }
@@ -296,6 +318,38 @@ function switchTarget(kind: TargetKind) {
 const leftWidth = ref(props.embedded ? 260 : 280)
 const rightWidth = ref(props.embedded ? 280 : 300)
 const sidePanelsCollapsed = ref(false)
+
+function onLeftResizeMouseDown(e: MouseEvent) {
+  const win = globalThis as unknown as Window
+  const startX = e.clientX
+  const startW = leftWidth.value
+  const move = (ev: Event) => {
+    const me = ev as MouseEvent
+    leftWidth.value = Math.max(220, Math.min(480, startW + me.clientX - startX))
+  }
+  const up = () => {
+    win.removeEventListener('mousemove', move)
+    win.removeEventListener('mouseup', up)
+  }
+  win.addEventListener('mousemove', move)
+  win.addEventListener('mouseup', up)
+}
+
+function onRightResizeMouseDown(e: MouseEvent) {
+  const win = globalThis as unknown as Window
+  const startX = e.clientX
+  const startW = rightWidth.value
+  const move = (ev: Event) => {
+    const me = ev as MouseEvent
+    rightWidth.value = Math.max(240, Math.min(520, startW - me.clientX + startX))
+  }
+  const up = () => {
+    win.removeEventListener('mousemove', move)
+    win.removeEventListener('mouseup', up)
+  }
+  win.addEventListener('mousemove', move)
+  win.addEventListener('mouseup', up)
+}
 
 function onCanvasLayoutModeChange(mode: 'normal' | 'workflow-focus') {
   // 「工作流画布」沉浸模式：收起左右栏让画布占满（嵌入与非嵌入一致）
@@ -356,6 +410,10 @@ async function saveEmployee() {
     saving.value = false
   }
 }
+
+provide('workbenchSaveEmployee', saveEmployee)
+provide('workbenchSaving', saving)
+provide('workbenchSaveMsg', saveMsg)
 
 // ── Select employee from LeftRail ─────────────────────────────────────────────
 
@@ -444,14 +502,7 @@ const showPublishPanel = ref(false)
       <div
         v-show="!sidePanelsCollapsed"
         class="wb-resize"
-        @mousedown="(e) => {
-          const startX = e.clientX
-          const startW = leftWidth
-          const move = (ev: MouseEvent) => { leftWidth = Math.max(220, Math.min(480, startW + ev.clientX - startX)) }
-          const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
-          window.addEventListener('mousemove', move)
-          window.addEventListener('mouseup', up)
-        }"
+        @mousedown="onLeftResizeMouseDown"
       />
 
       <!-- Center canvas -->
@@ -463,14 +514,7 @@ const showPublishPanel = ref(false)
       <div
         v-show="!sidePanelsCollapsed"
         class="wb-resize"
-        @mousedown="(e) => {
-          const startX = e.clientX
-          const startW = rightWidth
-          const move = (ev: MouseEvent) => { rightWidth = Math.max(240, Math.min(520, startW - ev.clientX + startX)) }
-          const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
-          window.addEventListener('mousemove', move)
-          window.addEventListener('mouseup', up)
-        }"
+        @mousedown="onRightResizeMouseDown"
       />
 
       <!-- Right rail -->

@@ -71,16 +71,13 @@ async function onCopy() {
   flex-wrap: wrap;
   gap: 0.28rem;
   margin-top: 0.5rem;
-  opacity: 0.58;
-  transition:
-    opacity 160ms ease,
-    transform 160ms ease;
+  opacity: 0;
+  transition: opacity 200ms ease;
 }
 
 .msg-act:hover,
 .msg-act:focus-within {
   opacity: 1;
-  transform: translateY(-1px);
 }
 
 .msg-act--user {

@@ -70,7 +70,7 @@
           <div class="ai-blueprint-card">
             <span class="ai-blueprint-kicker">Mod 沙箱</span>
             <strong>{{ modSandboxOk ? '通过' : '需检查' }}</strong>
-            <p v-if="modSandboxChecks.length">{{ modSandboxChecks.map((c) => c.message).join('；') }}</p>
+            <p v-if="modSandboxChecks.length">{{ modSandboxChecks.map((c: any) => c.message).join('；') }}</p>
             <p v-else>暂无 Mod 沙箱报告。</p>
           </div>
           <div v-if="vibeHealReport" class="ai-blueprint-card">
@@ -545,6 +545,7 @@
 import { ref, computed, watch, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
+import { filterOutPlannedDutyEmployees } from '../utils/workbenchEmployeeFilter'
 
 const route = useRoute()
 const router = useRouter()
@@ -560,7 +561,13 @@ const tabs = [
 
 const WORKFLOW_SUMMARY_MAX = 280
 
-function truncatePlain(s, max) {
+type LooseRecord = Record<string, any>
+
+function asLooseRecord(value: unknown): LooseRecord {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as LooseRecord) : {}
+}
+
+function truncatePlain(s: unknown, max: number): string {
   const t = String(s || '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -569,16 +576,16 @@ function truncatePlain(s, max) {
 }
 
 const modDescriptionLine = computed(() => {
-  const d = modData.value?.manifest?.description
+  const d = (modData.value as LooseRecord | null)?.manifest?.description
   return typeof d === 'string' && d.trim() ? d.trim() : ''
 })
 
 const employeeReadiness = computed<any>(() => {
-  const fromDetail = modData.value?.employee_readiness
+  const fromDetail = (modData.value as LooseRecord | null)?.employee_readiness
   if (fromDetail && typeof fromDetail === 'object') return fromDetail
-  const fromSummary = summary.value?.employee_readiness
+  const fromSummary = (summary.value as LooseRecord | null)?.employee_readiness
   if (fromSummary && typeof fromSummary === 'object') return fromSummary
-  const fromBlueprint = aiBlueprint.value?.employee_readiness
+  const fromBlueprint = (aiBlueprint.value as LooseRecord | null)?.employee_readiness
   if (fromBlueprint && typeof fromBlueprint === 'object') return fromBlueprint
   return null
 })
@@ -607,10 +614,10 @@ const readinessSummaryLabel = computed(() => {
 })
 
 const workflowEmployeesRows = computed(() => {
-  const raw = modData.value?.manifest?.workflow_employees
+  const raw = (modData.value as LooseRecord | null)?.manifest?.workflow_employees
   if (!Array.isArray(raw)) return []
   return raw.map((item, index) => {
-    const o = item && typeof item === 'object' ? item : {}
+    const o = asLooseRecord(item)
     const id = typeof o.id === 'string' ? o.id.trim() : ''
     const label = typeof o.label === 'string' ? o.label.trim() : ''
     const panelTitle = typeof o.panel_title === 'string' ? o.panel_title.trim() : ''
@@ -647,11 +654,11 @@ const workflowEmployeesRows = computed(() => {
 const tab = ref('guide')
 const loading = ref(true)
 const loadError = ref('')
-const modData = ref(null)
-const summary = ref(null)
-const aiBlueprint = ref(null)
+const modData = ref<LooseRecord | null>(null)
+const summary = ref<LooseRecord | null>(null)
+const aiBlueprint = ref<LooseRecord | null>(null)
 const manifestText = ref('')
-const manifestSaveWarnings = ref([])
+const manifestSaveWarnings = ref<string[]>([])
 const message = ref('')
 const messageOk = ref(true)
 const savingManifest = ref(false)
@@ -659,12 +666,12 @@ const selectedPath = ref('')
 const fileContent = ref('')
 const loadingFile = ref(false)
 const savingFile = ref(false)
-const fileWarnings = ref([])
+const fileWarnings = ref<string[]>([])
 const loadingSummary = ref(false)
 const frontendBusy = ref(false)
 const frontendBrief = ref('')
 
-const snapshotsRows = ref([])
+const snapshotsRows = ref<LooseRecord[]>([])
 const snapshotsLoadErr = ref('')
 const snapshotBusy = ref(false)
 const snapshotLabelDraft = ref('')
@@ -782,7 +789,7 @@ const industryCard = computed(() => {
 const apiSummary = computed(() => {
   const src = aiBlueprint.value?.api_summary
   const nodes = Array.isArray(src?.nodes) ? src.nodes : []
-  const warnings = Array.isArray(src?.warnings) ? src.warnings.map((x) => String(x)) : []
+  const warnings = Array.isArray(src?.warnings) ? src.warnings.map((x: unknown) => String(x)) : []
   return { nodes, warnings }
 })
 
@@ -820,8 +827,8 @@ const vibeIndexReport = computed(() => {
   return src as Record<string, any>
 })
 
-const linkableWorkflows = ref([])
-const linkPick = reactive({})
+const linkableWorkflows = ref<Array<{ id: number; name?: string }>>([])
+const linkPick = reactive<Record<number, number>>({})
 const linkWorkflowBusy = ref(false)
 /** workflow_employees 行 index，一键登记 API 进行中 */
 const registerCatalogBusy = ref(-1)
@@ -929,7 +936,7 @@ async function loadEmpPickList() {
         sourceLabel: '本地包目录',
       })
     }
-    empPickRows.value = [...merged.values()].sort((a, b) =>
+    empPickRows.value = filterOutPlannedDutyEmployees([...merged.values()]).sort((a, b) =>
       String(a.name).localeCompare(String(b.name), 'zh-CN'),
     )
   } catch (e: unknown) {
@@ -1015,7 +1022,7 @@ async function patchWorkflowEmployeeNodesRetry() {
   }
 }
 
-async function registerWorkflowEmployeeCatalog(row) {
+async function registerWorkflowEmployeeCatalog(row: any) {
   if (!localStorage.getItem('modstore_token')) {
     flash('请先登录工作台后再一键登记', false)
     return
@@ -1036,13 +1043,13 @@ async function registerWorkflowEmployeeCatalog(row) {
     )
     await reload()
   } catch (e) {
-    flash(e?.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     registerCatalogBusy.value = -1
   }
 }
 
-function goEmployeePrefill(row) {
+function goEmployeePrefill(row: any) {
   const mid = modId.value
   const wi = row.index
   const desc = row.bodyFull
@@ -1069,10 +1076,10 @@ function getWorkflowEmployeesArray() {
   const m = modData.value?.manifest
   const raw = m?.workflow_employees
   if (!Array.isArray(raw)) return []
-  return raw.map((x) => (x && typeof x === 'object' ? { ...x } : {}))
+  return raw.map((x: any) => (x && typeof x === 'object' ? { ...x } : {}))
 }
 
-function openEmployeeModal(mode, index = -1) {
+function openEmployeeModal(mode: 'add' | 'edit', index = -1) {
   empModalMode.value = mode
   empModalError.value = ''
   empModalMergeHint.value = ''
@@ -1102,8 +1109,8 @@ function closeEmployeeModal() {
   empScaffoldDone.value = false
 }
 
-async function persistWorkflowEmployees(nextList) {
-  const parsed = JSON.parse(JSON.stringify(modData.value.manifest || {}))
+async function persistWorkflowEmployees(nextList: any[]) {
+  const parsed = JSON.parse(JSON.stringify(modData.value?.manifest || {}))
   parsed.workflow_employees = nextList
   await api.putModManifest(modId.value, parsed)
   manifestSaveWarnings.value = []
@@ -1187,13 +1194,13 @@ async function submitEmployeeModal() {
     await persistWorkflowEmployees(wf)
     closeEmployeeModal()
   } catch (e) {
-    empModalError.value = e.message || String(e)
+    empModalError.value = (e as Error)?.message || String(e)
   } finally {
     empModalSaving.value = false
   }
 }
 
-async function confirmDeleteEmployee(index) {
+async function confirmDeleteEmployee(index: number) {
   const wf = getWorkflowEmployeesArray()
   if (index < 0 || index >= wf.length) return
   const row = wf[index]
@@ -1204,20 +1211,20 @@ async function confirmDeleteEmployee(index) {
   try {
     await persistWorkflowEmployees(wf)
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     empModalSaving.value = false
   }
 }
 
-function normPath(p) {
+function normPath(p: unknown): string {
   return String(p || '').replace(/\\/g, '/').replace(/^\//, '')
 }
 
 const fileSet = computed(() => {
   const files = modData.value?.files
   if (!Array.isArray(files)) return new Set()
-  return new Set(files.map((f) => normPath(f)))
+  return new Set<string>(files.map((f: unknown) => normPath(f)))
 })
 
 const scaffoldEnvHint = computed(() => {
@@ -1280,7 +1287,7 @@ const artifactNote = computed(() => {
   return ''
 })
 
-function flash(msg, ok = true) {
+function flash(msg: string, ok = true) {
   message.value = msg
   messageOk.value = ok
   setTimeout(() => {
@@ -1288,7 +1295,7 @@ function flash(msg, ok = true) {
   }, 5000)
 }
 
-function openWorkflowSandboxDecompose(row) {
+function openWorkflowSandboxDecompose(row: any) {
   const wid = row.linkedWorkflowId
   if (!wid) {
     flash('当前员工条目未声明 workflow_id，请先在 manifest 中关联 MODstore 工作流', false)
@@ -1305,7 +1312,7 @@ async function loadLinkableWorkflows() {
   }
 }
 
-async function applyWorkflowLinkToRow(row) {
+async function applyWorkflowLinkToRow(row: any) {
   const wid = Number(linkPick[row.index])
   if (!modId.value || !Number.isFinite(wid) || wid <= 0) {
     flash('请在下拉框中选择一个工作流', false)
@@ -1322,13 +1329,13 @@ async function applyWorkflowLinkToRow(row) {
     flash('已写入 workflow_id，可点「拆解与沙盒测试」', true)
     await reload()
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     linkWorkflowBusy.value = false
   }
 }
 
-function formatSnapTime(ts) {
+function formatSnapTime(ts: unknown): string {
   const n = Number(ts)
   if (!Number.isFinite(n) || n <= 0) return '—'
   try {
@@ -1347,7 +1354,7 @@ async function refreshSnapshots() {
     snapshotsRows.value = rows
   } catch (e) {
     snapshotsRows.value = []
-    snapshotsLoadErr.value = e.message || String(e)
+    snapshotsLoadErr.value = (e as Error)?.message || String(e)
   }
 }
 
@@ -1360,13 +1367,13 @@ async function captureSnapshotManual() {
     flash('已创建快照', true)
     await refreshSnapshots()
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     snapshotBusy.value = false
   }
 }
 
-async function restoreSnapshot(snapId) {
+async function restoreSnapshot(snapId: string) {
   if (!modId.value || !snapId) return
   if (!window.confirm('将用该快照覆盖当前 manifest.json，确定继续？')) return
   snapshotBusy.value = true
@@ -1376,7 +1383,7 @@ async function restoreSnapshot(snapId) {
     await reload()
     await refreshSnapshots()
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     snapshotBusy.value = false
   }
@@ -1393,7 +1400,7 @@ async function bumpManifestPatch() {
     await reload()
     await refreshSnapshots()
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     snapshotBusy.value = false
   }
@@ -1409,7 +1416,7 @@ async function refreshSummary() {
   try {
     summary.value = await api.getModAuthoringSummary(modId.value)
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     loadingSummary.value = false
   }
@@ -1451,7 +1458,7 @@ async function reload() {
   } catch (e) {
     modData.value = null
     summary.value = null
-    loadError.value = e.message || String(e)
+    loadError.value = (e as Error)?.message || String(e)
   } finally {
     loading.value = false
   }
@@ -1462,7 +1469,7 @@ async function saveManifest() {
   try {
     parsed = JSON.parse(manifestText.value)
   } catch (e) {
-    flash('JSON 解析失败: ' + (e.message || String(e)), false)
+    flash('JSON 解析失败: ' + ((e as Error)?.message || String(e)), false)
     return
   }
   savingManifest.value = true
@@ -1478,7 +1485,7 @@ async function saveManifest() {
     flash('manifest 已保存')
     await reload()
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     savingManifest.value = false
   }
@@ -1502,7 +1509,7 @@ async function regenerateFrontend() {
       await loadSelectedFile()
     }
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     frontendBusy.value = false
   }
@@ -1517,7 +1524,7 @@ async function loadSelectedFile() {
     const res = await api.getModFile(modId.value, p)
     fileContent.value = res.content ?? ''
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     loadingFile.value = false
   }
@@ -1539,7 +1546,7 @@ async function saveFile() {
     flash('文件已保存')
     await reload()
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     savingFile.value = false
   }

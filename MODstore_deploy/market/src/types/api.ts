@@ -193,6 +193,7 @@ export interface WorkflowSandboxResponse {
   warnings: string[]
   steps: WorkflowSandboxStep[]
   output: Record<string, unknown>
+  phase?: string
 }
 
 // ---------------------------------------------------------------- employee

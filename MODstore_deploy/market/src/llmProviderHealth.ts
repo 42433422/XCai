@@ -3,16 +3,51 @@
  * 不表示各厂商真实余额，仅辅助 UI（黄/红）。
  */
 
+export interface LlmKeyRow {
+  provider?: string
+  has_platform_key?: boolean
+  has_user_override?: boolean
+}
+
 /**
- * 钱包磁贴等 UI：默认仅以 BYOK 视为「已配置」。
- * 例外：小米 MiMo（xiaomi）仍兼容服务端环境变量密钥，与 BYOK 一并视为已配置。
- * @param {{ provider?: string, has_platform_key?: boolean, has_user_override?: boolean }|null|undefined} row
+ * resolve_api_key 语义：BYOK（可解密成功）或服务端 platform env 任一存在即运行时可用。
+ * 与 /api/llm/catalog 拉目录一致；不因磁贴文案改名。
  */
-export function hasAnyLlmKey(row) {
+export function hasAnyLlmKey(row: LlmKeyRow | null | undefined): boolean {
   if (!row) return false
   if (row.has_user_override) return true
-  if (row.provider === 'xiaomi' && row.has_platform_key) return true
+  if (row.has_platform_key) return true
   return false
+}
+
+/**
+ * 钱包磁贴「点亮」语义：仍以 BYOK 为主；仅小米允许仅凭服务端平台密钥视为磁贴「已配置」
+ * （与钱包页文案一致）；其它厂商仅用平台密钥时磁贴 dim，避免误判为「我个人的密钥」已就位。
+ */
+export function walletTileKeyConfigured(
+  provider: string,
+  row: LlmKeyRow | null | undefined,
+): boolean {
+  if (!row) return false
+  if (row.has_user_override) return true
+  if (row.has_platform_key && provider === 'xiaomi') return true
+  return false
+}
+
+/** danger 磁贴 tooltip 追加：额度/账单类错误的简短提示（启发式）。 */
+export function catalogIssueCreditHint(error: string | null | undefined): string | null {
+  const e = (error && String(error).toLowerCase()) || ''
+  if (!e.trim()) return null
+  if (
+    e.includes('402') ||
+    e.includes('balance') ||
+    e.includes('quota') ||
+    e.includes('billing') ||
+    (e.includes('insufficient') && !e.includes('401'))
+  ) {
+    return '若提示与额度或账单相关，可能为厂商侧余额、配额或账单未结清（并非密钥格式错误）。'
+  }
+  return null
 }
 
 const DANGER_SUBSTR = [
@@ -71,12 +106,12 @@ const WARN_SUBSTR = [
   'temporar',
 ]
 
-/**
- * @param {string|null|undefined} error
- * @param {string|null|undefined} fetchSource
- * @returns {'warn'|'danger'|'expired'|null}
- */
-export function classifyLlmCatalogIssue(error, fetchSource) {
+export type LlmCatalogIssue = 'warn' | 'danger' | 'expired' | null
+
+export function classifyLlmCatalogIssue(
+  error: string | null | undefined,
+  fetchSource: string | null | undefined,
+): LlmCatalogIssue {
   const e = (error && String(error).toLowerCase()) || ''
   const src = fetchSource ? String(fetchSource) : ''
 
@@ -84,11 +119,12 @@ export function classifyLlmCatalogIssue(error, fetchSource) {
     if (e.includes(p)) return 'expired'
   }
 
+  if (src === 'static_fallback_merged') return 'warn'
+  if (src === 'fallback_after_error') return 'warn'
+
   for (const p of DANGER_SUBSTR) {
     if (e.includes(p)) return 'danger'
   }
-
-  if (src === 'fallback_after_error') return 'warn'
 
   for (const p of WARN_SUBSTR) {
     if (e.includes(p)) return 'warn'

@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { resolveTopLevelRouterCacheKey } from './topLevelCacheKey'
 
 describe('resolveTopLevelRouterCacheKey', () => {
-  it('returns the WorkbenchHome bucket for the landing route', () => {
+  it('returns the WorkbenchView bucket for the landing route (redirects to /workbench/home)', () => {
     expect(
       resolveTopLevelRouterCacheKey({ path: '/', name: 'home', fullPath: '/' }),
-    ).toBe('cache-workbench-home-root')
+    ).toBe('cache-workbench-view')
   })
 
   it('returns the WorkbenchView bucket for /workbench/* child routes', () => {

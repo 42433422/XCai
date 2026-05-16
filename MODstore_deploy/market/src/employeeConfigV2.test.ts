@@ -11,8 +11,17 @@ describe('employeeConfigV2', () => {
     const config = createEmptyEmployeeConfigV2()
 
     expect(config.identity.artifact).toBe('employee_pack')
-    expect(config.cognition.agent.model.provider).toBe('deepseek')
+    expect(config.cognition.agent.model.provider).toBe('auto')
+    expect(config.cognition.agent.model.model_name).toBe('auto')
     expect(config.collaboration.workflow.workflow_id).toBe(0)
+  })
+
+  it('allows overriding default LLM vendor/model', () => {
+    const config = createEmptyEmployeeConfigV2({
+      model: { provider: 'openai', model_name: 'gpt-4o-mini' },
+    })
+    expect(config.cognition.agent.model.provider).toBe('openai')
+    expect(config.cognition.agent.model.model_name).toBe('gpt-4o-mini')
   })
 
   it('applies templates without mutating base defaults', () => {

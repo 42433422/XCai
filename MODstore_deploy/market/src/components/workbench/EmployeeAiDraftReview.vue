@@ -1,15 +1,64 @@
 <template>
-  <section class="emp-draft-review" role="region" aria-label="AI 制作草稿审核">
+  <section
+    class="emp-draft-review"
+    :class="{ 'emp-draft-review--embedded': embedded }"
+    role="region"
+    aria-label="AI 制作草稿审核"
+  >
     <!-- 顶部标题栏 -->
     <header class="emp-draft-head">
       <div class="emp-draft-title-row">
         <h2 class="emp-draft-title">AI 制作草稿</h2>
-        <button type="button" class="emp-draft-close" aria-label="关闭" @click="$emit('close')">×</button>
+        <button
+          v-if="!embedded"
+          type="button"
+          class="emp-draft-close"
+          aria-label="关闭"
+          @click="$emit('close')"
+        >
+          ×
+        </button>
       </div>
       <p class="emp-draft-sub muted small">
         {{ statusLabel }}
       </p>
     </header>
+
+    <!-- 对话审核 -->
+    <section v-if="status.phase !== 'idle'" class="emp-draft-chat" aria-label="对话审核">
+      <div class="emp-draft-chat__head">
+        <span class="emp-draft-chat__title">对话审核</span>
+        <span class="emp-draft-chat__hint muted small">流水线可推送 review_reply / clarification_question</span>
+      </div>
+      <ul v-if="reviewMessages.length" class="emp-draft-chat__thread" aria-live="polite">
+        <li
+          v-for="m in reviewMessages"
+          :key="m.id"
+          class="emp-draft-chat__msg"
+          :class="`emp-draft-chat__msg--${m.role}`"
+        >
+          {{ m.content }}
+        </li>
+      </ul>
+      <div class="emp-draft-chat__composer">
+        <textarea
+          v-model="reviewInput"
+          class="emp-input emp-draft-chat__input"
+          rows="2"
+          placeholder="追问草稿、澄清约束…（Enter 发送）"
+          :disabled="reviewSending"
+          @keydown.enter.exact.prevent="sendReview"
+        />
+        <button
+          type="button"
+          class="btn btn-sm btn-primary emp-draft-chat__send"
+          :disabled="reviewSending || !reviewInput.trim()"
+          @click="sendReview"
+        >
+          {{ reviewSending ? '发送中…' : '发送' }}
+        </button>
+      </div>
+    </section>
 
     <!-- 流水线进度条 -->
     <div class="emp-draft-progress-track" role="progressbar" :aria-valuenow="doneCount" :aria-valuemax="STAGE_KEYS.length">
@@ -312,7 +361,7 @@
         >
           打开员工制作进一步调整
         </button>
-        <button type="button" class="btn btn-ghost" @click="$emit('close')">关闭</button>
+        <button v-if="!embedded" type="button" class="btn btn-ghost" @click="$emit('close')">关闭</button>
       </div>
     </footer>
   </section>
@@ -320,19 +369,46 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import type { PipelineStages, PipelineStatus, SkillData } from '../../composables/useEmployeeAiDraft'
+import { useWorkbenchStore } from '../../stores/workbench'
+import type { PipelineStages, SkillData } from '../../composables/useEmployeeAiDraft'
+import { getAccessToken } from '../../infrastructure/storage/tokenStore'
 
-const props = defineProps<{
-  stages: PipelineStages
-  status: PipelineStatus
-  progressMessages: readonly string[]
-}>()
+withDefaults(
+  defineProps<{
+    /** 嵌入侧栏时收紧布局并隐藏关闭按钮 */
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'retry'): void
   (e: 'published', modId: string): void
 }>()
+
+const wb = useWorkbenchStore()
+
+const stages = wb.employeeDraftStages
+const status = wb.employeeDraftStatus
+const progressMessages = wb.employeeDraftProgressMessages
+const reviewMessages = wb.employeeDraftReviewMessages
+const reviewSending = wb.employeeDraftReviewSending
+
+const reviewInput = ref('')
+function authJsonHeaders(): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' }
+  const t = getAccessToken()
+  if (t) h.Authorization = `Bearer ${t}`
+  return h
+}
+
+async function sendReview() {
+  const t = reviewInput.value.trim()
+  if (!t || wb.employeeDraftReviewSending) return
+  reviewInput.value = ''
+  await wb.submitEmployeeDraftReviewChat(t)
+}
 
 // ── stage metadata ────────────────────────────────────────────────────────────
 
@@ -360,10 +436,24 @@ const draft = ref({
   pricingTier: 'free',
   pricingCny: 0,
   pricingPeriod: 'month',
+  skills: [] as SkillData[],
 })
 
 watch(
-  () => props.stages.parse_intent.data,
+  () => stages.suggest_skills.data,
+  (list) => {
+    if (!list || !list.length) return
+    draft.value.skills = list.map((s) => ({
+      name: s.name,
+      brief: s.brief,
+      unverified: Boolean(s.unverified),
+    }))
+  },
+  { immediate: true },
+)
+
+watch(
+  () => stages.parse_intent.data,
   (d) => {
     if (!d) return
     draft.value.id = d.id
@@ -377,7 +467,7 @@ watch(
 )
 
 watch(
-  () => props.stages.design_v2.data,
+  () => stages.design_v2.data,
   (d) => {
     if (!d) return
     const agent = (d.cognition as Record<string, unknown>)?.agent as Record<string, unknown>
@@ -387,7 +477,7 @@ watch(
 )
 
 watch(
-  () => props.stages.suggest_pricing.data,
+  () => stages.suggest_pricing.data,
   (d) => {
     if (!d) return
     draft.value.pricingTier = d.tier
@@ -399,30 +489,31 @@ watch(
 
 // ── computed helpers ──────────────────────────────────────────────────────────
 
-const doneCount = computed(() => STAGE_KEYS.filter((k) => props.stages[k].status === 'done').length)
+const doneCount = computed(() => STAGE_KEYS.filter((k) => stages[k].status === 'done').length)
 
 const statusLabel = computed(() => {
-  if (props.status.phase === 'idle') return '等待开始'
-  if (props.status.phase === 'running') return `正在处理：${STAGE_LABELS[props.status.current] || props.status.current}…`
-  if (props.status.phase === 'done') return '草稿已就绪，请检查后发布'
-  return `失败：${props.status.fatalError}`
+  if (status.phase === 'idle') return '等待开始'
+  if (status.phase === 'running') return `正在处理：${STAGE_LABELS[status.current] || status.current}…`
+  if (status.phase === 'done') return '草稿已就绪，请检查后发布'
+  return `失败：${status.fatalError}`
 })
 
-const canPublish = computed(() => props.status.phase === 'done' && !!props.status.manifest)
+const canPublish = computed(() => status.phase === 'done' && !!status.manifest)
 
 const workflowNeedsSandbox = computed(() => {
-  const meta = (props.status.manifest as Record<string, unknown> | null)
-    ?.employee_config_v2 as Record<string, unknown> | undefined
+  const meta = (status.manifest as Record<string, unknown> | null)?.employee_config_v2 as
+    | Record<string, unknown>
+    | undefined
   return !!(meta?.metadata as Record<string, unknown> | undefined)?.workflow_needs_sandbox
 })
 
 const sandboxWorkflowId = computed(() => {
-  const wfData = props.stages.resolve_workflow.data
+  const wfData = stages.resolve_workflow.data
   return wfData?.workflow_id ?? null
 })
 
 function cardClass(stage: keyof PipelineStages) {
-  const s = props.stages[stage].status
+  const s = stages[stage].status
   return {
     'emp-card--running': s === 'running',
     'emp-card--done': s === 'done',
@@ -431,7 +522,7 @@ function cardClass(stage: keyof PipelineStages) {
 }
 
 function badgeClass(stage: keyof PipelineStages) {
-  const s = props.stages[stage].status
+  const s = stages[stage].status
   return {
     'emp-badge--running': s === 'running',
     'emp-badge--done': s === 'done',
@@ -441,7 +532,7 @@ function badgeClass(stage: keyof PipelineStages) {
 
 function badgeText(stage: keyof PipelineStages) {
   const map: Record<string, string> = { idle: '', running: '处理中', done: '✓', error: '✗' }
-  return map[props.stages[stage].status] ?? ''
+  return map[stages[stage].status] ?? ''
 }
 
 function fmtJson(val: unknown) {
@@ -460,7 +551,7 @@ const jsonEditError = ref('')
 const v2Override = ref<Record<string, unknown>>({})
 
 function editV2Json(field: 'perception' | 'memory' | 'actions') {
-  const d = props.stages.design_v2.data
+  const d = stages.design_v2.data
   if (!d) return
   jsonEditTarget.value = field
   const current = v2Override.value[field] ?? d[field]
@@ -497,7 +588,7 @@ async function openRefinePrompt() {
   try {
     const res = await fetch('/api/workbench/employee-ai/refine-prompt', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authJsonHeaders(),
       body: JSON.stringify({
         current_prompt: draft.value.systemPrompt,
         instruction,
@@ -524,7 +615,7 @@ const publishLoading = ref(false)
 const publishError = ref('')
 
 function _buildManifest(): Record<string, unknown> {
-  const base = JSON.parse(JSON.stringify(props.status.manifest || {})) as Record<string, unknown>
+  const base = JSON.parse(JSON.stringify(status.manifest || {})) as Record<string, unknown>
   base.id = draft.value.id || base.id
   base.name = draft.value.name || base.name
   base.description = draft.value.scenario || base.description
@@ -587,7 +678,7 @@ async function publish() {
     const manifest = _buildManifest()
     const res = await fetch('/api/mods/ai-scaffold', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authJsonHeaders(),
       body: JSON.stringify({
         brief: `${draft.value.role}: ${draft.value.scenario}`,
         suggested_id: draft.value.id,
@@ -622,15 +713,94 @@ function openInAuthoring() {
 
 <style scoped>
 .emp-draft-review {
-  background: var(--surface-2, #1a1a2e);
-  border: 1px solid var(--border, #2a2a4a);
-  border-radius: 12px;
+  background: var(--wb-surface-elevated, var(--surface-2, #1a1a2e));
+  border: 1px solid var(--wb-border-default, var(--border, #2a2a4a));
+  border-radius: var(--wb-radius-lg, 12px);
   padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-height: 90vh;
   overflow-y: auto;
+}
+
+.emp-draft-review--embedded {
+  max-height: min(52vh, 560px);
+  padding: 12px 14px;
+  flex-shrink: 1;
+  min-height: 0;
+}
+
+.emp-draft-chat {
+  border: 1px solid var(--wb-border-muted, var(--border, #2a2a4a));
+  border-radius: var(--wb-radius-md, 10px);
+  padding: 10px 12px;
+  background: var(--wb-surface-sunken, rgba(0, 0, 0, 0.2));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.emp-draft-chat__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.emp-draft-chat__title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--wb-text-secondary, rgba(255, 255, 255, 0.82));
+}
+
+.emp-draft-chat__hint {
+  font-size: 0.72rem;
+}
+
+.emp-draft-chat__thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.emp-draft-chat__msg {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  padding: 6px 8px;
+  border-radius: 8px;
+  margin: 0;
+}
+
+.emp-draft-chat__msg--user {
+  align-self: flex-end;
+  background: var(--wb-accent-soft, rgba(99, 102, 241, 0.2));
+  color: var(--wb-text-primary, #f8fafc);
+}
+
+.emp-draft-chat__msg--assistant {
+  align-self: flex-start;
+  background: var(--wb-surface-overlay, rgba(255, 255, 255, 0.06));
+  color: var(--wb-text-muted, rgba(226, 232, 240, 0.88));
+}
+
+.emp-draft-chat__composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.emp-draft-chat__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.emp-draft-chat__send {
+  flex-shrink: 0;
 }
 
 .emp-draft-head { display: flex; flex-direction: column; gap: 4px; }

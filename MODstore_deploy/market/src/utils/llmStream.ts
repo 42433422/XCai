@@ -18,10 +18,12 @@ export interface StreamHandle {
   done: Promise<{ content: string; aborted: boolean }>
 }
 
+export type LlmMessageContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>
+
 export interface StreamOptions {
   provider: string
   model: string
-  messages: Array<{ role: string; content: string }>
+  messages: Array<{ role: string; content: LlmMessageContent }>
   maxTokens?: number | null
   conversationId?: number | null
   onToken: (delta: string, soFar: string) => void

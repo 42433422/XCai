@@ -203,6 +203,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { api } from '../api'
+import { ApiError } from '../infrastructure/http/client'
 import { useAuthStore } from '../stores/auth'
 
 const ARTIFACT_LABELS = {
@@ -244,14 +245,40 @@ const SECURITY_LABELS = {
   confidential: '保密',
 }
 
+interface AiStoreItem {
+  id: number | string
+  pkg_id?: string
+  name?: string
+  version?: string
+  industry?: string
+  artifact?: string
+  material_category?: string
+  material_category_label?: string
+  license_scope?: string
+  license_scope_label?: string
+  security_level?: string
+  compliance_status?: string
+  purchased?: boolean
+  description?: string
+  price: number
+}
+
+interface CatalogFacets {
+  industries: string[]
+  artifacts: string[]
+  material_categories: string[]
+  license_scopes: string[]
+  security_levels: string[]
+}
+
 const loading = ref(true)
 const err = ref('')
-const items = ref([])
+const items = ref<AiStoreItem[]>([])
 const total = ref(0)
-const delistingId = ref(null)
+const delistingId = ref<number | string | null>(null)
 const searchQ = ref('')
 const appliedQ = ref('')
-const facets = ref({ industries: [], artifacts: [], material_categories: [], license_scopes: [], security_levels: [] })
+const facets = ref<CatalogFacets>({ industries: [], artifacts: [], material_categories: [], license_scopes: [], security_levels: [] })
 const authStore = useAuthStore()
 
 const filters = reactive({
@@ -268,33 +295,33 @@ const facetMaterialCategories = computed(() => facets.value.material_categories 
 const facetLicenseScopes = computed(() => facets.value.license_scopes || [])
 const facetSecurityLevels = computed(() => facets.value.security_levels || [])
 
-function artifactLabel(art) {
-  return ARTIFACT_LABELS[art] || art || '其他'
+function artifactLabel(art: string | undefined): string {
+  return (art && (ARTIFACT_LABELS as Record<string, string>)[art]) || art || '其他'
 }
 
-function materialCategoryLabel(cat) {
-  return MATERIAL_CATEGORY_LABELS[cat] || cat || '其他素材'
+function materialCategoryLabel(cat: string | undefined): string {
+  return (cat && (MATERIAL_CATEGORY_LABELS as Record<string, string>)[cat]) || cat || '其他素材'
 }
 
-function licenseScopeLabel(scope) {
-  return LICENSE_SCOPE_LABELS[scope] || scope || '个人使用'
+function licenseScopeLabel(scope: string | undefined): string {
+  return (scope && (LICENSE_SCOPE_LABELS as Record<string, string>)[scope]) || scope || '个人使用'
 }
 
-function complianceStatusLabel(status) {
-  return COMPLIANCE_STATUS_LABELS[status] || status || '待处理'
+function complianceStatusLabel(status: string | undefined): string {
+  return (status && (COMPLIANCE_STATUS_LABELS as Record<string, string>)[status]) || status || '待处理'
 }
 
-function securityLabel(level) {
-  return SECURITY_LABELS[level] || '个人'
+function securityLabel(level: string | undefined): string {
+  return (level && (SECURITY_LABELS as Record<string, string>)[level]) || '个人'
 }
 
-function securityLevelClass(level) {
+function securityLevelClass(level: string | undefined): string {
   if (level === 'confidential') return 'tag-confidential'
   if (level === 'enterprise') return 'tag-enterprise'
   return 'tag-personal'
 }
 
-function truncate(str, len) {
+function truncate(str: string | undefined | null, len: number): string {
   if (!str) return ''
   return str.length > len ? str.slice(0, len) + '…' : str
 }
@@ -314,7 +341,7 @@ async function loadFacets() {
   }
 }
 
-async function loadItems() {
+async function loadItems(cacheBust = false) {
   loading.value = true
   err.value = ''
   try {
@@ -327,11 +354,15 @@ async function loadItems() {
       filters.securityLevel,
       filters.materialCategory,
       filters.licenseScope,
+      cacheBust,
     )
-    items.value = res.items || []
+    items.value = ((res.items || []) as AiStoreItem[]).map((it) => ({
+      ...it,
+      price: Number(it.price ?? 0) || 0,
+    }))
     total.value = res.total ?? items.value.length
-  } catch (e) {
-    err.value = e.message || String(e)
+  } catch (e: unknown) {
+    err.value = e instanceof ApiError ? e.message : (e as Error)?.message || String(e)
     items.value = []
     total.value = 0
   } finally {
@@ -339,23 +370,23 @@ async function loadItems() {
   }
 }
 
-function setIndustry(v) {
+function setIndustry(v: string) {
   filters.industry = v
 }
 
-function setArtifact(v) {
+function setArtifact(v: string) {
   filters.artifact = v
 }
 
-function setMaterialCategory(v) {
+function setMaterialCategory(v: string) {
   filters.materialCategory = v
 }
 
-function setLicenseScope(v) {
+function setLicenseScope(v: string) {
   filters.licenseScope = v
 }
 
-function setSecurityLevel(v) {
+function setSecurityLevel(v: string) {
   filters.securityLevel = v
 }
 
@@ -375,7 +406,7 @@ function resetFilters() {
   loadItems()
 }
 
-function customerServiceLink(item, scene = 'complaint') {
+function customerServiceLink(item: AiStoreItem, scene = 'complaint') {
   return {
     name: 'customer-service',
     query: {
@@ -388,7 +419,7 @@ function customerServiceLink(item, scene = 'complaint') {
   }
 }
 
-async function delistItem(item) {
+async function delistItem(item: AiStoreItem) {
   if (!item || delistingId.value) return
   const ok = window.confirm(`确定下架「${item.name}」吗？下架后 AI 市场将不再展示该商品。`)
   if (!ok) return
@@ -396,10 +427,10 @@ async function delistItem(item) {
   err.value = ''
   try {
     await api.adminDeleteCatalog(item.id)
-    await loadItems()
+    await loadItems(true)
     await loadFacets()
-  } catch (e) {
-    err.value = e?.message || String(e)
+  } catch (e: unknown) {
+    err.value = e instanceof ApiError ? e.message : (e as Error)?.message || String(e)
   } finally {
     delistingId.value = null
   }

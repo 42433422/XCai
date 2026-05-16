@@ -95,7 +95,7 @@ const ENV_MAP = {
   OPENROUTER_BASE_URL: { provider: 'openrouter', field: 'base_url' },
 }
 
-function stripQuotes(s) {
+function stripQuotes(s: string): string {
   const t = s.trim()
   if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
     return t.slice(1, -1).trim()
@@ -104,7 +104,7 @@ function stripQuotes(s) {
 }
 
 /** 看起来像 API Key 的裸字符串：不含空格/等号、长度 ≥ 8（与后端 detect-bare 的最小长度对齐） */
-function looksLikeBareKey(s) {
+function looksLikeBareKey(s: string): boolean {
   const t = s.trim()
   if (!t) return false
   if (t.length < 8) return false
@@ -113,21 +113,25 @@ function looksLikeBareKey(s) {
   return /^[A-Za-z0-9._\-+/:]+$/.test(t)
 }
 
-/**
- * @param {string} text
- * @returns {{
- *   entries: { provider: string, api_key: string, base_url?: string|null }[],
- *   bareKeys: string[],
- *   warnings: string[],
- * }}
- */
-export function parseByokPaste(text) {
-  const warnings = []
-  /** @type {Record<string, { api_key?: string, base_url?: string }>} */
-  const acc = {}
-  /** @type {string[]} */
-  const bareKeys = []
-  const bareSeen = new Set()
+export interface ByokParsedEntry {
+  provider: string
+  api_key: string
+  base_url?: string | null
+}
+
+export interface ByokParseResult {
+  entries: ByokParsedEntry[]
+  bareKeys: string[]
+  warnings: string[]
+}
+
+type EnvAccRow = { api_key?: string; base_url?: string }
+
+export function parseByokPaste(text: string): ByokParseResult {
+  const warnings: string[] = []
+  const acc: Record<string, EnvAccRow> = {}
+  const bareKeys: string[] = []
+  const bareSeen = new Set<string>()
   let unrecognizedLines = 0
 
   const rawLines = (text || '').split(/\r?\n/)
@@ -156,7 +160,7 @@ export function parseByokPaste(text) {
     if (!key) continue
 
     const upper = key.toUpperCase()
-    const mapped = ENV_MAP[upper]
+    const mapped = (ENV_MAP as Record<string, { provider: string; field: string } | undefined>)[upper]
     if (mapped) {
       const { provider, field } = mapped
       if (!acc[provider]) acc[provider] = {}
@@ -186,7 +190,7 @@ export function parseByokPaste(text) {
     )
   }
 
-  const entries = []
+  const entries: ByokParsedEntry[] = []
   for (const provider of BYOK_ALLOWED_PROVIDERS) {
     const row = acc[provider]
     if (row && row.api_key && String(row.api_key).trim().length < 4) {
@@ -206,9 +210,9 @@ export function parseByokPaste(text) {
   }
 
   if (!entries.length && !bareKeys.length) {
-    const hasKeyLikeLine = rawLines.some((ln) => {
+    const hasKeyLikeLine = rawLines.some((ln: string) => {
       const t = ln.trim()
-      return t && !t.startsWith('#') && t.includes('=')
+      return Boolean(t) && !t.startsWith('#') && t.includes('=')
     })
     if (!hasKeyLikeLine && !warnings.length) {
       warnings.push('请粘贴 .env 片段（例如 OPENAI_API_KEY=sk-…）或直接粘贴一段 sk-… 裸密钥。')

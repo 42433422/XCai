@@ -21,10 +21,8 @@ const XIAOMI_ICON_DATA_URL = `data:image/svg+xml,${encodeURIComponent(XIAOMI_ICO
 const SI_MISSING_SLUGS = new Set(['deepseek', 'groq', 'togethercomputer'])
 
 /**
- * @param {string} providerId
- * @returns {string|null} 可放入 <img src> 的 URL；null 表示使用字首回退
  */
-export function llmProviderIconImgSrc(providerId) {
+export function llmProviderIconImgSrc(providerId: string): string | null {
   if (providerId === 'xiaomi') return XIAOMI_ICON_DATA_URL
   const { iconSlug } = llmUiMeta(providerId)
   if (SI_MISSING_SLUGS.has(iconSlug)) return null

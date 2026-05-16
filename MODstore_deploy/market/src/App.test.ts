@@ -49,6 +49,8 @@ function createTestRouter() {
       { path: '/admin/database', name: 'admin-database', component: Stub },
       { path: '/admin/customer-service', name: 'admin-customer-service', component: Stub },
       { path: '/admin/butler-skills', name: 'admin-butler-skills', component: Stub },
+      { path: '/admin/duty-employees', name: 'admin-duty-employees', component: Stub },
+      { path: '/admin/employee-autonomy', name: 'admin-employee-autonomy', component: Stub },
       { path: '/sandbox', name: 'sandbox', component: Stub },
       { path: '/recharge', name: 'recharge', component: Stub },
       { path: '/workbench/shell/:target?/:id?', name: 'workbench-shell', component: Stub },
@@ -100,6 +102,7 @@ describe('App shell', () => {
   it('switches to admin mode and shows admin customer service link', async () => {
     const router = createTestRouter()
     const pinia = createPinia()
+    setActivePinia(pinia)
     const wrapper = mount(App, {
       global: {
         plugins: [pinia, router, createModstoreI18n('zh-CN')],
@@ -109,6 +112,10 @@ describe('App shell', () => {
 
     await router.isReady()
     await router.push('/plans')
+    await flushPromises()
+
+    const { useAuthStore } = await import('./stores/auth')
+    useAuthStore().setAdminDigestUnlock(new Date(Date.now() + 60_000).toISOString())
     await flushPromises()
 
     const adminTab = wrapper.findAll('button.mode-tab').find((w) => w.text() === '管理端')

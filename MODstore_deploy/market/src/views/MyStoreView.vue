@@ -29,8 +29,8 @@
           </div>
           <h3 class="mod-name">{{ p.name }}</h3>
           <p class="mod-meta">{{ p.pkg_id }} · v{{ p.version }}</p>
-          <p class="mod-purchase-info">购买于 {{ formatDate(p.purchased_at) }} · ¥{{ p.price_paid.toFixed(2) }}</p>
-          <button class="btn btn-success" @click="doDownload(p.catalog_id)">下载</button>
+          <p class="mod-purchase-info">购买于 {{ formatDate(p.purchased_at) }} · ¥{{ Number(p.price_paid ?? 0).toFixed(2) }}</p>
+          <button class="btn btn-success" @click="doDownload(p.catalog_id ?? p.purchase_id)">下载</button>
         </div>
       </div>
     </div>
@@ -41,13 +41,35 @@
 import { ref, onMounted } from 'vue'
 import { api } from '../api'
 
-const items = ref([])
+interface PurchasedItem {
+  purchase_id: number | string
+  catalog_id?: number | string
+  artifact?: string
+  name?: string
+  pkg_id?: string
+  version?: string
+  purchased_at?: string
+  price_paid?: number
+}
+
+interface PlanInfo {
+  name?: string
+  expires_at?: string
+}
+
+interface QuotaRow {
+  quota_type: string
+  remaining?: number
+  total?: number
+}
+
+const items = ref<PurchasedItem[]>([])
 const loading = ref(true)
 const err = ref('')
-const myPlan = ref(null)
-const quotas = ref([])
+const myPlan = ref<PlanInfo | null>(null)
+const quotas = ref<QuotaRow[]>([])
 
-function artifactLabel(a) {
+function artifactLabel(a: string | undefined): string {
   const x = (a || 'mod').toLowerCase()
   if (x === 'employee_pack') return '员工包'
   if (x === 'bundle') return '组合包'
@@ -65,31 +87,35 @@ async function loadStore() {
     myPlan.value = planRes.plan
     quotas.value = planRes.quotas || []
   } catch (e) {
-    err.value = e.message
+    err.value = (e as Error)?.message || String(e)
   } finally {
     loading.value = false
   }
 }
 
-function quotaLabel(t) {
-  const m = { employee_count: '员工数', llm_calls: 'LLM 调用', storage_mb: '存储(MB)' }
+function quotaLabel(t: string): string {
+  const m: Record<string, string> = {
+    employee_count: '员工数',
+    llm_calls: 'LLM 调用',
+    storage_mb: '存储(MB)',
+  }
   return m[t] || t
 }
 
-async function doDownload(id) {
+async function doDownload(id: number | string) {
   try {
     await api.downloadItem(id)
   } catch (e) {
-    alert(e.message)
+    alert((e as Error)?.message || String(e))
   }
 }
 
-function formatDate(iso) {
+function formatDate(iso: string | undefined): string {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('zh-CN')
 }
 
-function formatDateTime(iso) {
+function formatDateTime(iso: string | undefined): string {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('zh-CN')
 }

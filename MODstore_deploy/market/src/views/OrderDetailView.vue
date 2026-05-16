@@ -70,18 +70,35 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 
 const route = useRoute()
 const router = useRouter()
-const order = ref(null)
+const orderParamId = computed(() => {
+  const p = route.params.orderId
+  const v = Array.isArray(p) ? p[0] : p
+  return v == null ? '' : String(v)
+})
+interface OrderDetail {
+  out_trade_no?: string
+  subject?: string
+  total_amount?: number | string
+  status?: string
+  trade_no?: string
+  created_at?: string
+  paid_at?: string
+  refund_status?: string
+  refunded_amount?: number | string
+}
+
+const order = ref<OrderDetail | null>(null)
 const loading = ref(true)
 
 onMounted(async () => {
   try {
-    const res = await api.paymentQuery(route.params.orderId, { reconcile: true })
+    const res = (await api.paymentQuery(orderParamId.value, { reconcile: true })) as OrderDetail
     order.value = res
   } catch {
     order.value = null
@@ -90,8 +107,8 @@ onMounted(async () => {
   }
 })
 
-function statusText(status) {
-  const map = {
+function statusText(status: string | undefined): string {
+  const map: Record<string, string> = {
     pending: '待支付',
     paid: '已支付',
     refunding: '退款中',
@@ -100,26 +117,26 @@ function statusText(status) {
     failed: '支付失败',
     closed: '已关闭',
   }
-  return map[status] || status || '未知'
+  return (status && map[status]) || status || '未知'
 }
 
-function refundStatusText(status) {
-  const map = {
+function refundStatusText(status: string | undefined): string {
+  const map: Record<string, string> = {
     none: '无退款',
     pending: '审核中',
     rejected: '已拒绝',
     refunded: '已退回钱包',
     partial_refunded: '部分退回钱包',
   }
-  return map[status] || status || '无退款'
+  return (status && map[status]) || status || '无退款'
 }
 
-function money(value) {
+function money(value: unknown): string {
   const n = Number(value)
   return Number.isFinite(n) ? n.toFixed(2) : '0.00'
 }
 
-function formatTime(iso) {
+function formatTime(iso: string | undefined): string {
   if (!iso) return '—'
   const d = new Date(iso)
   return d.toLocaleString('zh-CN', {

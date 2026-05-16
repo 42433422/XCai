@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../../../../api'
+import { filterOutPlannedDutyEmployees } from '../../../../utils/workbenchEmployeeFilter'
 import { getNodeMeta } from '../composables/useNodeRegistry'
 import type { WorkflowFlowNode } from '../composables/useWorkflowGraph'
 
@@ -52,7 +53,8 @@ async function ensureEmployees() {
   if (employeesLoaded.value) return
   try {
     const list: any = await api.listEmployees()
-    employees.value = Array.isArray(list) ? list : list?.employees || []
+    const raw = Array.isArray(list) ? list : list?.employees || []
+    employees.value = filterOutPlannedDutyEmployees(raw)
   } catch {
     employees.value = []
   } finally {

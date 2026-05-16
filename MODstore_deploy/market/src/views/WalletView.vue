@@ -2,13 +2,28 @@
   <div>
     <h1 class="page-title">资金与记录</h1>
 
-    <div class="balance-card">
+    <div
+      class="balance-card"
+      :class="{ 'balance-card--depleted': balance !== null && balance <= 0 }"
+    >
       <div class="balance-label">当前余额</div>
-      <div class="balance-value" :class="{ 'balance-updating': isUpdating }">¥{{ balance !== null ? balance.toFixed(2) : '--' }}</div>
+      <div
+        class="balance-value"
+        :class="{
+          'balance-updating': isUpdating,
+          'balance-value--depleted': balance !== null && balance <= 0,
+        }"
+      >
+        ¥{{ balance !== null ? balance.toFixed(2) : '--' }}
+      </div>
       <div v-if="balance !== null" class="balance-gauge" aria-hidden="true">
         <template v-if="(membershipReferenceYuan ?? 0) > 0">
           <div class="balance-gauge__track">
-            <div class="balance-gauge__fill" :style="{ width: balanceGaugeFill + '%' }" />
+            <div
+              class="balance-gauge__fill"
+              :class="{ 'balance-gauge__fill--depleted': balance <= 0 }"
+              :style="{ width: balanceGaugeFill + '%' }"
+            />
           </div>
           <p class="balance-gauge__hint">
             会员随单「可用额度」参考线
@@ -262,13 +277,14 @@
       <template v-else-if="catalog">
         <div class="llm-grid" role="list">
           <button
-            v-for="block in catalog.providers"
+            v-for="block in catalogProvidersSorted"
             :key="block.provider"
             type="button"
             class="llm-tile"
             :class="{
               'llm-tile--active': selectedProvider === block.provider,
-              'llm-tile--keyed': providerTileState(block) !== 'inactive',
+              /* 仅密钥可用且目录拉取正常时「点亮」；认证失败、额度错误等与 inactive 同视为未点亮 */
+              'llm-tile--keyed': providerTileState(block) === 'ok',
               'llm-tile--keywarn': providerTileState(block) === 'warn',
               'llm-tile--keydanger': providerTileState(block) === 'danger',
             }"
@@ -291,6 +307,7 @@
                 width="36"
                 height="36"
                 loading="lazy"
+                crossorigin="anonymous"
                 @error="iconLoadFailed[llmTileIconFailKey(block)] = true"
               />
               <span v-else class="llm-tile__fallback" :class="'llm-tile__fallback--' + providerTileState(block)">{{
@@ -323,7 +340,7 @@
             {{ catalog.gate_hints.platform_require_priced ? '开' : '关' }}。未登记定价时预授权可能上浮。
           </p>
         </div>
-        <div v-else-if="catalog.providers.length" class="llm-empty-models">请选择供应商。</div>
+        <div v-else-if="catalogProvidersSorted.length" class="llm-empty-models">请选择供应商。</div>
         <div
           v-if="currentProviderBlock && !currentProviderBlock.models.length"
           class="llm-empty-models"
@@ -380,27 +397,36 @@
           <div class="llm-byok-list-head">各厂商状态</div>
           <ul class="llm-byok-list" role="list">
             <li v-for="st in llmStatusList" :key="st.provider" class="llm-byok-row" role="listitem">
-              <div class="llm-byok-row__main">
-                <span class="llm-byok-row__name">{{ st.label || st.provider }}</span>
-                <span class="llm-byok-tags">
-                  <span v-if="st.has_user_override" class="tag tag-user">BYOK</span>
-                  <span v-if="st.provider === 'xiaomi' && st.has_platform_key" class="tag">平台密钥</span>
-                  <span v-if="st.masked_key" class="llm-mask">{{ st.masked_key }}</span>
-                  <span
-                    v-else-if="!st.has_user_override && !(st.provider === 'xiaomi' && st.has_platform_key)"
-                    class="llm-byok-row__dash"
-                  >—</span>
-                </span>
+              <div class="llm-byok-row__line">
+                <div class="llm-byok-row__main">
+                  <span class="llm-byok-row__name">{{ st.label || st.provider }}</span>
+                  <span class="llm-byok-tags">
+                    <span v-if="st.has_user_override" class="tag tag-user">BYOK</span>
+                    <span v-if="st.has_platform_key" class="tag">平台密钥</span>
+                    <span v-if="st.masked_key" class="llm-mask">{{ st.masked_key }}</span>
+                    <span
+                      v-else-if="!st.has_user_override && !st.has_platform_key"
+                      class="llm-byok-row__dash"
+                    >—</span>
+                  </span>
+                </div>
+                <button
+                  v-if="st.has_user_override"
+                  type="button"
+                  class="btn btn-ghost llm-byok-row__clear"
+                  :disabled="byokSaving === st.provider || byokImportBusy"
+                  @click="clearByok(st.provider)"
+                >
+                  清除
+                </button>
               </div>
-              <button
-                v-if="st.has_user_override"
-                type="button"
-                class="btn btn-ghost llm-byok-row__clear"
-                :disabled="byokSaving === st.provider || byokImportBusy"
-                @click="clearByok(st.provider)"
+              <p
+                v-if="st.has_user_override && llmByokCatalogDanger(st.provider)"
+                class="llm-byok-row__hint"
+                role="note"
               >
-                清除
-              </button>
+                该厂商模型目录报红：请核对密钥与 Base URL，或先「清除」再重新保存。
+              </p>
             </li>
           </ul>
 
@@ -415,7 +441,7 @@
                 <strong>{{ st.label || st.provider }}</strong>
                 <span class="llm-byok-tags">
                   <span v-if="st.has_user_override" class="tag tag-user">BYOK</span>
-                  <span v-if="st.provider === 'xiaomi' && st.has_platform_key" class="tag">平台密钥</span>
+                  <span v-if="st.has_platform_key" class="tag">平台密钥</span>
                   <span v-if="st.masked_key" class="llm-mask">{{ st.masked_key }}</span>
                 </span>
               </div>
@@ -443,6 +469,13 @@
                   清除 BYOK
                 </button>
               </div>
+              <p
+                v-if="st.has_user_override && llmByokCatalogDanger(st.provider)"
+                class="llm-byok-block__hint"
+                role="note"
+              >
+                模型目录报红时，可先「清除 BYOK」再粘贴正确密钥并保存。
+              </p>
             </div>
           </details>
         </details>
@@ -451,7 +484,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, reactive, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -459,7 +492,7 @@ import { api } from '../api'
 import { parseByokPaste } from '../byokEnvImport'
 import { requestJson } from '../infrastructure/http/client'
 import { llmUiMeta, LLM_OAI_COMPAT_BASE_URL_PROVIDERS } from '../llmModels'
-import { classifyLlmCatalogIssue, hasAnyLlmKey } from '../llmProviderHealth'
+import { classifyLlmCatalogIssue, catalogIssueCreditHint, hasAnyLlmKey, walletTileKeyConfigured } from '../llmProviderHealth'
 import { llmProviderIconImgSrc } from '../llmIconUrls'
 import { useWalletStore } from '../stores/wallet'
 
@@ -602,6 +635,22 @@ const llmStatusByProvider = computed(() => {
   return m
 })
 
+/** 磁贴顺序：目录与健康检查均为 ok 的厂商靠前（密钥错误、降级列表靠后） */
+const catalogProvidersSorted = computed(() => {
+  const blocks = catalog.value?.providers
+  if (!Array.isArray(blocks) || !blocks.length) return []
+  const ordered = blocks.map((b, idx) => ({
+    block: b,
+    idx,
+    catalogOk: providerTileState(b) === 'ok',
+  }))
+  ordered.sort((a, b) => {
+    if (a.catalogOk !== b.catalogOk) return a.catalogOk ? -1 : 1
+    return a.idx - b.idx
+  })
+  return ordered.map((x) => x.block)
+})
+
 function formatCatalogFetchedAt(iso) {
   if (!iso) return ''
   try {
@@ -630,8 +679,7 @@ function llmTileShowsImg(block) {
 /** @param {{ provider: string, label?: string, error?: string|null, fetch_source?: string|null }} block */
 function providerTileState(block) {
   const st = llmStatusByProvider.value[block.provider]
-  const keyPresent = hasAnyLlmKey(st)
-  if (!keyPresent) return 'inactive'
+  if (!walletTileKeyConfigured(block.provider, st)) return 'inactive'
   const issue = classifyLlmCatalogIssue(block.error, block.fetch_source)
   if (issue === 'expired') return 'danger'
   if (issue === 'danger') return 'danger'
@@ -650,23 +698,41 @@ function providerTileTitle(block) {
   const st = llmStatusByProvider.value[block.provider]
   const ps = providerTileState(block)
   const keyTag =
-    st?.has_user_override === true
-      ? 'BYOK'
-      : block.provider === 'xiaomi' && st?.has_platform_key
-        ? '平台密钥'
-        : 'BYOK'
+    st?.has_user_override === true ? 'BYOK' : st?.has_platform_key ? '平台密钥' : '密钥'
   if (ps === 'inactive') {
-    if (block.provider === 'xiaomi') {
-      return `${n}：未配置 BYOK，且未检测到服务端小米密钥`
+    if (
+      hasAnyLlmKey(st) &&
+      st?.has_platform_key &&
+      !st?.has_user_override &&
+      block.provider !== 'xiaomi'
+    ) {
+      return `${n}：服务端已配置该平台的环境变量密钥，模型仍可能可用；磁贴未点亮表示您尚未在下方 BYOK 中保存个人密钥`
     }
-    return `${n}：未配置 BYOK 密钥`
+    return `${n}：未配置 BYOK 且服务端也未设置该平台的环境变量密钥`
   }
-  if (ps === 'warn') return `${n}：${keyTag} 已配置；模型列表拉取降级或限流，请检查网络、额度或稍后重试`
   if (classifyLlmCatalogIssue(block.error, block.fetch_source) === 'expired') {
     return `${n}：${keyTag} 已过期或失效；请删除旧密钥后重新配置`
   }
-  if (ps === 'danger') return `${n}：${keyTag} 已配置；模型接口不可用（认证失败、额度/账单或配置错误）`
+  if (ps === 'warn') {
+    if (String(block.fetch_source || '') === 'static_fallback_merged') {
+      return `${n}：${keyTag} 已配置；未从厂商拉到模型列表，当前展示为站内静态兜底 ID，请到「刷新模型列表」或检查密钥与 Base URL`
+    }
+    return `${n}：${keyTag} 已配置；模型列表拉取降级或限流，请检查网络、额度或稍后重试`
+  }
+  if (ps === 'danger') {
+    const creditHint = catalogIssueCreditHint(block.error)
+    const creditClause = creditHint ? ` ${creditHint}` : ''
+    return `${n}：${keyTag} 已配置；模型目录或接口不可用（认证失败、配置错误或厂商拒绝）${creditClause}`
+  }
   return `${n}：${keyTag} 已配置，模型列表正常`
+}
+
+/** 与磁贴同源：BYOK 列表行旁是否显示「目录报红」提示 */
+function llmByokCatalogDanger(provider) {
+  if (!catalog.value?.providers?.length) return false
+  const block = catalog.value.providers.find((p) => p.provider === provider)
+  if (!block) return false
+  return providerTileState(block) === 'danger'
 }
 
 function llmInitials(label) {
@@ -1136,6 +1202,14 @@ function formatDate(iso) {
 .balance-card { background: #111111; border: 0.5px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
 .balance-label { font-size: 14px; color: rgba(255,255,255,0.5); }
 .balance-value { font-size: 36px; font-weight: 700; margin-top: 4px; color: #ffffff; transition: all 0.5s ease-out; }
+.balance-value--depleted {
+  color: #f87171;
+  text-shadow: 0 0 28px rgba(248, 113, 113, 0.22);
+}
+.balance-card--depleted {
+  border-color: rgba(248, 113, 113, 0.42);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.06);
+}
 .balance-gauge { margin-top: 18px; }
 .balance-gauge__track {
   height: 8px;
@@ -1152,6 +1226,10 @@ function formatDate(iso) {
   transition: width 0.6s ease-out;
   min-width: 0;
   box-shadow: 0 0 12px rgba(45, 212, 191, 0.25);
+}
+.balance-gauge__fill--depleted {
+  background: linear-gradient(90deg, #b91c1c 0%, #ef4444 55%, #f97316 100%);
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.35);
 }
 .balance-gauge__hint {
   margin: 8px 0 0;
@@ -1887,15 +1965,33 @@ function formatDate(iso) {
 }
 .llm-byok-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 13px;
 }
 .llm-byok-row:last-child {
   border-bottom: none;
+}
+.llm-byok-row__line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.llm-byok-row__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(248, 113, 113, 0.92);
+}
+.llm-byok-block__hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(248, 113, 113, 0.88);
 }
 .llm-byok-row__main {
   display: flex;

@@ -126,11 +126,18 @@ const targetId = computed<string | null>(() => {
   return String((art as Record<string, unknown>).target_id ?? '') || null
 })
 
+let _overlayMaxPercent = 0
 const progressPercent = computed(() => {
   const s = steps.value
   if (!s.length) return isFailed.value ? 100 : 10
-  const done = s.filter((x) => x.status === 'done').length
-  return Math.round((done / s.length) * 100)
+  const done = s.filter((x) => x.status === 'done' || x.status === 'error').length
+  const runningCount = s.filter((x) => x.status === 'running').length
+  const runningFrac = runningCount > 0 ? 0.5 : 0
+  let pct = Math.min(100, Math.round(((done + runningFrac) / s.length) * 100))
+  if (pct < _overlayMaxPercent) pct = _overlayMaxPercent
+  else _overlayMaxPercent = pct
+  if (pct >= 100 || isDone.value || isFailed.value) _overlayMaxPercent = 0
+  return pct
 })
 
 function stepIcon(status: OrchestrationStep['status']): string {

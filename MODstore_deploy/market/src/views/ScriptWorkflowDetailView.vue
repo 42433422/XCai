@@ -87,15 +87,15 @@ const canActivate = computed(() =>
 )
 
 function goList() {
-  router.push({ path: '/script-workflows' })
+  router.push({ name: 'workbench-script-workflows' })
 }
 
 function editWithAi() {
-  router.push({ path: `/script-workflows/${wf.value.id}/edit` })
+  router.push({ name: 'workbench-script-workflow-edit', params: { id: wf.value.id } })
 }
 
 function goSandbox() {
-  router.push({ path: `/script-workflows/${wf.value.id}/edit`, query: { tab: 'sandbox' } })
+  router.push({ name: 'workbench-script-workflow-edit', params: { id: wf.value.id }, query: { tab: 'sandbox' } })
 }
 
 async function activate() {

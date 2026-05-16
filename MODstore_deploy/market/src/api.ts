@@ -16,6 +16,8 @@ export function setTokensFromAuthResponse(res: { access_token?: string; refresh_
   setAuthTokens(res)
 }
 
+type AuthResponse = { access_token?: string; refresh_token?: string; ok?: boolean; user?: { id: number; username?: string; email?: string } }
+
 function catalogWriteHeaders(): Record<string, string> | undefined {
   const token = (import.meta.env?.VITE_MODSTORE_CATALOG_UPLOAD_TOKEN ?? '').toString().trim()
   return token ? { Authorization: `Bearer ${token}` } : undefined
@@ -36,7 +38,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password, email, verification_code: verificationCode }),
     })
-    setTokensFromAuthResponse(res as any)
+    setTokensFromAuthResponse(res as AuthResponse)
     return res
   },
   login: async (username: string, password: string) => {
@@ -44,7 +46,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     })
-    setTokensFromAuthResponse(res as any)
+    setTokensFromAuthResponse(res as AuthResponse)
     return res
   },
   loginWithCode: async (email: string, code: string) => {
@@ -52,7 +54,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, code }),
     })
-    setTokensFromAuthResponse(res as any)
+    setTokensFromAuthResponse(res as AuthResponse)
     return res
   },
   sendPhoneCode: (phone: string) => req('/api/auth/send-phone-code', { method: 'POST', body: JSON.stringify({ phone }) }),
@@ -61,10 +63,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ phone, code }),
     })
-    setTokensFromAuthResponse(res as any)
+    setTokensFromAuthResponse(res as AuthResponse)
     return res
   },
   me: () => req('/api/auth/me'),
+  accountBootstrap: () => req('/api/account/bootstrap'),
   sendVerificationCode: (email: string) => req('/api/auth/send-code', { method: 'POST', body: JSON.stringify({ email }) }),
   sendRegisterVerificationCode: (email: string) => req('/api/auth/send-register-code', { method: 'POST', body: JSON.stringify({ email }) }),
   sendResetPasswordCode: (email: string) => req('/api/auth/send-reset-password-code', { method: 'POST', body: JSON.stringify({ email }) }),
@@ -185,7 +188,17 @@ export const api = {
       body: JSON.stringify({ action, admin_note: adminNote }),
     }),
 
-  catalog: (q = '', artifact = '', limit = 50, offset = 0, industry = '', securityLevel = '', materialCategory = '', licenseScope = '') => {
+  catalog: (
+    q = '',
+    artifact = '',
+    limit = 50,
+    offset = 0,
+    industry = '',
+    securityLevel = '',
+    materialCategory = '',
+    licenseScope = '',
+    cacheBust = false,
+  ) => {
     const p = new URLSearchParams({ limit: String(limit), offset: String(offset) })
     if (q) p.set('q', q)
     if (artifact) p.set('artifact', artifact)
@@ -193,6 +206,7 @@ export const api = {
     if (securityLevel) p.set('security_level', securityLevel)
     if (materialCategory) p.set('material_category', materialCategory)
     if (licenseScope) p.set('license_scope', licenseScope)
+    if (cacheBust) p.set('_cb', String(Date.now()))
     return req(`/api/market/catalog?${p}`)
   },
   catalogFacets: () => req('/api/market/facets'),
@@ -238,6 +252,271 @@ export const api = {
    * 替代前端循环逐条删；用于解决「员工仓库老是删不完」（两边数据源 pkg_id 不重合时单条对账会遗漏）。 */
   adminPurgeAllEmployeePacks: () =>
     req('/api/admin/employee-packs/purge-all', { method: 'POST' }),
+  /** 将仍为 deepseek 的员工包批量改为当前环境首个可用 LLM；dryRun 只预览 */
+  adminAlignEmployeeLlmFromDeepseek: (dryRun = false) =>
+    req(
+      `/api/admin/employee-packs/align-llm-from-deepseek?dry_run=${dryRun ? 'true' : 'false'}`,
+      { method: 'POST' },
+    ),
+  /** 将仍为 deepseek 的员工包改为 manifest 内 auto（跟随账户可用密钥） */
+  adminAlignEmployeeLlmToAuto: (dryRun = false) =>
+    req(
+      `/api/admin/employee-packs/align-llm-to-auto?dry_run=${dryRun ? 'true' : 'false'}`,
+      { method: 'POST' },
+    ),
+  /** 单个员工包的 LLM 改为 auto（不限 provider），用于「无密钥」单点修复 */
+  adminAlignSingleEmployeeLlmToAuto: (pkgId: string, dryRun = false) =>
+    req(
+      `/api/admin/employee-packs/${encodeURIComponent(pkgId)}/align-llm-to-auto-single?dry_run=${dryRun ? 'true' : 'false'}`,
+      { method: 'POST' },
+    ),
+  /** 列出当前账户视角下的「无密钥」员工，附带 suggested_action */
+  adminListNoKeyEmployees: () => req('/api/admin/duty-graph/no-key-employees'),
+  /** 校验每日摘要邮件中的 6 位身份校验码，用于解锁前端管理端 UI Tab。 */
+  verifyAdminDigestCode: (code: string) =>
+    req('/api/auth/verify-admin-digest-code', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  /** 运维 shell_exec / ssh_exec 审计日志（只读） */
+  adminOpsAuditLogs: (params?: { employee_id?: string; limit?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.employee_id) p.set('employee_id', params.employee_id)
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    const q = p.toString()
+    return req(`/api/admin/ops/audit${q ? `?${q}` : ''}`)
+  },
+  adminOpsStagedChanges: (params?: { status?: string; limit?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.status) p.set('status', params.status)
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    const q = p.toString()
+    return req(`/api/admin/ops/staged-changes${q ? `?${q}` : ''}`)
+  },
+  adminOpsApprovalTokens: (params?: { limit?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    const q = p.toString()
+    return req(`/api/admin/ops/approval-tokens${q ? `?${q}` : ''}`)
+  },
+  /** 管理员：某员工包的任务执行明细（employee_execution_metrics） */
+  adminEmployeeExecutionMetrics: (
+    employeeId: string,
+    params?: { limit?: number; offset?: number; user_id?: number },
+  ) => {
+    const p = new URLSearchParams()
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    if (params?.offset != null) p.set('offset', String(params.offset))
+    if (params?.user_id != null) p.set('user_id', String(params.user_id))
+    const q = p.toString()
+    return req(
+      `/api/admin/employees/${encodeURIComponent(employeeId)}/execution-metrics${q ? `?${q}` : ''}`,
+    )
+  },
+  /** 管理员：单员工执行能力/风险摘要（handlers、LLM、高风险动作） */
+  adminEmployeeExecutionCapability: (employeeId: string) =>
+    req(`/api/admin/employees/${encodeURIComponent(employeeId)}/execution-capability`),
+  /** 管理员：批量执行能力/风险摘要；不传 employee_ids 则返回全部 */
+  adminEmployeeExecutionCapabilities: (employeeIds?: string[]) =>
+    req('/api/admin/employees/execution-capabilities', {
+      method: 'POST',
+      body: JSON.stringify({ employee_ids: Array.isArray(employeeIds) ? employeeIds : [] }),
+    }),
+  /** 管理员：创建依赖图运行（按 depends_on 拓扑执行） */
+  adminDutyGraphRunStart: (payload: {
+    target_employee_id: string
+    task: string
+    input_data?: Record<string, unknown>
+    include_dependencies?: boolean
+    max_concurrency?: number
+    allow_high_risk_real_run?: boolean
+  }) =>
+    req('/api/admin/duty-graph/runs', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  /** 管理员：查询依赖图运行详情 */
+  adminDutyGraphRunDetail: (runId: number | string) =>
+    req(`/api/admin/duty-graph/runs/${encodeURIComponent(String(runId))}`),
+  /** 管理员：员工自治闭环健康看板（缺岗、调度、待审 CR、未识别事件） */
+  adminDutyGraphHealth: () => req('/api/admin/duty-graph/health'),
+  /** 管理员：员工自治统一看板（建议/待办/协作/进化） */
+  adminEmployeeAutonomyDashboard: (limitRecent = 30) =>
+    req(`/api/admin/employee-autonomy/dashboard?limit_recent=${encodeURIComponent(String(limitRecent))}`),
+  /** 管理员：建议单列表 */
+  adminEmployeeSuggestions: (params?: { status?: string; risk_level?: string; limit?: number; offset?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.status) p.set('status', params.status)
+    if (params?.risk_level) p.set('risk_level', params.risk_level)
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    if (params?.offset != null) p.set('offset', String(params.offset))
+    const q = p.toString()
+    return req(`/api/admin/employee-autonomy/suggestions${q ? `?${q}` : ''}`)
+  },
+  adminEmployeeSuggestionApprove: (id: number | string, dispatchNow = true) =>
+    req(`/api/admin/employee-autonomy/suggestions/${encodeURIComponent(String(id))}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ dispatch_now: dispatchNow }),
+    }),
+  adminEmployeeSuggestionReject: (id: number | string, reason = '') =>
+    req(`/api/admin/employee-autonomy/suggestions/${encodeURIComponent(String(id))}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  adminEmployeeSuggestionBatchReview: (payload: {
+    ids: Array<number | string>
+    action: 'approve' | 'reject'
+    reason?: string
+    dispatch_now?: boolean
+  }) =>
+    req('/api/admin/employee-autonomy/suggestions/batch-review', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  adminEmployeeBriefTasks: (params?: { status?: string; limit?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.status) p.set('status', params.status)
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    const q = p.toString()
+    return req(`/api/admin/employee-autonomy/brief-tasks${q ? `?${q}` : ''}`)
+  },
+  adminEmployeeDispatchBriefTasks: (limit = 20) =>
+    req('/api/admin/employee-autonomy/dispatch/brief-tasks', {
+      method: 'POST',
+      body: JSON.stringify({ limit }),
+    }),
+  adminEmployeeDispatchSuggestions: (limit = 20) =>
+    req('/api/admin/employee-autonomy/dispatch/suggestions', {
+      method: 'POST',
+      body: JSON.stringify({ limit }),
+    }),
+  adminEmployeeEvolutionScan: (payload?: { lookback_hours?: number; min_failures?: number; limit?: number }) =>
+    req('/api/admin/employee-autonomy/evolution/scan', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  adminEmployeeCollabThreads: (params?: { status?: string; limit?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.status) p.set('status', params.status)
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    const q = p.toString()
+    return req(`/api/admin/employee-autonomy/collab/threads${q ? `?${q}` : ''}`)
+  },
+  adminEmployeeCreateCollabThread: (payload: {
+    title: string
+    participants: string[]
+    created_by_employee_id?: string
+    context?: Record<string, unknown>
+  }) =>
+    req('/api/admin/employee-autonomy/collab/threads', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  adminEmployeeCollabMessages: (threadId: number | string, limit = 100) =>
+    req(
+      `/api/admin/employee-autonomy/collab/threads/${encodeURIComponent(String(threadId))}/messages?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  adminEmployeePostCollabMessage: (
+    threadId: number | string,
+    payload: {
+      sender_employee_id?: string
+      content: string
+      mentions?: string[]
+      payload?: Record<string, unknown>
+    },
+  ) =>
+    req(`/api/admin/employee-autonomy/collab/threads/${encodeURIComponent(String(threadId))}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  /** 管理员：异步下达自然语言任务，由 task_router 拆给合适的员工 */
+  opsOrchestrateAsync: (payload: {
+    task_description: string
+    use_task_router?: boolean
+    target_employee_id?: string
+    max_concurrency?: number
+    allow_high_risk_real_run?: boolean
+  }) =>
+    req('/api/ops/orchestrate/async', {
+      method: 'POST',
+      body: JSON.stringify({
+        use_task_router: true,
+        max_concurrency: 2,
+        allow_high_risk_real_run: false,
+        ...payload,
+      }),
+    }),
+  /** 管理员：查询某条编排任务状态 */
+  opsOrchestrateJob: (jobId: string) =>
+    req(`/api/ops/orchestrate/jobs/${encodeURIComponent(jobId)}`),
+  /** 管理员：列出自己最近的编排任务 */
+  opsOrchestrateJobs: (limit = 20) =>
+    req(`/api/ops/orchestrate/jobs?limit=${encodeURIComponent(String(limit))}`),
+  /** 员工 Agent 变更审批队列 */
+  adminChangeRequestsList: (params?: { status?: string; limit?: number }) => {
+    const p = new URLSearchParams()
+    if (params?.status) p.set('status', params.status)
+    if (params?.limit != null) p.set('limit', String(params.limit))
+    const q = p.toString()
+    return req(`/api/admin/change-requests${q ? `?${q}` : ''}`)
+  },
+  adminChangeRequestDetail: (id: number | string) =>
+    req(`/api/admin/change-requests/${encodeURIComponent(String(id))}`),
+  adminChangeRequestApprove: (id: number | string) =>
+    req(`/api/admin/change-requests/${encodeURIComponent(String(id))}/approve`, { method: 'POST' }),
+  adminChangeRequestReject: (id: number | string, body: { reason?: string }) =>
+    req(`/api/admin/change-requests/${encodeURIComponent(String(id))}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body || {}),
+    }),
+  /** 管理员：yuangon employee.yaml 与商城 employee_pack 上架对齐状态 */
+  // ─── AI 员工账号池（QQ / 邮箱 / 微信等外部账号 → 一等公民入站渠道） ─────
+  /** 列出所有 AI 员工账号（带 channel.paths：webhook URL 候选） */
+  adminListAiAccounts: (params: { platform?: string; employee_id?: string; status?: string; limit?: number; offset?: number } = {}) => {
+    const p = new URLSearchParams()
+    if (params.platform) p.set('platform', params.platform)
+    if (params.employee_id) p.set('employee_id', params.employee_id)
+    if (params.status) p.set('status', params.status)
+    if (params.limit != null) p.set('limit', String(params.limit))
+    if (params.offset != null) p.set('offset', String(params.offset))
+    const qs = p.toString()
+    return req(`/api/admin/ai-accounts${qs ? `?${qs}` : ''}`)
+  },
+  /** 新建账号 + 落地密钥；secret 是平台对应的 schema（QQ：app_id/app_secret/bot_token） */
+  adminCreateAiAccount: (body: {
+    platform: string
+    external_id: string
+    employee_id: string
+    display_name?: string
+    sandbox?: boolean
+    notes?: string
+    secret: Record<string, unknown>
+  }) => req('/api/admin/ai-accounts', { method: 'POST', body: JSON.stringify(body) }),
+  /** 改派 employee_id / 改状态 / 改备注 / 改沙箱 */
+  adminUpdateAiAccount: (
+    id: number | string,
+    body: { employee_id?: string; display_name?: string; status?: string; sandbox?: boolean; notes?: string },
+  ) =>
+    req(`/api/admin/ai-accounts/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  /** 轮换密钥（覆盖密钥文件） */
+  adminRotateAiAccountSecret: (id: number | string, secret: Record<string, unknown>) =>
+    req(`/api/admin/ai-accounts/${encodeURIComponent(String(id))}/rotate`, {
+      method: 'POST',
+      body: JSON.stringify({ secret }),
+    }),
+  /** 删除账号 + 销毁密钥文件 */
+  adminDeleteAiAccount: (id: number | string) =>
+    req(`/api/admin/ai-accounts/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  /** 查询 QQ 桥接当前状态（凭证来源、配齐与否、一等公民员工列表） */
+  butlerQqStatus: () => req('/api/agent/butler/qq/status'),
+
+  adminYuangonOnboardStatus: () => req('/api/admin/yuangon-onboard/status'),
+  /** 管理员：运行 onboard_yuangon_employees.py（dry_run / force / pkg_ids） */
+  adminYuangonOnboardRun: (body: { dry_run?: boolean; force?: boolean; pkg_ids?: string }) =>
+    req('/api/admin/yuangon-onboard/run', { method: 'POST', body: JSON.stringify(body || {}) }),
   /** 管理员一键清空 mod 源码库：删 library/ 下所有 mod 目录 + 截断 user_mods 关联表，
    * 作为「重置仓库」的原子操作，避免前端循环单条 DELETE 因 list 缓存/关联残留导致「删不完」。 */
   adminPurgeAllMods: () => req('/api/admin/mods/purge-all', { method: 'POST' }),
@@ -328,12 +607,12 @@ export const api = {
         return await fetchZipBlob(urls[i], headers)
       } catch (e) {
         lastErr = e
-        const msg = String((e as any)?.message || '').trim()
+        const msg = String((e as Error)?.message || '').trim()
         if (looksLikeMissingRoute(msg) && i === 0) continue
         break
       }
     }
-    const base = String((lastErr as any)?.message || '导出失败').trim()
+    const base = String((lastErr as Error)?.message || '导出失败').trim()
     if (looksLikeMissingRoute(base)) {
       throw new Error(`${base} — ${staleHint}`)
     }
@@ -411,18 +690,27 @@ export const api = {
   /**
    * 根据当前 manifest 生成完整 .xcemp（含 blueprints.py + employee.py）并下载。
    * 不落盘，直接返回 zip 流。
+   * `standalone: true` 时额外打入 zipapp（__main__.py、standalone/），可本机 `python *.xcemp validate`。
    */
-  employeeExportZip: async (manifest: unknown, employeeId?: string): Promise<Blob> => {
+  employeeExportZip: async (
+    manifest: unknown,
+    employeeId?: string,
+    opts?: { standalone?: boolean },
+  ): Promise<Blob> => {
     const headers = authHeaders() || {}
     headers['Content-Type'] = 'application/json'
     const res = await fetch('/api/workbench/employee-export', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ manifest, employee_id: employeeId || null }),
+      body: JSON.stringify({
+        manifest,
+        employee_id: employeeId || null,
+        standalone: opts?.standalone === true,
+      }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as Record<string, unknown>
-      throw new Error(String((err as any)?.detail || (err as any)?.error || `HTTP ${res.status}`))
+      throw new Error(String(err?.detail || err?.error || `HTTP ${res.status}`))
     }
     return res.blob()
   },
@@ -635,9 +923,42 @@ export const api = {
 
   listEmployees: () => req('/api/employees/'),
   getEmployeeStatus: (employeeId: string) => req(`/api/employees/${encodeURIComponent(employeeId)}/status`),
-  getEmployeeManifest: (employeeId: string) => req(`/api/employees/${encodeURIComponent(employeeId)}/manifest`),
+  getEmployeeManifest: async (employeeId: string) => {
+    try {
+      return await req(`/api/employees/${encodeURIComponent(employeeId)}/manifest`)
+    } catch (e: any) {
+      const msg = String(e?.message || '')
+      if (msg.includes('404') || msg.includes('不存在') || msg.includes('Not Found')) {
+        return { pack_id: employeeId, name: employeeId, version: '0.0.0', manifest: {} }
+      }
+      throw e
+    }
+  },
+  /** 管理员：排查员工 manifest 404 — 目录路径、packages.json、Mod 库与可选 pack_id 探测 */
+  employeeCatalogManifestDiagnostics: (packId?: string) => {
+    const q = packId ? `?pack_id=${encodeURIComponent(packId)}` : ''
+    return req(`/api/employees/catalog-manifest-diagnostics${q}`)
+  },
   executeEmployeeTask: (employeeId: string, task: string, inputData: unknown) =>
     req(`/api/employees/${employeeId}/execute`, { method: 'POST', body: JSON.stringify({ task, input_data: inputData }) }),
+  /** multipart：原始表格给员工包执行（不走知识抽取）；与 Nginx / MODSTORE_EMPLOYEE_FILE_MAX_BYTES 上限一致。 */
+  employeeExecuteFile: (
+    employeeId: string,
+    file: File,
+    opts?: { task?: string; inputData?: Record<string, unknown> },
+  ) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('task', opts?.task ?? '')
+    form.append('input_data_json', JSON.stringify(opts?.inputData ?? {}))
+    return req(`/api/employees/${encodeURIComponent(employeeId)}/execute-file`, { method: 'POST', body: form })
+  },
+  /** 下载 execute-file 持久化后的产出（需登录，与 employeeExecuteFile 配套）。 */
+  employeeOutputDownload: (jobId: string, filename: string) =>
+    requestBlob(
+      `/api/employees/downloads/${encodeURIComponent(jobId)}/${encodeURIComponent(filename)}`,
+      { method: 'GET' },
+    ),
 
   llmStatus: () => req('/api/llm/status'),
   llmResolveChatDefault: () => req('/api/llm/resolve-chat-default'),
@@ -670,7 +991,7 @@ export const api = {
     const res = (await req('/api/llm/chat', {
       method: 'POST',
       body: JSON.stringify({ provider, model, messages, max_tokens: maxTokens, conversation_id: conversationId }),
-    })) as { billed?: boolean; charge_amount?: number }
+    })) as { billed?: boolean; charge_amount?: number; content?: unknown } & Record<string, unknown>
     if (res && (res.billed === true || (Number(res.charge_amount) || 0) > 0)) {
       void import('./utils/llmBillingRefresh').then((m) => m.refreshLevelAndWalletAfterLlm())
     }
@@ -722,6 +1043,12 @@ export const api = {
   },
   workbenchResearchContext: (body: unknown) => req('/api/workbench/research-context', { method: 'POST', body: JSON.stringify(body) }),
   workbenchStartSession: (body: unknown) => req('/api/workbench/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  workbenchStartSessionWithFiles: (body: unknown, files: File[]) => {
+    const fd = new FormData()
+    fd.append('metadata', JSON.stringify(body || {}))
+    for (const f of files || []) fd.append('files', f)
+    return req('/api/workbench/sessions', { method: 'POST', body: fd })
+  },
   /**
    * 工作台三档对话中的即席文件处理（Canvas Skill 模式）。
    * 轮询方式，结果通过 workbenchGetSession 查询，不持久化到数据库。
@@ -740,8 +1067,12 @@ export const api = {
 
   /**
    * 启动 6 阶段 AI 员工生成流水线（SSE）。
-   * 返回原生 Response 对象，调用方通过 `useEmployeeAiDraft` composable 消费。
-   * 与 workbenchStartSession/workbenchGetSession（轮询）完全独立，不互相干扰。
+   * 推荐使用 `useAgentLoop().runEmployeeDraft()`（Bearer + Pinia 流水线快照 + EmployeeAiDraftReview）。
+   * SSE `data:` 行 JSON 字段 `event` 取值包括但不限于：
+   * stage_start | stage_progress | stage_done | stage_error | pipeline_done | pipeline_error
+   * 对话审核扩展（可选，后端实现）：review_reply | clarification_question（正文可用 message 或 content）。
+   * 审核上行（可选）：POST /api/workbench/employee-ai/draft/review-chat body `{ message, run_id }`。
+   * 与 workbenchStartSession/workbenchGetSession（轮询）完全独立。
    */
   streamEmployeeAiDraft: (
     brief: string,
@@ -781,6 +1112,30 @@ export const api = {
         ...(rate != null && Number.isFinite(rate) ? { rate } : {}),
       }),
     }),
+
+  listStudioAssets: (params?: { offset?: number; limit?: number }) => {
+    const o = params?.offset ?? 0
+    const l = params?.limit ?? 50
+    return req(`/api/workbench/studio-assets?offset=${encodeURIComponent(String(o))}&limit=${encodeURIComponent(String(l))}`)
+  },
+  uploadStudioAsset: (file: File, opts?: { kind?: string; metadata?: Record<string, unknown> }) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (opts?.kind) form.append('kind', opts.kind)
+    if (opts?.metadata && Object.keys(opts.metadata).length) {
+      form.append('metadata', JSON.stringify(opts.metadata))
+    }
+    return req('/api/workbench/studio-assets', { method: 'POST', body: form })
+  },
+  deleteStudioAsset: (id: number) =>
+    req(`/api/workbench/studio-assets/${encodeURIComponent(String(id))}`, { method: 'DELETE' }),
+  patchStudioAssetMetadata: (id: number, metadata: Record<string, unknown>) =>
+    req(`/api/workbench/studio-assets/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ metadata }),
+    }),
+  downloadStudioAssetBlob: (id: number) =>
+    requestBlob(`/api/workbench/studio-assets/${encodeURIComponent(String(id))}/file`),
 
   knowledgeStatus: () => req('/api/knowledge/status'),
   knowledgeListDocuments: () => req('/api/knowledge/documents'),
@@ -1010,6 +1365,41 @@ export const api = {
     req('/api/agent/butler/orchestrate', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+
+  /**
+   * POST /api/agent/butler/all-hands-report — 数字管家召集全员汇报（管理员）。
+   * 让每个在岗员工自己讲：① 文件架构与工作逻辑 ② 最近问题与解决 ③ 联网+GitHub 调研后的自我优化（含联动）。
+   * 返回结构化 JSON（每岗一段固定 4 节 Markdown）；阻塞至全部完成（`concurrency` 决定快慢）。
+   */
+  butlerAllHandsReportStartSession: (payload: {
+    employee_ids?: string[]
+    with_research?: boolean
+    max_employees?: number
+    concurrency?: number
+    user_question?: string
+    synthesize?: boolean
+  }) =>
+    req('/api/agent/butler/all-hands-report/sessions', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+
+  /**
+   * 同步版：等待全员汇报完成后一次性返回。
+   * 如果前置网关超时较短，建议优先使用 butlerAllHandsReportStartSession + workbenchGetSession 轮询。
+   */
+  butlerAllHandsReport: (payload: {
+    employee_ids?: string[]
+    with_research?: boolean
+    max_employees?: number
+    concurrency?: number
+    user_question?: string
+    synthesize?: boolean
+  }) =>
+    req('/api/agent/butler/all-hands-report', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
     }),
 }
 

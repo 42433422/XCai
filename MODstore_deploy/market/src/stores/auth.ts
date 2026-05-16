@@ -1,10 +1,12 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api, clearAuthTokens } from '../api'
+import { ApiError } from '../infrastructure/http/client'
 import { ACCESS_TOKEN_KEY, getAccessToken } from '../infrastructure/storage/tokenStore'
 import { buildLevelProfileDict, normalizeMeResponse } from '../domain/accountLevel'
+import type { CurrentUser } from '../domain/auth/types'
 
-function displayName(user: any): string {
+function displayName(user: CurrentUser | null | undefined): string {
   const username = typeof user?.username === 'string' ? user.username.trim() : ''
   const email = typeof user?.email === 'string' ? user.email.trim() : ''
   return username || (email ? email.split('@')[0] || email : '')
@@ -20,7 +22,7 @@ export interface MembershipState {
 }
 
 export const useAuthStore = defineStore('auth', () => {
-  const user = ref<any>(null)
+  const user = ref<CurrentUser | null>(null)
   const currentMode = ref<'client' | 'admin'>('client')
   const lastValidatedToken = ref('')
   /** 上次成功拉取 /api/auth/me 的时间，用于在路由频繁切换时避免对同一 token 永久复用陈旧的 user（例如支付后经验已入账） */
@@ -32,6 +34,27 @@ export const useAuthStore = defineStore('auth', () => {
   const isLoggedIn = computed(() => Boolean(user.value && getAccessToken()))
   const isAdmin = computed(() => user.value?.is_admin === true)
   const username = computed(() => displayName(user.value))
+
+  const ADMIN_DIGEST_UNLOCK_KEY = 'modstore_admin_digest_unlock_expires'
+  const adminDigestUnlockExpires = ref<string>(
+    (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(ADMIN_DIGEST_UNLOCK_KEY) : '') || '',
+  )
+  const adminUiUnlocked = computed(() => {
+    const exp = adminDigestUnlockExpires.value
+    if (!exp) return false
+    const t = Date.parse(exp)
+    return Number.isFinite(t) && Date.now() < t
+  })
+  function setAdminDigestUnlock(expiresIso: string): void {
+    adminDigestUnlockExpires.value = expiresIso || ''
+    if (typeof sessionStorage !== 'undefined') {
+      if (expiresIso) sessionStorage.setItem(ADMIN_DIGEST_UNLOCK_KEY, expiresIso)
+      else sessionStorage.removeItem(ADMIN_DIGEST_UNLOCK_KEY)
+    }
+  }
+  function clearAdminDigestUnlock(): void {
+    setAdminDigestUnlock('')
+  }
   /** 当前会员档位标识（free / vip / vip_plus / svip1..svip8）。未登录或加载前为 "" */
   const membershipTier = computed(() => {
     const t = String(membership.value?.tier || '').trim().toLowerCase()
@@ -115,9 +138,18 @@ export const useAuthStore = defineStore('auth', () => {
       // 拿到会员档位用于导航栏用户名颜色等场景；失败不阻塞登录态
       void refreshMembership()
       return user.value
-    } catch {
-      clearAuthTokens()
-      resetSession()
+    } catch (e) {
+      // 网络抖动 / 502：勿清空本地 JWT，便于重试或稍后在登录页用 refresh。
+      // 仅凭证被拒（401/403）时与登录过期一致，扔掉令牌。
+      const authRejected = e instanceof ApiError && (e.status === 401 || e.status === 403)
+      if (authRejected) {
+        clearAuthTokens()
+        resetSession()
+      } else {
+        user.value = null
+        lastValidatedToken.value = ''
+        lastMeFetchedAt.value = 0
+      }
       return null
     }
   }
@@ -142,6 +174,7 @@ export const useAuthStore = defineStore('auth', () => {
   function logout(): void {
     clearAuthTokens()
     resetSession()
+    clearAdminDigestUnlock()
     currentMode.value = 'client'
   }
 
@@ -161,5 +194,8 @@ export const useAuthStore = defineStore('auth', () => {
     loginWithPassword,
     loginWithCode,
     logout,
+    adminUiUnlocked,
+    setAdminDigestUnlock,
+    clearAdminDigestUnlock,
   }
 })

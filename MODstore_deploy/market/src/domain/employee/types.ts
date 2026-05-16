@@ -25,6 +25,17 @@ export interface EmployeePackMetadata {
   exported_at?: string
 }
 
+/** Optional pointer to deploy_topology.yaml components[].id — not a collaboration edge. */
+export interface EmployeePackReleaseHints {
+  component_id?: string
+}
+
+/** Optional pointers for ops/docs — never used for Duty Graph topology. */
+export interface EmployeePackReferences {
+  /** GitHub Actions workflow display name (workflow file `name:`). */
+  ci_workflow?: string
+}
+
 export interface EmployeePackManifest {
   id: string
   name: string
@@ -41,6 +52,10 @@ export interface EmployeePackManifest {
   employee_config_v2?: Record<string, unknown>
   commerce?: EmployeePackCommerce
   metadata?: EmployeePackMetadata
+  /** Maps pack to infra component id in MODstore_deploy/orchestration/deploy_topology.yaml */
+  release_hints?: EmployeePackReleaseHints
+  /** Non-topology hints (CI workflow name, etc.); duty graph ignores these. */
+  references?: EmployeePackReferences
 }
 
 /**

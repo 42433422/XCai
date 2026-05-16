@@ -1,54 +1,30 @@
 <template>
   <div class="workbench">
-    <header v-if="!isEmployeeRoute" class="workbench-bar">
-      <div class="workbench-bar-inner">
-        <router-link :to="{ name: 'workbench-home' }" class="workbench-title-link">
-          <h1 class="workbench-title">工作台</h1>
-        </router-link>
-        <details class="workbench-help">
-          <summary class="workbench-help-summary">各入口一句话说明（展开）</summary>
-          <div class="workbench-help-body">
-            <p><strong>Mod 库</strong>：维护扩展包与 manifest；其中的「工作流员工」多为占位声明，不等于已上架的完整员工包。</p>
-            <p><strong>员工制作</strong>：用向导做可安装员工包，并走打包、测试、上架；工作流是必选核心。</p>
-            <p><strong>工作流</strong>：<strong>脚本工作流</strong>是可运行的 Python 任务；统一工作台里可切到<strong>专注工作流</strong>做画布编排。要「能跑的任务」优先用脚本工作流。</p>
-            <p class="workbench-help-foot muted">字段与格式详见仓库内 <strong>MOD_AUTHORING_GUIDE.md</strong>。</p>
-          </div>
-        </details>
-        <nav class="workbench-tabs" aria-label="工作台主导航">
-          <router-link
-            :to="{ name: 'workbench-home' }"
-            class="workbench-tab"
-            active-class="workbench-tab--active"
-          >
-            首页
-          </router-link>
-          <router-link
-            :to="{ name: 'workbench-unified', query: { focus: 'repository' } }"
-            class="workbench-tab"
-            active-class="workbench-tab--active"
-          >
-            统一工作台
-          </router-link>
-          <router-link
-            :to="{ name: 'script-workflows' }"
-            class="workbench-tab"
-            :class="{ 'workbench-tab--active': scriptWorkflowsNavActive }"
-          >
-            脚本工作流
-          </router-link>
-          <router-link
-            :to="{ name: 'workbench-unified', query: { focus: 'employee' } }"
-            class="workbench-tab"
-            :class="{ 'workbench-tab--active': myEmployeesNavActive }"
-          >
-            我的员工
-          </router-link>
-        </nav>
-      </div>
-    </header>
+    <nav class="wb-scene-nav">
+      <a href="/workbench/home" class="wb-scene-nav-item" :class="{ 'wb-scene-nav-item--active': isWorkbenchHome }" @click.prevent="navigateTo({ name: 'workbench-home' })">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z"/></svg>
+        <span>首页</span>
+      </a>
+      <a href="/workbench/unified?focus=repository" class="wb-scene-nav-item" :class="{ 'wb-scene-nav-item--active': isUnifiedRepo }" @click.prevent="navigateTo({ name: 'workbench-unified', query: { focus: 'repository' } })">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.5" y="1.5" width="13" height="13" rx="2"/><path d="M5 8h6M8 5v6"/></svg>
+        <span>统一工作台</span>
+      </a>
+      <a href="/workbench/script-workflows" class="wb-scene-nav-item" :class="{ 'wb-scene-nav-item--active': scriptWorkflowsNavActive }" @click.prevent="navigateTo({ name: 'workbench-script-workflows' })">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h12M2 8h8M2 12h5"/></svg>
+        <span>脚本工作流</span>
+      </a>
+      <a href="/workbench/employees" class="wb-scene-nav-item" :class="{ 'wb-scene-nav-item--active': myEmployeesNavActive }" @click.prevent="navigateTo({ name: 'workbench-employees' })">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="5" r="2.5"/><path d="M3 14c0-2.76 2.24-5 5-5s5 2.24 5 5"/></svg>
+        <span>我的员工</span>
+      </a>
+      <a href="/workbench/materials" class="wb-scene-nav-item" :class="{ 'wb-scene-nav-item--active': isMaterialsPage }" @click.prevent="navigateTo({ name: 'workbench-materials' })">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 2h4v4H2zM6 2h4v4H6zM10 2h4v4h-4zM2 6h4v4H2zM6 6h4v4H6z"/></svg>
+        <span>我的素材</span>
+      </a>
+      <span class="wb-scene-nav-brand" aria-hidden="true">XC</span>
+    </nav>
     <main class="workbench-main">
       <router-view v-slot="{ Component, route: childRoute }">
-        <!-- 首页 / 统一工作台 / Mod 制作等切换时保留各自状态，避免 fullPath 当 key 导致整页重挂 -->
         <keep-alive :max="12">
           <component
             v-if="Component"
@@ -67,16 +43,26 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
+const router = useRouter()
 const route = useRoute()
-const isEmployeeRoute = computed(() => String(route.name || '') === 'workbench-employee')
-const scriptWorkflowsNavActive = computed(() => String(route.path || '').startsWith('/script-workflows'))
-const myEmployeesNavActive = computed(() => {
+
+const isWorkbenchHome = computed(() => String(route.name || '') === 'workbench-home')
+const isUnifiedRepo = computed(() => {
   if (String(route.name || '') !== 'workbench-unified') return false
   const f = String(route.query.focus || '').trim().toLowerCase()
-  return f === 'employee'
+  return f === 'repository' || f === ''
 })
+const scriptWorkflowsNavActive = computed(() => String(route.path || '').includes('/script-workflows'))
+const myEmployeesNavActive = computed(() => String(route.name || '') === 'workbench-employees')
+const isMaterialsPage = computed(() => String(route.name || '') === 'workbench-materials')
+
+function navigateTo(routeLocation: Parameters<typeof router.push>[0]) {
+  requestAnimationFrame(() => {
+    router.push(routeLocation)
+  })
+}
 </script>
 
 <style scoped>
@@ -89,111 +75,48 @@ const myEmployeesNavActive = computed(() => {
   background: #0a0a0a;
 }
 
-.workbench-bar {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(0, 0, 0, 0.45);
-}
-
-.workbench-bar-inner {
-  width: 100%;
-  max-width: var(--layout-max, min(1600px, calc(100vw - 48px)));
-  margin: 0 auto;
-  padding: 0.75rem var(--layout-pad-x, 16px) 0.65rem;
+.wb-scene-nav {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 0.65rem 1rem;
-  min-width: 0;
+  flex-direction: row;
+  gap: 2px;
+  padding: 0.5rem;
 }
 
-.workbench-help {
-  flex: 1 1 220px;
-  min-width: 0;
-  max-width: min(420px, 100%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 0.35rem 0.65rem;
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 0.85rem;
-  line-height: 1.45;
-}
-
-.workbench-help-summary {
-  cursor: pointer;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.88);
-  list-style: none;
-}
-
-.workbench-help summary::-webkit-details-marker {
-  display: none;
-}
-
-.workbench-help-body {
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.workbench-help-body p {
-  margin: 0 0 0.5rem;
-}
-
-.workbench-help-body p:last-child {
-  margin-bottom: 0;
-}
-
-.workbench-help .mono {
-  font-family: ui-monospace, monospace;
-  font-size: 0.82em;
-  color: rgba(200, 220, 255, 0.95);
-}
-
-.workbench-help-foot {
-  font-size: 0.8rem;
-  margin-top: 0.35rem !important;
-}
-
-.workbench-title-link {
-  text-decoration: none;
-  color: inherit;
-}
-
-.workbench-title-link:hover .workbench-title {
-  color: rgba(255, 255, 255, 0.88);
-}
-
-.workbench-title {
-  margin: 0;
-  font-size: clamp(1.1rem, 1rem + 0.35vw, 1.3rem);
-  font-weight: 600;
-  color: #ffffff;
-}
-
-.workbench-tabs {
+.wb-scene-nav-item {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem;
-}
-
-.workbench-tab {
-  padding: 0.45rem 0.95rem;
-  border-radius: 6px;
-  font-size: clamp(0.9rem, 0.85rem + 0.2vw, 1rem);
-  color: rgba(255, 255, 255, 0.45);
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: rgba(240, 240, 245, 0.4);
   text-decoration: none;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
 }
 
-.workbench-tab:hover {
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.06);
+.wb-scene-nav-item:hover {
+  background: rgba(129, 140, 248, 0.08);
+  color: rgba(240, 240, 245, 0.7);
 }
 
-.workbench-tab--active {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.1);
+.wb-scene-nav-item--active {
+  background: rgba(129, 140, 248, 0.12);
+  color: rgba(240, 240, 245, 0.95);
+}
+
+.wb-scene-nav-brand {
+  margin-left: auto;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  background: linear-gradient(135deg, #1e3a5f 0%, #6366f1 50%, #0a0a0a 100%);
+  color: transparent;
+  background-clip: text;
+  -webkit-background-clip: text;
+  user-select: none;
+  pointer-events: none;
 }
 
 .workbench-main {

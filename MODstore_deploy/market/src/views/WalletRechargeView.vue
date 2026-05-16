@@ -74,8 +74,7 @@ const customAmount = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 const qrCode = ref('')
-const pollingTimer = ref(null)
-const pollRechargeCount = ref(0)
+const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 const presetAmounts = [10, 50, 100, 200, 500, 1000]
 
@@ -126,32 +125,28 @@ async function handleRecharge() {
     }
 
     if (res.type === 'page' || res.type === 'wap') {
-      window.location.href = res.redirect_url
+      window.location.href = res.redirect_url ?? ''
     } else if (res.type === 'precreate' || res.type === 'wechat_native') {
-      qrCode.value = res.qr_code
-      startPolling(res.order_id)
+      qrCode.value = res.qr_code ?? ''
+      startPolling(String(res.order_id ?? ''))
     }
   } catch (e) {
-    errorMsg.value = '充值失败: ' + e.message
+    errorMsg.value = '充值失败: ' + ((e as Error)?.message || String(e))
   } finally {
     loading.value = false
   }
 }
 
-function startPolling(orderId) {
-  pollRechargeCount.value = 0
+function startPolling(orderId: string) {
   pollingTimer.value = setInterval(async () => {
     try {
-      pollRechargeCount.value += 1
-      const res = await api.paymentQuery(orderId, {
-        reconcile: pollRechargeCount.value % 2 === 0,
-      })
+      const res = await api.paymentQuery(orderId, { reconcile: true })
       if (res.status === 'paid') {
-        clearInterval(pollingTimer.value)
+        if (pollingTimer.value) clearInterval(pollingTimer.value)
         alert('充值成功！')
         router.push('/wallet')
       } else if (res.status === 'failed' || res.status === 'closed') {
-        clearInterval(pollingTimer.value)
+        if (pollingTimer.value) clearInterval(pollingTimer.value)
         errorMsg.value = '支付失败或已取消'
       }
     } catch (e) {

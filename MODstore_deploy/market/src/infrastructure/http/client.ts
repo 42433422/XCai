@@ -113,7 +113,7 @@ function shouldSkipRefresh(path: string): boolean {
   )
 }
 
-export async function requestJson<T>(path: string, opts: RequestInit = {}, authAttempt = 0): Promise<T> {
+export async function requestJson<T extends unknown = any>(path: string, opts: RequestInit = {}, authAttempt = 0): Promise<T> {
   const method = (opts.method || 'GET').toUpperCase()
   const headers = new Headers(opts.headers || {})
   const token = getAccessToken()
@@ -134,6 +134,7 @@ export async function requestJson<T>(path: string, opts: RequestInit = {}, authA
       (path.includes('/api/payment') ||
         path.includes('/api/wallet') ||
         path.includes('/api/refunds') ||
+        path.includes('/api/admin') ||
         pathOnly === '/api/auth/me'))
   if (
     looksLikeAuthFailure &&
@@ -145,16 +146,19 @@ export async function requestJson<T>(path: string, opts: RequestInit = {}, authA
     const newToken = await refreshAccessTokenOnce()
     if (newToken) return requestJson<T>(path, opts, 1)
   }
-  if (!res.ok) {
-    let msg = errorMessage(data, res.statusText)
-    if (res.status === 504) {
-      msg =
-        'HTTP 504 Gateway Time-out（网关在等待上游响应时超时。工作台 LLM / 基准测试可能需数分钟：请为 location /api/ 设置 proxy_read_timeout 3600s 或更高。）'
-    } else if (typeof msg === 'string' && msg.length > 600) {
-      msg = `${msg.slice(0, 400)}…`
-    }
-    throw new ApiError(msg, res.status, data)
-  }
+    if (!res.ok) {
+        let msg = errorMessage(data, res.statusText)
+        if (res.status === 504) {
+          msg =
+            'HTTP 504 Gateway Time-out（网关在等待上游响应时超时。工作台 LLM / 基准测试可能需数分钟：请为 location /api/ 设置 proxy_read_timeout 3600s 或更高。）'
+        } else if (res.status === 503) {
+          msg =
+            'HTTP 503 Service Unavailable（上游过载或未就绪。请在浏览器 Network 面板确认具体 URL：常见于 /api/llm/status、/api/llm/catalog 或网关到后端的连接。）'
+        } else if (typeof msg === 'string' && msg.length > 600) {
+          msg = `${msg.slice(0, 400)}…`
+        }
+        throw new ApiError(msg, res.status, data)
+      }
   return data as T
 }
 
@@ -191,6 +195,7 @@ export async function requestBlob(path: string, opts: RequestInit = {}, authAtte
       (path.includes('/api/payment') ||
         path.includes('/api/wallet') ||
         path.includes('/api/refunds') ||
+        path.includes('/api/admin') ||
         pathOnly === '/api/auth/me'))
   if (
     looksLikeAuthFailure &&

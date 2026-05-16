@@ -1,7 +1,16 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { createEmptyEmployeeConfigV2 } from '../employeeConfigV2'
 import { api } from '../api'
+import { getAccessToken } from '../infrastructure/storage/tokenStore'
+import {
+  applyEmployeeDraftPipelineEvent as applyEmployeeDraftPipelineEventCore,
+  makePipelineStatus,
+  makeStages,
+  type EmployeeDraftReviewMessage,
+  type PipelineStages,
+  type PipelineStatus,
+} from '../domain/employeeDraftPipeline'
 
 // Use generic shapes to avoid @vue-flow/core deep-generic TS2589 errors
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -83,6 +92,111 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // Agent runs (left rail timeline)
   const agentRuns = ref<AgentRun[]>([])
   const currentRunId = ref<string | null>(null)
+
+  /** Employee draft SSE pipeline — shared with EmployeeAiDraftReview (single SSE via useAgentLoop). */
+  const employeeDraftStages = reactive<PipelineStages>(makeStages())
+  const employeeDraftStatus = reactive<PipelineStatus>(makePipelineStatus())
+  const employeeDraftProgressMessages = ref<string[]>([])
+  const employeeDraftReviewMessages = ref<EmployeeDraftReviewMessage[]>([])
+  const employeeDraftReviewSending = ref(false)
+
+  function reviewDraftMsgId(): string {
+    return `edr-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`
+  }
+
+  function resetEmployeeDraftPipeline(): void {
+    Object.assign(employeeDraftStages, makeStages())
+    Object.assign(employeeDraftStatus, makePipelineStatus())
+    employeeDraftProgressMessages.value = []
+    employeeDraftReviewMessages.value = []
+  }
+
+  function markEmployeeDraftPipelineAborted(): void {
+    if (employeeDraftStatus.phase === 'running') {
+      employeeDraftStatus.phase = 'error'
+      employeeDraftStatus.fatalError = '已取消'
+    }
+  }
+
+  /**
+   * Handles SSE payload from `/api/workbench/employee-ai/draft` plus optional future events:
+   * `review_reply`, `clarification_question` (append to review thread).
+   */
+  function applyEmployeeDraftSseEvent(ev: Record<string, unknown>): void {
+    const event = String(ev.event ?? '')
+    if (event === 'review_reply' || event === 'clarification_question') {
+      const text = String(ev.message ?? ev.content ?? '').trim()
+      if (text) {
+        employeeDraftReviewMessages.value.push({
+          id: reviewDraftMsgId(),
+          role: 'assistant',
+          kind: event,
+          content: text,
+          ts: Date.now(),
+        })
+      }
+      return
+    }
+    applyEmployeeDraftPipelineEventCore(
+      employeeDraftStages,
+      employeeDraftStatus,
+      employeeDraftProgressMessages,
+      ev,
+    )
+  }
+
+  /** POST /api/workbench/employee-ai/draft/review-chat — backend optional; falls back to UX hint on failure. */
+  async function submitEmployeeDraftReviewChat(text: string): Promise<void> {
+    const trimmed = text.trim()
+    if (!trimmed || employeeDraftReviewSending.value) return
+    employeeDraftReviewSending.value = true
+    employeeDraftReviewMessages.value.push({
+      id: reviewDraftMsgId(),
+      role: 'user',
+      content: trimmed,
+      ts: Date.now(),
+    })
+    const token = getAccessToken()
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (token) headers.Authorization = `Bearer ${token}`
+    try {
+      const res = await fetch('/api/workbench/employee-ai/draft/review-chat', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          message: trimmed,
+          run_id: currentRunId.value,
+        }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error((body as { detail?: string }).detail || `HTTP ${res.status}`)
+      }
+      const data = (await res.json().catch(() => ({}))) as { reply?: string; message?: string }
+      const reply =
+        typeof data.reply === 'string' ? data.reply : typeof data.message === 'string' ? data.message : ''
+      if (reply) {
+        employeeDraftReviewMessages.value.push({
+          id: reviewDraftMsgId(),
+          role: 'assistant',
+          kind: 'review_reply',
+          content: reply,
+          ts: Date.now(),
+        })
+      }
+    } catch {
+      employeeDraftReviewMessages.value.push({
+        id: reviewDraftMsgId(),
+        role: 'assistant',
+        kind: 'system',
+        content:
+          '审核对话接口暂未就绪（需后端实现 POST /api/workbench/employee-ai/draft/review-chat）。流水线若推送 review_reply / clarification_question，仍会显示在此。',
+        ts: Date.now(),
+      })
+    } finally {
+      employeeDraftReviewSending.value = false
+    }
+  }
 
   // Inspector (right rail)
   const inspectorMode = ref<InspectorMode>('library')
@@ -236,6 +350,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     chatStreaming,
     agentRuns,
     currentRunId,
+    employeeDraftStages,
+    employeeDraftStatus,
+    employeeDraftProgressMessages,
+    employeeDraftReviewMessages,
+    employeeDraftReviewSending,
     inspectorMode,
     researchContext,
     researchSources,
@@ -261,5 +380,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     finishRun,
     setResearch,
     loadEligibleWorkflows,
+    resetEmployeeDraftPipeline,
+    markEmployeeDraftPipelineAborted,
+    applyEmployeeDraftSseEvent,
+    submitEmployeeDraftReviewChat,
   }
 })

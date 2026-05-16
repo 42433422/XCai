@@ -78,12 +78,12 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
-import { useAuthStore } from '../stores/auth'
-import { ApiError } from '../infrastructure/http/client'
+import { api } from '@/api'
+import { useAuthStore } from '@/stores/auth'
+import { ApiError } from '@/infrastructure/http/client'
 
 const SVIP_LADDER_REVEAL_KEY = 'modstore_svip_ladder_reveal'
 

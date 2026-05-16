@@ -22,7 +22,10 @@ describe('employeePackClientExport', () => {
 
     expect(result.error).toBe('')
     expect(result.manifest?.id).toBe('sales-mod-assistant')
-    expect(result.manifest?.employee.label).toBe('销售助手')
+    const employeeOut = (result.manifest as Record<string, any> | null)?.employee as
+      | { label?: string }
+      | undefined
+    expect(employeeOut?.label).toBe('销售助手')
   })
 
   it('builds v2 manifests and zips from employee config', () => {

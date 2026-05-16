@@ -5,6 +5,7 @@ import { createNavigateSkill } from './navigateSkill'
 import { createSearchEmployeeSkill } from './searchEmployeeSkill'
 import { createWalletRechargeSkill } from './walletRechargeSkill'
 import { createPurchasePlanSkill } from './purchasePlanSkill'
+import { askAllHandsSkill } from './skillAllHandsAsk'
 
 let registered = false
 
@@ -18,6 +19,7 @@ export function registerBuiltinSkills(router: ReturnType<typeof useRouter>): voi
   skillRegistry.register(createSearchEmployeeSkill(router))
   skillRegistry.register(createWalletRechargeSkill(router))
   skillRegistry.register(createPurchasePlanSkill(router))
+  skillRegistry.register(askAllHandsSkill)
 }
 
 export { skillRegistry }

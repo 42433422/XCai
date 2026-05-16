@@ -39,12 +39,12 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { api } from '../api'
-import { useAuthStore } from '../stores/auth'
-import { pickRedirectFromRoute } from '../authPaths'
+import { api } from '@/api'
+import { useAuthStore } from '@/stores/auth'
+import { pickRedirectFromRoute } from '@/authPaths'
 
 const router = useRouter()
 const route = useRoute()

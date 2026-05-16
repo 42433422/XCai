@@ -6,6 +6,7 @@ import {
   type Connection,
   type EdgeChange,
   type NodeChange,
+  type NodeTypesObject,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -15,6 +16,8 @@ import NodeLibraryPanel from './panels/NodeLibraryPanel.vue'
 import PropertiesPanel from './panels/PropertiesPanel.vue'
 import ToolbarPanel from './panels/ToolbarPanel.vue'
 import VersionsPanel from './panels/VersionsPanel.vue'
+import VariablesPanel from './panels/VariablesPanel.vue'
+import ExecutionReplay from './panels/ExecutionReplay.vue'
 import { useWorkflowGraph, type WorkflowFlowNode } from './composables/useWorkflowGraph'
 import { computeAutoLayout } from './composables/useAutoLayout'
 import { type NodeKind } from './composables/useNodeRegistry'
@@ -41,7 +44,7 @@ const versionsOpen = ref(false)
 
 const flowInstance = useVueFlow({ id: `wf2-${props.workflowId}` })
 
-const nodeTypes = { mod: GenericNode }
+const nodeTypes = { mod: GenericNode } as unknown as NodeTypesObject
 
 const selectedNode = computed<WorkflowFlowNode | null>(() => {
   if (!selectedId.value) return null
@@ -394,6 +397,11 @@ async function submitSaveAsTemplate() {
         @patch="onPatchNode"
         @delete="onDeleteSelected"
       />
+
+      <div class="wf2-right-panels">
+        <VariablesPanel :nodes="graph.nodes.value" />
+        <ExecutionReplay :workflow-id="workflowId" />
+      </div>
     </div>
 
     <aside v-if="sandboxResult" class="wf2-sandbox-panel">

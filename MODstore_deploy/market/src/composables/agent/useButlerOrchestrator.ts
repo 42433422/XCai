@@ -89,9 +89,11 @@ export function useButlerOrchestrator() {
           error?: string | null
           artifact?: Record<string, unknown> | null
         }
+        const prev = agentStore.orchestrationSession
+        const mergedSteps = _mergeStepsMonotonic(prev?.steps, s.steps ?? [])
         agentStore.orchestrationSession = {
           sessionId: sid,
-          steps: s.steps ?? [],
+          steps: mergedSteps,
           status: (s.status === 'done' || s.status === 'error' ? s.status : 'running') as OrchestrationSession['status'],
           error: s.error ?? null,
           artifact: s.artifact ?? null,
@@ -131,4 +133,22 @@ export function useButlerOrchestrator() {
 
 function _delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+const _STATUS_RANK: Record<string, number> = { pending: 0, running: 1, done: 2, error: 2 }
+function _mergeStepsMonotonic(
+  prev: OrchestrationSession['steps'] | undefined,
+  incoming: OrchestrationSession['steps'],
+): OrchestrationSession['steps'] {
+  if (!prev || !prev.length) return incoming
+  const prevMap = new Map<string, { status: string; started_at?: string }>()
+  for (const st of prev) prevMap.set(String(st.id), st)
+  return incoming.map((st) => {
+    const prevSt = prevMap.get(String(st.id))
+    if (!prevSt) return st
+    const prevRank = _STATUS_RANK[String(prevSt.status)] ?? 0
+    const inRank = _STATUS_RANK[String(st.status)] ?? 0
+    if (inRank >= prevRank) return st
+    return { ...st, status: prevSt.status as any, started_at: prevSt.started_at }
+  })
 }

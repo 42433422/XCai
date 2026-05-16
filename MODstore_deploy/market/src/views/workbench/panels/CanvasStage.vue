@@ -6,6 +6,7 @@ import {
   type NodeChange,
   type EdgeChange,
   type Connection,
+  type NodeTypesObject,
 } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -57,7 +58,7 @@ const activeWorkflowId = computed(() => (isWorkflowTarget.value ? workflowId.val
 
 const flowInstance = useVueFlow({ id: 'workbench-canvas' })
 
-const nodeTypes = { employeeModule: EmployeeModuleNode }
+const nodeTypes = { employeeModule: EmployeeModuleNode } as unknown as NodeTypesObject
 
 // ── Sync manifest → canvas nodes/edges ──────────────────────────────────────
 

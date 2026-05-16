@@ -129,9 +129,9 @@ export const LLM_UI_META = {
   },
 }
 
-export function llmUiMeta(providerId) {
+export function llmUiMeta(providerId: string) {
   return (
-    LLM_UI_META[providerId] || {
+    (LLM_UI_META as Record<string, (typeof LLM_UI_META)[keyof typeof LLM_UI_META] | undefined>)[providerId] || {
       id: providerId,
       label: providerId,
       iconSlug: 'openai',

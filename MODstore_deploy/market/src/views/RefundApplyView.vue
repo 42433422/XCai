@@ -39,8 +39,8 @@
             <td>¥{{ Number(r.amount).toFixed(2) }}</td>
             <td class="reason-cell">{{ r.reason || '—' }}</td>
             <td>
-              <span :class="['status-pill', `status-${refundStatusTone(r.status)}`]">
-                {{ refundStatusText(r.status) }}
+              <span :class="['status-pill', `status-${refundStatusTone(r.status || '')}`]">
+                {{ refundStatusText(r.status || '') }}
               </span>
             </td>
             <td>{{ formatRefundTime(r.created_at) }}</td>
@@ -70,8 +70,17 @@ const reason = ref('')
 const submitting = ref(false)
 const msg = ref('')
 const msgOk = ref(true)
+interface RefundRow {
+  id: number | string
+  order_no: string
+  amount: number | string
+  reason?: string
+  status?: string
+  created_at?: string
+}
+
 const listLoading = ref(true)
-const rows = ref([])
+const rows = ref<RefundRow[]>([])
 const reasonCount = computed(() => reason.value.trim().length)
 const canSubmit = computed(() => !validateRefundForm(orderNo.value, reason.value))
 
@@ -105,7 +114,7 @@ async function submit() {
     await loadList()
   } catch (e) {
     msgOk.value = false
-    msg.value = e?.message || String(e)
+    msg.value = (e as Error)?.message || String(e)
   } finally {
     submitting.value = false
   }

@@ -6,7 +6,9 @@ import { useWorkbenchStore } from '../../../stores/workbench'
 import { useAgentLoop } from '../../../composables/useAgentLoop'
 import { useAuthStore } from '../../../stores/auth'
 import { api } from '../../../api'
+import { isPlannedDutyRosterPkgId as isDutyRosterEmployee } from '../../../utils/workbenchEmployeeFilter'
 import type { AgentRun } from '../../../stores/workbench'
+import EmployeeAiDraftReview from '../../../components/workbench/EmployeeAiDraftReview.vue'
 
 const store = useWorkbenchStore()
 const agentLoop = useAgentLoop()
@@ -42,7 +44,10 @@ const listError = ref('')
 const deletingId = ref('')
 const purgeBusy = ref(false)
 
-const visibleEmployees = computed(() => employees.value.filter((e) => !hiddenPkgIds.value.has(e.id)))
+/** 仅显示未隐藏的非在岗员工；在岗员工不可操作，不在此列表 */
+const visibleEmployees = computed(() =>
+  employees.value.filter((e) => !hiddenPkgIds.value.has(e.id) && !isDutyRosterEmployee(e.id)),
+)
 const hasV1OnlyEmployees = computed(() => employees.value.some((e) => e.source === 'v1_catalog'))
 
 function persistHiddenPkgIds() {
@@ -84,6 +89,10 @@ async function loadEmployees() {
 
 async function confirmDeleteEmployee(e: EmployeeRow) {
   if (!isAdmin.value) return
+  if (isDutyRosterEmployee(e.id)) {
+    window.alert('该员工属于编制在岗岗位包（与「员工工作流管理」矩阵一致），已锁定，禁止从工作台删除。')
+    return
+  }
   const label = e.name || e.id
   const ok = window.confirm(`确定删除员工包「${label}」（${e.id}）？将从目录与数据库移除，不可恢复。`)
   if (!ok) return
@@ -150,6 +159,19 @@ async function runAgentDraft() {
   const { abort } = await agentLoop.runEmployeeDraft(brief)
   currentAbort = abort
   agentRunning.value = false
+}
+
+async function retryEmployeeDraft() {
+  const brief = store.currentRun?.brief?.trim()
+  if (!brief || agentRunning.value) return
+  agentRunning.value = true
+  const { abort } = await agentLoop.runEmployeeDraft(brief)
+  currentAbort = abort
+  agentRunning.value = false
+}
+
+async function onDraftPublished(_modId: string) {
+  await loadEmployees()
 }
 
 function abortCurrentRun() {
@@ -223,11 +245,14 @@ onMounted(async () => {
       <p v-if="hasV1OnlyEmployees" class="list-hint list-hint--warn">
         标记「仅目录」的条目尚未写入 catalog_items；若对话失败请管理员重新登记。
       </p>
+      <p v-if="isAdmin" class="list-hint">
+        仅显示非在岗员工；在岗员工已锁定，不在列表中显示。
+      </p>
       <p v-if="listError" class="list-error">{{ listError }}</p>
 
       <!-- Empty states -->
       <p v-if="!employees.length && !loadingList && !listError" class="list-empty">
-        暂无可用员工包。请先在制作流程中生成员工。
+        暂无在岗员工。
       </p>
       <p v-else-if="!visibleEmployees.length && !loadingList" class="list-empty">
         列表中的员工均已隐藏。
@@ -243,7 +268,10 @@ onMounted(async () => {
             :class="{ 'emp-row__btn--active': store.target.id === e.id }"
             @click="selectEmployee(e.id)"
           >
-            <span class="emp-row__name">{{ e.name || e.id }}</span>
+            <span class="emp-row__name-row">
+              <span class="emp-row__name">{{ e.name || e.id }}</span>
+              <span v-if="isDutyRosterEmployee(e.id)" class="emp-badge emp-badge--duty" title="编制内岗位，与「MODstore 在岗」矩阵一致">在岗</span>
+            </span>
             <span class="emp-row__id">{{ e.id }}{{ e.source === 'v1_catalog' ? ' · 仅目录' : '' }}</span>
           </button>
           <div class="emp-row__actions">
@@ -251,8 +279,8 @@ onMounted(async () => {
               v-if="isAdmin"
               type="button"
               class="emp-action emp-action--danger"
-              :disabled="deletingId === e.id"
-              title="从服务端删除该员工包"
+              :disabled="deletingId === e.id || isDutyRosterEmployee(e.id)"
+              :title="isDutyRosterEmployee(e.id) ? '编制在岗员工包已锁定' : '从服务端删除该员工包'"
               @click.stop="confirmDeleteEmployee(e)"
             >
               {{ deletingId === e.id ? '…' : '删' }}
@@ -301,6 +329,13 @@ onMounted(async () => {
           </button>
         </div>
       </div>
+
+      <EmployeeAiDraftReview
+        embedded
+        class="lr-draft-review"
+        @retry="retryEmployeeDraft"
+        @published="onDraftPublished"
+      />
 
       <!-- Runs timeline -->
       <div class="agent-runs">
@@ -539,13 +574,35 @@ onMounted(async () => {
 }
 
 .emp-row__name {
-  display: block;
   font-size: 12px;
   font-weight: 600;
   color: #e2e8f0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.emp-row__name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.emp-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.emp-badge--duty {
+  background: rgba(16, 185, 129, 0.2);
+  color: #6ee7b7;
+  border: 1px solid rgba(16, 185, 129, 0.35);
 }
 
 .emp-row__id {
@@ -596,8 +653,17 @@ onMounted(async () => {
 
 /* ── Agent ── */
 .agent-pane {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   gap: 0;
+  min-height: 0;
+}
+
+.lr-draft-review {
+  flex: 1;
+  min-height: 120px;
+  min-width: 0;
 }
 
 .agent-input-area {
@@ -693,6 +759,7 @@ onMounted(async () => {
 
 .agent-runs {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 10px;
   display: flex;

@@ -10,7 +10,7 @@ vi.mock('../api', () => ({
 
 describe('wallet store', () => {
   it('refreshes and normalizes balance', async () => {
-    vi.mocked(api.balance).mockResolvedValue({ balance: '12.30' })
+    vi.mocked(api.balance).mockResolvedValue({ balance: 12.3 })
     const store = useWalletStore()
 
     await store.refreshBalance()

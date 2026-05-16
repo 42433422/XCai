@@ -2,13 +2,24 @@ import { computed, ref } from 'vue'
 import { api } from '../api'
 import { applyTemplateV2 } from '../employeeConfigV2'
 
+export interface WorkflowOption {
+  id?: number | string
+  sandbox_status?: { status?: string } | null
+  [k: string]: unknown
+}
+
+export interface EmployeeWorkbenchStateInputs {
+  parseWorkflowIdFromEntry: (entry: any) => number
+  inferWorkflowIdFromManifest: (manifest: any, index: number) => number
+}
+
 export function useEmployeeWorkbenchState({
   parseWorkflowIdFromEntry,
   inferWorkflowIdFromManifest,
-}) {
+}: EmployeeWorkbenchStateInputs) {
   const employeeTemplateId = ref('workflow')
   const employeeConfigV2 = ref(applyTemplateV2('workflow'))
-  const employeeConfigErrors = ref([])
+  const employeeConfigErrors = ref<string[]>([])
   const currentStep = ref(0)
   const cardModeEnabled = ref(true)
 
@@ -31,7 +42,7 @@ export function useEmployeeWorkbenchState({
     priceFromManifest: null,
   })
 
-  const selectedFile = ref(null)
+  const selectedFile = ref<File | null>(null)
   const packageScanMessage = ref('')
   const packageScanKind = ref('info')
   const uploading = ref(false)
@@ -39,7 +50,7 @@ export function useEmployeeWorkbenchState({
   const v1CatalogLoadError = ref('')
   const error = ref('')
   const success = ref('')
-  const myEmployees = ref([])
+  const myEmployees = ref<unknown[]>([])
 
   const linkedModId = ref('')
   const linkedWorkflowIndex = ref(0)
@@ -50,11 +61,11 @@ export function useEmployeeWorkbenchState({
   const exportZipBusy = ref(false)
   const workflowPanelErr = ref('')
   const workflowPanelOk = ref('')
-  const linkedManifestSnapshot = ref(null)
+  const linkedManifestSnapshot = ref<Record<string, unknown> | null>(null)
   const showLinkedModPanel = ref(false)
   const packageManifestWorkflowId = ref(0)
-  const eligibleWorkflows = ref([])
-  const allWorkflowOptions = ref([])
+  const eligibleWorkflows = ref<WorkflowOption[]>([])
+  const allWorkflowOptions = ref<WorkflowOption[]>([])
   const workflowGateLoading = ref(false)
   const workflowGateError = ref('')
 
@@ -125,7 +136,7 @@ export function useEmployeeWorkbenchState({
     } catch (e) {
       eligibleWorkflows.value = []
       allWorkflowOptions.value = []
-      workflowGateError.value = e?.message || String(e)
+      workflowGateError.value = (e as Error)?.message || String(e)
     } finally {
       workflowGateLoading.value = false
     }

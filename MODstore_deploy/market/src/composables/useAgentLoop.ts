@@ -35,9 +35,15 @@ function applyEmployeeDraftEvent(
   runId: string,
   ev: Record<string, unknown>,
 ) {
+  store.applyEmployeeDraftSseEvent(ev)
+
   const event = ev.event as string
   const stage = ev.stage as string
   const label = STAGE_LABELS[stage] ?? stage
+
+  if (event === 'review_reply' || event === 'clarification_question') {
+    return
+  }
 
   if (event === 'stage_start') {
     store.pushRunEvent(runId, nowEvent(stage, label, null, 'running'))
@@ -176,6 +182,8 @@ export function useAgentLoop() {
       endedAt: null,
     }
     store.startRun(run)
+    store.resetEmployeeDraftPipeline()
+    store.employeeDraftStatus.phase = 'running'
 
     const ctrl = new AbortController()
     try {
@@ -190,8 +198,21 @@ export function useAgentLoop() {
         ctrl.signal,
         (ev) => applyEmployeeDraftEvent(store, runId, ev),
       )
+      if (store.employeeDraftStatus.phase === 'running') {
+        store.employeeDraftStatus.phase = 'error'
+        store.employeeDraftStatus.fatalError = '流意外结束'
+        store.pushRunEvent(runId, nowEvent('pipeline', '流意外结束', {}, 'error'))
+        store.finishRun(runId, 'error', null)
+      }
     } catch (e: unknown) {
-      if ((e as Error)?.name !== 'AbortError') {
+      if ((e as Error)?.name === 'AbortError') {
+        store.markEmployeeDraftPipelineAborted()
+        store.finishRun(runId, 'error', null)
+      } else {
+        if (store.employeeDraftStatus.phase === 'running') {
+          store.employeeDraftStatus.phase = 'error'
+          store.employeeDraftStatus.fatalError = (e as Error)?.message || String(e)
+        }
         store.pushRunEvent(runId, nowEvent('network', '网络错误', { error: String(e) }, 'error'))
         store.finishRun(runId, 'error', null)
       }

@@ -8,20 +8,20 @@
       <div class="grid">
         <div class="card">
           <h3 class="card-title">执行</h3>
-          <p class="stat">总次数 <strong>{{ dash.execution.total }}</strong></p>
-          <p class="stat">成功 <strong>{{ dash.execution.success }}</strong> · 失败 <strong>{{ dash.execution.failed }}</strong></p>
-          <p class="stat">成功率 <strong>{{ dash.execution.success_rate.toFixed(1) }}%</strong></p>
-          <p class="stat">累计 Token <strong>{{ dash.execution.total_tokens }}</strong></p>
+          <p class="stat">总次数 <strong>{{ dash.execution?.total ?? 0 }}</strong></p>
+          <p class="stat">成功 <strong>{{ dash.execution?.success ?? dash.execution?.completed ?? 0 }}</strong> · 失败 <strong>{{ dash.execution?.failed ?? 0 }}</strong></p>
+          <p class="stat">成功率 <strong>{{ Number(dash.execution?.success_rate ?? 0).toFixed(1) }}%</strong></p>
+          <p class="stat">累计 Token <strong>{{ dash.execution?.total_tokens ?? 0 }}</strong></p>
         </div>
         <div class="card">
           <h3 class="card-title">消费</h3>
-          <p class="stat">已购商品金额合计 <strong>¥{{ Number(dash.spending.total).toFixed(2) }}</strong></p>
+          <p class="stat">已购商品金额合计 <strong>¥{{ Number(dash.spending?.total ?? dash.spending?.total_spent ?? 0).toFixed(2) }}</strong></p>
           <p class="hint">基于「购买」记录汇总，不含钱包充值余额。</p>
         </div>
       </div>
       <div class="card">
         <h3 class="card-title">最近执行</h3>
-        <table v-if="dash.recent_executions.length" class="tbl">
+        <table v-if="dash.recent_executions?.length" class="tbl">
           <thead>
             <tr>
               <th>员工</th>
@@ -51,17 +51,50 @@
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
 
+interface DashExecution {
+  total?: number
+  completed?: number
+  failed?: number
+  success_rate?: number
+  total_tokens?: number
+  [extra: string]: unknown
+}
+
+interface DashSpending {
+  total_spent?: number
+  total?: number
+  [extra: string]: unknown
+}
+
+interface DashRecent {
+  id: number | string
+  name?: string
+  status?: string
+  duration_ms?: number
+  employee_id?: string
+  task?: string
+  llm_tokens?: number
+  created_at?: string
+  [extra: string]: unknown
+}
+
+interface AnalyticsDash {
+  execution?: DashExecution
+  spending?: DashSpending
+  recent_executions?: DashRecent[]
+}
+
 const loading = ref(true)
 const err = ref('')
-const dash = ref(null)
+const dash = ref<AnalyticsDash | null>(null)
 
 onMounted(async () => {
   loading.value = true
   err.value = ''
   try {
-    dash.value = await api.analyticsDashboard()
+    dash.value = (await api.analyticsDashboard()) as AnalyticsDash
   } catch (e) {
-    err.value = e?.message || String(e)
+    err.value = (e as Error)?.message || String(e)
   } finally {
     loading.value = false
   }

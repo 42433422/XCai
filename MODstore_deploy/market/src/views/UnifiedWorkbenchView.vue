@@ -99,31 +99,38 @@ function setViewMode(mode: string) {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem 1rem;
-  padding: 0.65rem 0.8rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(8, 8, 8, 0.95);
+  padding: 0.35rem 0.5rem;
 }
 
 .mode-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 2px;
 }
 
 .mode-tab {
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: none;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(255, 255, 255, 0.72);
-  padding: 0.35rem 0.7rem;
-  font-size: 0.86rem;
+  background: transparent;
+  color: rgba(240, 240, 245, 0.4);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.mode-tab:hover {
+  background: rgba(129, 140, 248, 0.08);
+  color: rgba(240, 240, 245, 0.7);
 }
 
 .mode-tab--active {
-  color: #c7e5ff;
-  border-color: #2ba8ff;
-  box-shadow: 0 0 0 1px rgba(43, 168, 255, 0.2) inset;
+  background: rgba(129, 140, 248, 0.12);
+  color: rgba(240, 240, 245, 0.95);
+  border: none;
+  box-shadow: none;
 }
 
 .focus-layout {

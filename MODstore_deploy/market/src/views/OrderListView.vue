@@ -78,8 +78,16 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 
+interface OrderRow {
+  out_trade_no: string
+  status?: string
+  subject?: string
+  total_amount?: number | string
+  created_at?: string
+}
+
 const router = useRouter()
-const orders = ref([])
+const orders = ref<OrderRow[]>([])
 const loading = ref(true)
 const dismissing = ref(false)
 const err = ref('')
@@ -92,12 +100,20 @@ const filters = [
   { value: 'closed', label: '已关闭' },
 ]
 
-function statusText(s) {
-  const m = { pending: '待支付', paid: '已支付', refunding: '退款中', refunded: '已退款', partial_refunded: '部分退款', failed: '失败', closed: '已关闭' }
-  return m[s] || s || '—'
+function statusText(s: string | undefined): string {
+  const m: Record<string, string> = {
+    pending: '待支付',
+    paid: '已支付',
+    refunding: '退款中',
+    refunded: '已退款',
+    partial_refunded: '部分退款',
+    failed: '失败',
+    closed: '已关闭',
+  }
+  return (s && m[s]) || s || '—'
 }
 
-function formatTime(iso) {
+function formatTime(iso: string | undefined): string {
   if (!iso) return ''
   try {
     return new Date(iso).toLocaleString()
@@ -113,7 +129,7 @@ async function load() {
     const res = await api.paymentOrders(currentFilter.value || undefined)
     orders.value = res.orders || []
   } catch (e) {
-    err.value = e.message
+    err.value = (e as Error)?.message || String(e)
   } finally {
     loading.value = false
   }
@@ -132,32 +148,32 @@ async function dismissNonActive() {
     }
     await load()
   } catch (e) {
-    err.value = e?.message || String(e)
+    err.value = (e as Error)?.message || String(e)
   } finally {
     dismissing.value = false
   }
 }
 
-function setFilter(v) {
+function setFilter(v: string) {
   currentFilter.value = v
   void load()
 }
 
-function goDetail(order) {
+function goDetail(order: OrderRow) {
   router.push({ name: 'order-detail', params: { orderId: order.out_trade_no } })
 }
 
-function goRefund(order) {
+function goRefund(order: OrderRow) {
   router.push({ name: 'refunds', query: { order_no: order.out_trade_no } })
 }
 
-async function cancelOrder(order) {
+async function cancelOrder(order: OrderRow) {
   if (!confirm('确定取消该待支付订单？')) return
   try {
     await api.paymentCancelOrder(order.out_trade_no)
     await load()
   } catch (e) {
-    alert(e.message)
+    alert((e as Error)?.message || String(e))
   }
 }
 

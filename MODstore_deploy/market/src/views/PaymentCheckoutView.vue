@@ -3,6 +3,28 @@
     <div class="checkout-container">
       <h1 class="checkout-title">支付订单</h1>
 
+      <div v-if="paidConfirmedFlash" role="status" class="confirm-banner confirm-banner--success">
+        <strong>支付已确认到账</strong>
+        <span class="confirm-banner-sub">系统已向支付宝核对，订单为「已支付」，权益将按套餐生效。</span>
+      </div>
+      <div
+        v-else-if="burstSyncActive && order?.status === 'pending'"
+        role="status"
+        class="confirm-banner confirm-banner--sync"
+      >
+        <strong>正在向支付宝确认付款结果…</strong>
+        <span class="confirm-banner-sub">请稍候，通常几秒内完成；请勿关闭本页。</span>
+      </div>
+      <div
+        v-else-if="order?.status === 'pending'"
+        class="confirm-banner confirm-banner--hint"
+      >
+        <strong>到账结果以本页「状态」为准</strong>
+        <span class="confirm-banner-sub">
+          付款成功后系统会自动向支付宝核对；若仍为「待支付」，请点击下方「刷新订单状态」主动对账。
+        </span>
+      </div>
+
       <div v-if="loading" class="loading">
         <div class="spinner"></div>
         <p>加载订单信息...</p>
@@ -16,6 +38,10 @@
       </div>
 
       <template v-else-if="order">
+        <div v-if="transientWarning" role="status" class="transient-warning">
+          {{ transientWarning }}
+        </div>
+
         <!-- 订单信息 -->
         <div class="order-info">
           <div class="order-field">
@@ -36,6 +62,38 @@
               {{ statusText(order.status) }}
             </span>
           </div>
+          <div v-if="order.pay_type" class="order-field">
+            <span class="label">下单方式</span>
+            <span class="value">{{ payTypeLabel(order.pay_type) }}</span>
+          </div>
+        </div>
+
+        <!-- 浏览器跳转支付（alipay page/wap）：无二维码，需提示回站后自动对账 / 手动刷新 -->
+        <div
+          v-if="order.status === 'pending' && !qrCode"
+          class="pending-redirect-section"
+        >
+          <p class="pending-redirect-title">等待支付结果同步</p>
+          <p class="pending-redirect-desc">
+            当前订单为<strong>浏览器跳转支付宝</strong>付款：下单后会跳转到支付宝页面；支付完成后请返回本站，状态会自动更新。
+            若您已付款仍显示「待支付」，请点击下方按钮<strong>向支付宝主动对账</strong>（通常立即生效）。
+          </p>
+          <div class="pending-redirect-actions">
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="refreshing"
+              @click="manualRefreshStatus"
+            >
+              {{ refreshing ? '正在向支付宝核对…' : '刷新订单状态（对账）' }}
+            </button>
+            <button type="button" class="btn btn-ghost" :disabled="refreshing" @click="retryPayment">
+              重新发起支付
+            </button>
+          </div>
+          <p class="pending-redirect-foot">
+            长时间未更新请核对是否登录了同一账号；仍异常请保存订单号联系客服。
+          </p>
         </div>
 
         <!-- 二维码展示（precreate 模式） -->
@@ -104,20 +162,49 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const orderParamId = computed(() => {
+  const p = route.params.orderId
+  const v = Array.isArray(p) ? p[0] : p
+  return v == null ? '' : String(v)
+})
 const authStore = useAuthStore()
-const order = ref(null)
+interface CheckoutOrder {
+  out_trade_no?: string
+  subject?: string
+  total_amount?: number | string
+  status?: string
+  created_at?: string
+  qr_code?: string
+  /** 与 Java 下单返回一致：page / wap / precreate / wechat_native */
+  pay_type?: string
+  plan_id?: string
+  order_kind?: string
+  item_id?: number | string
+}
+
+/** Java 查询接口在业务失败时也可能 HTTP 200 + `{ ok: false, message }`，须与订单 JSON 区分 */
+function isPaymentQueryFailedEnvelope(res: unknown): res is { ok: false; message?: string } {
+  return typeof res === 'object' && res !== null && (res as { ok?: boolean }).ok === false
+}
+
+const order = ref<CheckoutOrder | null>(null)
 const loading = ref(true)
 const error = ref('')
+const transientWarning = ref('')
 const qrCode = ref('')
-const pollingTimer = ref(null)
-const pollCount = ref(0)
+const refreshing = ref(false)
+/** 支付宝同步回跳后的短时密集对账 */
+const burstSyncActive = ref(false)
+/** 刚从待支付变为已支付：给用户明确的「到账」反馈 */
+const paidConfirmedFlash = ref(false)
+const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 const qrImageUrl = computed(() => {
   if (!qrCode.value) return ''
@@ -126,37 +213,135 @@ const qrImageUrl = computed(() => {
 
 const isExpired = computed(() => {
   if (!order.value || order.value.status !== 'pending') return false
-  const created = new Date(order.value.created_at).getTime()
+  const created = new Date(order.value.created_at || '').getTime()
+  if (Number.isNaN(created)) return false
   const now = Date.now()
   return (now - created) > 15 * 60 * 1000
 })
 
-onMounted(async () => {
+function stopPolling() {
+  if (pollingTimer.value) {
+    clearInterval(pollingTimer.value)
+    pollingTimer.value = null
+  }
+}
+
+/** 待支付单持续轮询（含超时 UI 场景），方便对账/回调延迟后仍能变为已支付 */
+function startPollingIfPending() {
+  stopPolling()
+  if (order.value?.status !== 'pending') return
+  const intervalMs = isExpired.value ? 10_000 : 3000
+  pollingTimer.value = setInterval(pollOrder, intervalMs)
+}
+
+async function refetchVisiblePending() {
+  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+  if (!order.value || order.value.status !== 'pending') return
   await fetchOrder()
-  if (order.value && order.value.status === 'pending' && !isExpired.value) {
-    pollingTimer.value = setInterval(pollOrder, 3000)
+  startPollingIfPending()
+}
+
+function onVisibilityChange() {
+  void refetchVisiblePending()
+}
+
+function onPageShow() {
+  void refetchVisiblePending()
+}
+
+/** 支付宝电脑网站支付同步跳转会在 return_url 上带 sign、trade_no、method 等参数（不能做账务依据，但可用来触发立即对账） */
+function looksLikeAlipayReturnQuery(q: Record<string, string | string[] | undefined>): boolean {
+  const keys = Object.keys(q)
+  if (keys.length === 0) return false
+  const sign = String(Array.isArray(q.sign) ? q.sign[0] : q.sign ?? '')
+  const method = String(Array.isArray(q.method) ? q.method[0] : q.method ?? '')
+  const tradeNo = String(Array.isArray(q.trade_no) ? q.trade_no[0] : q.trade_no ?? '')
+  return sign.length > 20 || method.includes('alipay.trade') || tradeNo.length > 8
+}
+
+async function burstConfirmPaymentFromAlipayReturn() {
+  burstSyncActive.value = true
+  try {
+    for (let i = 0; i < 18; i++) {
+      if (order.value?.status === 'paid') return
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, i === 0 ? 400 : 1700)
+      })
+      await pollOrder()
+    }
+  } finally {
+    burstSyncActive.value = false
+  }
+}
+
+watch(
+  () => order.value?.status,
+  (next, prev) => {
+    if (next === 'paid' && prev === 'pending') {
+      paidConfirmedFlash.value = true
+      window.setTimeout(() => {
+        paidConfirmedFlash.value = false
+      }, 14_000)
+    }
+  },
+)
+
+onMounted(async () => {
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange)
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pageshow', onPageShow)
+  }
+  await fetchOrder()
+  startPollingIfPending()
+  const q = route.query as Record<string, string | string[] | undefined>
+  if (
+    order.value?.status === 'pending'
+    && looksLikeAlipayReturnQuery(q)
+    && orderParamId.value
+  ) {
+    void burstConfirmPaymentFromAlipayReturn()
   }
 })
 
 onBeforeUnmount(() => {
-  if (pollingTimer.value) {
-    clearInterval(pollingTimer.value)
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', onVisibilityChange)
   }
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pageshow', onPageShow)
+  }
+  stopPolling()
 })
 
 async function fetchOrder() {
   try {
     error.value = ''
-    const res = await api.paymentQuery(route.params.orderId, { reconcile: true })
-    order.value = res
+    transientWarning.value = ''
+    const res = await api.paymentQuery(orderParamId.value, { reconcile: true })
+    if (isPaymentQueryFailedEnvelope(res)) {
+      const msg = (typeof res.message === 'string' && res.message.trim()) ? res.message.trim() : '加载订单失败'
+      if (order.value) {
+        transientWarning.value = msg
+      } else {
+        error.value = msg
+        stopPolling()
+      }
+      return
+    }
+    const o = res as CheckoutOrder
+    order.value = o
 
-    if (res.qr_code) {
-      qrCode.value = String(res.qr_code)
+    if (o.qr_code) {
+      qrCode.value = String(o.qr_code)
+    } else {
+      qrCode.value = ''
     }
 
-    if (res.status === 'paid') {
+    if (o.status === 'paid') {
       void authStore.refreshSession(true)
-      if (String(res.plan_id || '').trim() === 'plan_enterprise') {
+      if (String(o.plan_id || '').trim() === 'plan_enterprise') {
         try {
           sessionStorage.setItem('modstore_svip_ladder_reveal', '1')
         } catch {
@@ -164,13 +349,17 @@ async function fetchOrder() {
         }
       }
     }
-    if (res.status === 'paid' && pollingTimer.value) {
-      clearInterval(pollingTimer.value)
-      pollingTimer.value = null
+    if (o.status === 'paid') {
+      stopPolling()
     }
   } catch (err) {
-    error.value = err.message || '加载订单信息失败，请重试'
-    order.value = null
+    const msg = (err as Error)?.message || '加载订单信息失败，请重试'
+    if (order.value) {
+      transientWarning.value = `网络波动，正在继续重试：${msg}`
+    } else {
+      error.value = msg
+      stopPolling()
+    }
   } finally {
     loading.value = false
   }
@@ -178,17 +367,25 @@ async function fetchOrder() {
 
 async function pollOrder() {
   try {
-    pollCount.value += 1
-    // 每 2 次轮询带一次对账，减轻支付宝侧查询压力
-    const res = await api.paymentQuery(route.params.orderId, {
-      reconcile: pollCount.value % 2 === 0,
-    })
-    order.value = res
-    if (res.qr_code) qrCode.value = String(res.qr_code)
+    // 每次轮询都对账：支付宝回跳/异步通知延迟时，仅靠「隔次 reconcile」可能长时间停在待支付
+    const res = await api.paymentQuery(orderParamId.value, { reconcile: true })
+    if (isPaymentQueryFailedEnvelope(res)) {
+      transientWarning.value =
+        (typeof res.message === 'string' && res.message.trim()) ? res.message.trim() : '订单状态暂时无法确认，正在继续重试'
+      return
+    }
+    transientWarning.value = ''
+    const o = res as CheckoutOrder
+    order.value = o
+    if (o.qr_code) {
+      qrCode.value = String(o.qr_code)
+    } else {
+      qrCode.value = ''
+    }
 
-    if (res.status === 'paid') {
+    if (o.status === 'paid') {
       void authStore.refreshSession(true)
-      if (String(res.plan_id || '').trim() === 'plan_enterprise') {
+      if (String(o.plan_id || '').trim() === 'plan_enterprise') {
         try {
           sessionStorage.setItem('modstore_svip_ladder_reveal', '1')
         } catch {
@@ -196,9 +393,8 @@ async function pollOrder() {
         }
       }
     }
-    if (res.status === 'paid' && pollingTimer.value) {
-      clearInterval(pollingTimer.value)
-      pollingTimer.value = null
+    if (o.status === 'paid') {
+      stopPolling()
     }
   } catch (err) {
     //  polling errors，不显示错误，避免干扰用户
@@ -206,23 +402,42 @@ async function pollOrder() {
   }
 }
 
-function statusText(status) {
-  const map = {
+function statusText(status: string | undefined): string {
+  const map: Record<string, string> = {
     pending: '待支付',
     paid: '已支付',
     failed: '支付失败',
     closed: '已关闭',
   }
-  return map[status] || status || '未知'
+  return (status && map[status]) || status || '未知'
+}
+
+function payTypeLabel(payType: string | undefined): string {
+  const t = String(payType || '').toLowerCase()
+  const map: Record<string, string> = {
+    page: '支付宝（电脑网站）',
+    wap: '支付宝（手机网站）',
+    precreate: '支付宝（扫码）',
+    wechat_native: '微信（扫码）',
+  }
+  return map[t] || payType || '—'
+}
+
+async function manualRefreshStatus() {
+  if (!orderParamId.value || refreshing.value) return
+  refreshing.value = true
+  try {
+    await fetchOrder()
+    startPollingIfPending()
+  } finally {
+    refreshing.value = false
+  }
 }
 
 async function retryPayment() {
   const o = order.value
   if (!o) return
-  if (pollingTimer.value) {
-    clearInterval(pollingTimer.value)
-    pollingTimer.value = null
-  }
+  stopPolling()
   try {
     if ((o.status === 'pending' || o.status === 'closed') && o.out_trade_no) {
       try {
@@ -262,16 +477,14 @@ async function retryPayment() {
       order.value = null
       qrCode.value = ''
       await fetchOrder()
-      if (order.value && order.value.status === 'pending' && !isExpired.value) {
-        pollingTimer.value = setInterval(pollOrder, 3000)
-      }
+      startPollingIfPending()
     } else if (checkout.type === 'page' || checkout.type === 'wap') {
-      window.location.href = checkout.redirect_url
+      window.location.href = checkout.redirect_url || ''
     } else {
       error.value = '不支持的支付类型'
     }
   } catch (e) {
-    error.value = e.message || '重新支付失败'
+    error.value = (e as Error)?.message || '重新支付失败'
   } finally {
     loading.value = false
   }
@@ -303,10 +516,67 @@ async function retryPayment() {
   letter-spacing: -0.02em;
 }
 
+.confirm-banner {
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.confirm-banner strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+.confirm-banner-sub {
+  display: block;
+  color: rgba(255, 255, 255, 0.72);
+  font-weight: 400;
+}
+
+.confirm-banner--success {
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  background: rgba(74, 222, 128, 0.12);
+  color: #bbf7d0;
+}
+
+.confirm-banner--success .confirm-banner-sub {
+  color: rgba(187, 247, 208, 0.85);
+}
+
+.confirm-banner--sync {
+  border: 1px solid rgba(129, 140, 248, 0.45);
+  background: rgba(99, 102, 241, 0.14);
+  color: #e0e7ff;
+}
+
+.confirm-banner--sync .confirm-banner-sub {
+  color: rgba(224, 231, 255, 0.85);
+}
+
+.confirm-banner--hint {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.88);
+}
+
 .loading, .not-found {
   text-align: center;
   padding: 48px 0;
   color: rgba(255, 255, 255, 0.5);
+}
+
+.transient-warning {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(250, 204, 21, 0.32);
+  border-radius: 8px;
+  background: rgba(250, 204, 21, 0.08);
+  color: #fde68a;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .order-info {
@@ -358,6 +628,47 @@ async function retryPayment() {
 
 .status-closed {
   color: rgba(255, 255, 255, 0.4);
+}
+
+.pending-redirect-section {
+  padding: 20px;
+  border: 0.5px solid rgba(99, 102, 241, 0.35);
+  border-radius: 12px;
+  margin-bottom: 24px;
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.pending-redirect-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e0e7ff;
+}
+
+.pending-redirect-desc {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.pending-redirect-desc strong {
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 600;
+}
+
+.pending-redirect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pending-redirect-foot {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.42);
 }
 
 .qr-section {

@@ -2,7 +2,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
-import PaymentPlansView from './PaymentPlansView.vue'
+import PaymentPlansView from './public/PaymentPlansView.vue'
 import { ACCESS_TOKEN_KEY } from '../infrastructure/storage/tokenStore'
 
 vi.mock('../api', () => ({

@@ -124,17 +124,22 @@
       <div v-if="item.artifact === 'employee_pack'" class="detail-section">
         <h2 class="section-title">员工能力</h2>
         <div class="capabilities-grid">
-          <div class="capability-card">
-            <h3>任务类型</h3>
+          <div v-if="itemCapabilities.length" class="capability-card capability-card--full">
+            <h3>核心能力</h3>
             <ul class="capability-list">
-              <li>分析文档</li>
-              <li>处理数据</li>
-              <li>生成报告</li>
+              <li v-for="cap in itemCapabilities" :key="cap.label">
+                <span class="cap-label">{{ cap.label }}</span>
+                <span v-if="cap.description" class="cap-desc">{{ cap.description }}</span>
+              </li>
             </ul>
           </div>
           <div class="capability-card">
             <h3>行业适配</h3>
             <p>{{ item.industry || '通用' }}</p>
+          </div>
+          <div class="capability-card">
+            <h3>安全等级</h3>
+            <p>{{ securityLevelLabel(item.security_level) }}</p>
           </div>
           <div class="capability-card">
             <h3>版本信息</h3>
@@ -155,11 +160,11 @@
           </div>
           <div class="status-item">
             <span class="status-label">总执行次数</span>
-            <span class="status-value">{{ employeeStatus.data.execution_stats.total_executions }}</span>
+            <span class="status-value">{{ employeeTotalExecutions(employeeStatus.data) }}</span>
           </div>
           <div class="status-item">
             <span class="status-label">成功率</span>
-            <span class="status-value">{{ employeeStatus.data.execution_stats.success_rate.toFixed(1) }}%</span>
+            <span class="status-value">{{ employeeSuccessRate(employeeStatus.data).toFixed(1) }}%</span>
           </div>
         </div>
       </div>
@@ -177,23 +182,18 @@
       <!-- 使用示例 -->
       <div v-if="item.artifact === 'employee_pack'" class="detail-section">
         <h2 class="section-title">使用示例</h2>
-        <div class="example-card">
-          <h3>文档分析</h3>
-          <pre class="example-code">{
-  "document_content": "这是一份需要分析的文档内容..."
-}</pre>
+        <div v-if="itemExamples.length">
+          <div v-for="ex in itemExamples" :key="ex.title" class="example-card">
+            <h3>{{ ex.title }}</h3>
+            <p v-if="ex.description" class="example-desc">{{ ex.description }}</p>
+            <pre class="example-code">{{ JSON.stringify(ex.input, null, 2) }}</pre>
+          </div>
         </div>
-        <div class="example-card">
-          <h3>数据处理</h3>
+        <div v-else class="example-card">
+          <h3>调用示例</h3>
           <pre class="example-code">{
-  "data": [1, 2, 3, 4, 5]
-}</pre>
-        </div>
-        <div class="example-card">
-          <h3>报告生成</h3>
-          <pre class="example-code">{
-  "title": "月度报告",
-  "content": "本月工作总结..."
+  "action": "execute",
+  "employee_id": "{{ item.pkg_id || 'employee' }}"
 }</pre>
         </div>
       </div>
@@ -202,15 +202,81 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const catalogParamId = computed(() => {
+  const p = route.params.id
+  const v = Array.isArray(p) ? p[0] : p
+  return v == null ? '' : String(v)
+})
 const authStore = useAuthStore()
-const item = ref(null)
+
+const itemCapabilities = computed(() => item.value?.capabilities || [])
+const itemExamples = computed(() => item.value?.examples || [])
+
+function securityLevelLabel(level: string | undefined) {
+  const map: Record<string, string> = {
+    personal: '个人级',
+    team: '团队级',
+    enterprise: '企业级',
+  }
+  return map[level || ''] || level || '个人级'
+}
+
+interface CatalogItemDetail {
+  id: number | string
+  pkg_id?: string
+  name?: string
+  version?: string
+  industry?: string
+  artifact?: string
+  material_category?: string
+  description?: string
+  license_scope_label?: string
+  license_scope?: string
+  origin_type?: string
+  ip_risk_level?: string
+  compliance_status?: string
+  security_level?: string
+  price: number
+  favorited?: boolean
+  purchased?: boolean
+  user_has_review?: boolean
+  status?: string
+  execution_stats?: { total_runs?: number; success_rate?: number } | null
+  capabilities?: { label: string; description: string }[]
+  examples?: { title: string; description: string; input: Record<string, unknown> }[]
+}
+
+interface ReviewRow {
+  id: number | string
+  user_name?: string
+  rating: number
+  created_at?: string
+  content?: string
+}
+
+interface ReviewsPayload {
+  reviews: ReviewRow[]
+  average_rating: number
+  total: number
+}
+
+interface EmployeeStatusPayload {
+  status?: string
+  execution_stats?: {
+    total_executions?: number
+    total_runs?: number
+    success_rate?: number
+  } | null
+}
+
+const item = ref<CatalogItemDetail | null>(null)
 const loading = ref(true)
 const err = ref('')
 const buying = ref(false)
@@ -219,7 +285,7 @@ const hasToken = ref(false)
 const favBusy = ref(false)
 const reviewsLoading = ref(false)
 const reviewsErr = ref('')
-const reviewsData = ref({ reviews: [], average_rating: 0, total: 0 })
+const reviewsData = ref<ReviewsPayload>({ reviews: [], average_rating: 0, total: 0 })
 const reviewRating = ref(5)
 const reviewContent = ref('')
 const reviewSubmitting = ref(false)
@@ -231,7 +297,7 @@ const complaintSubmitting = ref(false)
 const employeeStatus = ref({
   loading: false,
   error: '',
-  data: null
+  data: null as EmployeeStatusPayload | null,
 })
 
 // 工件类型标签
@@ -276,56 +342,65 @@ const complianceStatusLabels = {
   delisted: '已下架',
 }
 
-function getArtifactLabel(artifact) {
-  return artifactLabels[artifact] || artifact || '其他'
+function getArtifactLabel(artifact: string | undefined) {
+  return (artifact && (artifactLabels as Record<string, string>)[artifact]) || artifact || '其他'
 }
 
-function materialCategoryLabel(cat) {
-  return materialCategoryLabels[cat] || cat || '其他素材'
+function materialCategoryLabel(cat: string | undefined) {
+  return (cat && (materialCategoryLabels as Record<string, string>)[cat]) || cat || '其他素材'
 }
 
-function licenseScopeLabel(scope) {
-  return licenseScopeLabels[scope] || scope || '个人使用'
+function licenseScopeLabel(scope: string | undefined) {
+  return (scope && (licenseScopeLabels as Record<string, string>)[scope]) || scope || '个人使用'
 }
 
-function originTypeLabel(origin) {
-  return originTypeLabels[origin] || origin || '原创'
+function originTypeLabel(origin: string | undefined) {
+  return (origin && (originTypeLabels as Record<string, string>)[origin]) || origin || '原创'
 }
 
-function ipRiskLabel(risk) {
+function ipRiskLabel(risk: string | undefined) {
   if (risk === 'high') return '高'
   if (risk === 'medium') return '中'
   return '低'
 }
 
-function complianceStatusLabel(status) {
-  return complianceStatusLabels[status] || status || '已审核'
+function complianceStatusLabel(status: string | undefined) {
+  return (status && (complianceStatusLabels as Record<string, string>)[status]) || status || '已审核'
+}
+
+function employeeTotalExecutions(status: EmployeeStatusPayload | null): number {
+  const stats = status?.execution_stats
+  return Number(stats?.total_executions ?? stats?.total_runs ?? 0) || 0
+}
+
+function employeeSuccessRate(status: EmployeeStatusPayload | null): number {
+  return Number(status?.execution_stats?.success_rate ?? 0) || 0
 }
 
 onMounted(async () => {
   hasToken.value = !!localStorage.getItem('modstore_token')
   try {
-    item.value = await api.catalogDetail(route.params.id)
+    item.value = (await api.catalogDetail(catalogParamId.value)) as CatalogItemDetail
     await loadReviews()
     // 如果是员工包且已购买，加载员工状态
     if (item.value.artifact === 'employee_pack' && item.value.purchased) {
       await loadEmployeeStatus()
     }
   } catch (e) {
-    err.value = e.message
+    err.value = (e as Error)?.message || String(e)
   } finally {
     loading.value = false
   }
 })
 
 async function loadReviews() {
-  if (!route.params.id) return
+  if (!catalogParamId.value) return
   reviewsLoading.value = true
   reviewsErr.value = ''
   try {
-    reviewsData.value = await api.catalogReviews(route.params.id)
+    reviewsData.value = (await api.catalogReviews(catalogParamId.value)) as ReviewsPayload
   } catch (e) {
-    reviewsErr.value = e.message || '加载评价失败'
+    reviewsErr.value = (e as Error)?.message || '加载评价失败'
   } finally {
     reviewsLoading.value = false
   }
@@ -334,15 +409,15 @@ async function loadReviews() {
 async function toggleFavorite() {
   if (!item.value) return
   if (!localStorage.getItem('modstore_token')) {
-    await router.push({ name: 'login', query: { redirect: `/catalog/${route.params.id}` } })
+    await router.push({ name: 'login', query: { redirect: `/catalog/${catalogParamId.value}` } })
     return
   }
   favBusy.value = true
   try {
-    const r = await api.catalogToggleFavorite(route.params.id)
+    const r = await api.catalogToggleFavorite(catalogParamId.value)
     item.value.favorited = !!r.favorited
   } catch (e) {
-    alert(e.message)
+    alert((e as Error)?.message || String(e))
   } finally {
     favBusy.value = false
   }
@@ -352,27 +427,27 @@ async function submitReview() {
   if (!item.value || item.value.user_has_review) return
   reviewSubmitting.value = true
   try {
-    await api.catalogSubmitReview(route.params.id, reviewRating.value, reviewContent.value.trim())
+    await api.catalogSubmitReview(catalogParamId.value, reviewRating.value, reviewContent.value.trim())
     item.value.user_has_review = true
     reviewContent.value = ''
     await loadReviews()
   } catch (e) {
-    alert(e.message)
+    alert((e as Error)?.message || String(e))
   } finally {
     reviewSubmitting.value = false
   }
 }
 
 function customerServiceLink(scene = 'complaint') {
-  const it = item.value || {}
+  const it = item.value
   return {
     name: 'customer-service',
     query: {
       scene,
-      catalog_id: String(it.id || route.params.id || ''),
-      pkg_id: it.pkg_id || '',
-      item_name: it.name || '',
-      material_category: it.material_category || '',
+      catalog_id: String(it?.id || catalogParamId.value || ''),
+      pkg_id: it?.pkg_id || '',
+      item_name: it?.name || '',
+      material_category: it?.material_category || '',
       complaint_type: complaintType.value || '',
     },
   }
@@ -381,7 +456,7 @@ function customerServiceLink(scene = 'complaint') {
 async function submitComplaint() {
   if (!item.value) return
   if (!localStorage.getItem('modstore_token')) {
-    await router.push({ name: 'login', query: { redirect: `/catalog/${route.params.id}` } })
+    await router.push({ name: 'login', query: { redirect: `/catalog/${catalogParamId.value}` } })
     return
   }
   const reason = complaintReason.value.trim()
@@ -391,16 +466,16 @@ async function submitComplaint() {
   }
   complaintSubmitting.value = true
   try {
-    await api.catalogSubmitComplaint(route.params.id, complaintType.value, reason, {
+    await api.catalogSubmitComplaint(catalogParamId.value, complaintType.value, reason, {
       pkg_id: item.value.pkg_id,
       item_name: item.value.name,
       material_category: item.value.material_category,
     })
     complaintReason.value = ''
-    item.value = await api.catalogDetail(route.params.id)
+    item.value = (await api.catalogDetail(catalogParamId.value)) as CatalogItemDetail
     alert('已提交，建议继续进入 AI 客服补充证据材料。')
   } catch (e) {
-    alert(e.message)
+    alert((e as Error)?.message || String(e))
   } finally {
     complaintSubmitting.value = false
   }
@@ -413,10 +488,10 @@ async function loadEmployeeStatus() {
   employeeStatus.value.error = ''
   
   try {
-    const status = await api.getEmployeeStatus(item.value.pkg_id)
+    const status = await api.getEmployeeStatus(item.value.pkg_id || '')
     employeeStatus.value.data = status
   } catch (e) {
-    employeeStatus.value.error = e.message
+    employeeStatus.value.error = (e as Error)?.message || String(e)
   } finally {
     employeeStatus.value.loading = false
   }
@@ -426,7 +501,7 @@ async function doBuy() {
   if (!localStorage.getItem('modstore_token')) {
     await router.push({
       name: 'login',
-      query: { redirect: `/catalog/${route.params.id}` },
+      query: { redirect: `/catalog/${catalogParamId.value}` },
     })
     return
   }
@@ -436,14 +511,14 @@ async function doBuy() {
   if (it.price <= 0) {
     buying.value = true
     try {
-      const res = await api.buyItem(route.params.id)
+      const res = await api.buyItem(catalogParamId.value)
       alert(res.message)
-      item.value = await api.catalogDetail(route.params.id)
+      item.value = (await api.catalogDetail(catalogParamId.value)) as CatalogItemDetail
       if (item.value.artifact === 'employee_pack' && item.value.purchased) {
         await loadEmployeeStatus()
       }
     } catch (e) {
-      alert(e.message)
+      alert((e as Error)?.message || String(e))
     } finally {
       buying.value = false
     }
@@ -461,14 +536,14 @@ async function doBuy() {
       return
     }
     if (res.type === 'page' || res.type === 'wap') {
-      window.location.href = res.redirect_url
+      window.location.href = res.redirect_url || ''
     } else if (res.type === 'precreate' || res.type === 'wechat_native') {
       await router.push({ name: 'checkout', params: { orderId: res.order_id } })
     } else {
       alert('未知的支付类型')
     }
   } catch (e) {
-    alert(e.message)
+    alert((e as Error)?.message || String(e))
   } finally {
     buying.value = false
   }
@@ -476,9 +551,9 @@ async function doBuy() {
 
 async function doDownload() {
   try {
-    await api.downloadItem(route.params.id)
+    await api.downloadItem(catalogParamId.value)
   } catch (e) {
-    alert(e.message)
+    alert((e as Error)?.message || String(e))
   }
 }
 
@@ -492,7 +567,7 @@ async function delistItem() {
     await api.adminDeleteCatalog(it.id)
     await router.push({ name: 'ai-store' })
   } catch (e) {
-    alert(e?.message || String(e))
+    alert((e as Error)?.message || String(e))
   } finally {
     delisting.value = false
   }
@@ -842,6 +917,30 @@ function navigateToWorkflow() {
   position: absolute;
   left: 0;
   color: #60a5fa;
+}
+
+.cap-label {
+  color: rgba(255,255,255,0.85);
+  font-weight: 500;
+}
+
+.cap-desc {
+  display: block;
+  font-size: 12px;
+  color: rgba(255,255,255,0.4);
+  margin-top: 2px;
+  padding-left: 0;
+}
+
+.capability-card--full {
+  grid-column: 1 / -1;
+}
+
+.example-desc {
+  font-size: 13px;
+  color: rgba(255,255,255,0.45);
+  margin: 0 0 0.75rem;
+  line-height: 1.5;
 }
 
 .capability-card p {

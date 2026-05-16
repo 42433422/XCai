@@ -12,10 +12,17 @@ export interface ChatAttachmentMeta {
   docId?: string
 }
 
+/** OpenAI-compatible multimodal user message parts（与 /api/llm/chat 对齐）。 */
+export type ChatMultimodalPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  /** 存在时优先作为发给 LLM 的 user.content（可与纯文本 content 并存用于展示）。 */
+  multimodalContent?: ChatMultimodalPart[]
   createdAt: number
   reasoning?: string
   attachments?: ChatAttachmentMeta[]
@@ -27,6 +34,8 @@ export interface ChatMessage {
   skills?: string[]
   agentId?: string
   agentLabel?: string
+  /** 员工 execute-file 成功后由服务端返回的可下载产物（GET /api/employees/downloads/…，需 Bearer）。 */
+  outputDownloads?: Array<{ jobId: string; filename: string; label?: string }>
 }
 
 export interface Conversation {

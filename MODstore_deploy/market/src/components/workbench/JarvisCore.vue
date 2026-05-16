@@ -60,7 +60,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 
 const props = defineProps({
@@ -155,6 +155,7 @@ const dodecaFaces = [
   transform-style: preserve-3d;
   cursor: inherit;
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  /* 仅用 layout：若含 paint，光晕/box-shadow 会被裁成「方框」 especially 悬浮球缩放下 */
   contain: layout;
 }
 
@@ -190,16 +191,15 @@ const dodecaFaces = [
     transparent 100%
   );
   box-shadow:
-    0 0 60px rgba(0, 255, 255, 0.9),
-    0 0 120px rgba(0, 200, 255, 0.6),
-    0 0 180px rgba(0, 150, 255, 0.4),
-    0 0 240px rgba(0, 100, 200, 0.2),
-    inset 0 0 80px rgba(0, 255, 255, 0.5),
-    inset 0 0 120px rgba(0, 200, 255, 0.3);
+    0 0 72px rgba(0, 255, 255, 0.92),
+    0 0 138px rgba(0, 200, 255, 0.72),
+    0 0 200px rgba(0, 150, 255, 0.46),
+    0 0 260px rgba(0, 100, 200, 0.22),
+    inset 0 0 88px rgba(0, 255, 255, 0.56),
+    inset 0 0 110px rgba(0, 200, 255, 0.36);
   animation: coreBreath 4s ease-in-out infinite;
-  transition:
-    background 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  /* 光晕固定在样式表：呼吸只(scale)走 transform，避免 keyframes 里改 box-shadow 触发大面积重绘 */
+  transition: background 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .icosa-core {
@@ -276,12 +276,12 @@ const dodecaFaces = [
     transparent 100%
   );
   box-shadow:
-    0 0 60px rgba(255, 80, 80, 0.9),
-    0 0 120px rgba(220, 60, 60, 0.6),
-    0 0 180px rgba(200, 50, 50, 0.4),
-    0 0 240px rgba(180, 40, 40, 0.2),
-    inset 0 0 80px rgba(255, 80, 80, 0.5),
-    inset 0 0 120px rgba(220, 60, 60, 0.3);
+    0 0 72px rgba(255, 80, 80, 0.92),
+    0 0 138px rgba(220, 60, 60, 0.72),
+    0 0 200px rgba(200, 50, 50, 0.46),
+    0 0 260px rgba(180, 40, 40, 0.22),
+    inset 0 0 88px rgba(255, 80, 80, 0.56),
+    inset 0 0 110px rgba(220, 60, 60, 0.36);
   animation: coreBreathWork 4s ease-in-out infinite;
 }
 
@@ -307,11 +307,11 @@ const dodecaFaces = [
     transparent 100%
   );
   box-shadow:
-    0 0 60px rgba(255, 215, 0, 0.82),
-    0 0 120px rgba(255, 180, 0, 0.5),
-    0 0 180px rgba(220, 140, 0, 0.34),
-    inset 0 0 80px rgba(255, 215, 0, 0.42),
-    inset 0 0 120px rgba(255, 180, 0, 0.24);
+    0 0 72px rgba(255, 215, 0, 0.88),
+    0 0 138px rgba(255, 180, 0, 0.62),
+    0 0 200px rgba(220, 140, 0, 0.42),
+    inset 0 0 88px rgba(255, 215, 0, 0.52),
+    inset 0 0 110px rgba(255, 180, 0, 0.32);
   animation: coreBreathMonitor 4s ease-in-out infinite;
 }
 
@@ -351,6 +351,8 @@ const dodecaFaces = [
   top: 50%;
   transform-style: preserve-3d;
   pointer-events: none;
+  /* will-change 只在多面体实际挂载（非 reduce-effects）时生效；
+     reduce-effects 时整段由 v-if 不挂载，此处声明安全 */
   will-change: transform;
   z-index: 2;
 }
@@ -442,11 +444,12 @@ const dodecaFaces = [
 }
 
 @keyframes coreIcosaPulse {
-  0%, 100% {
-    filter: drop-shadow(0 0 15px rgba(0, 255, 255, 0.42));
+  0%,
+  100% {
+    opacity: 1;
   }
   50% {
-    filter: drop-shadow(0 0 24px rgba(0, 255, 255, 0.7));
+    opacity: 0.86;
   }
 }
 
@@ -456,23 +459,20 @@ const dodecaFaces = [
   100% { transform: rotate(360deg) scale(1); opacity: 0.75; }
 }
 
+/* 待机减负：外圈只旋转不改 opacity，减轻合成后的无效重绘 */
+@keyframes jarvisHaloDrift {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes coreBreath {
   0%,
   100% {
     transform: scale(1);
-    box-shadow:
-      0 0 60px rgba(0, 255, 255, 0.9),
-      0 0 120px rgba(0, 200, 255, 0.6),
-      0 0 180px rgba(0, 150, 255, 0.4),
-      inset 0 0 80px rgba(0, 255, 255, 0.5);
   }
   50% {
     transform: scale(1.08);
-    box-shadow:
-      0 0 80px rgba(0, 255, 255, 1),
-      0 0 150px rgba(0, 200, 255, 0.8),
-      0 0 220px rgba(0, 150, 255, 0.5),
-      inset 0 0 100px rgba(0, 255, 255, 0.7);
   }
 }
 
@@ -480,19 +480,9 @@ const dodecaFaces = [
   0%,
   100% {
     transform: scale(1);
-    box-shadow:
-      0 0 60px rgba(255, 80, 80, 0.9),
-      0 0 120px rgba(220, 60, 60, 0.6),
-      0 0 180px rgba(200, 50, 50, 0.4),
-      inset 0 0 80px rgba(255, 80, 80, 0.5);
   }
   50% {
     transform: scale(1.08);
-    box-shadow:
-      0 0 82px rgba(255, 80, 80, 1),
-      0 0 152px rgba(220, 60, 60, 0.82),
-      0 0 220px rgba(200, 50, 50, 0.52),
-      inset 0 0 104px rgba(255, 80, 80, 0.7);
   }
 }
 
@@ -500,19 +490,9 @@ const dodecaFaces = [
   0%,
   100% {
     transform: scale(1);
-    box-shadow:
-      0 0 60px rgba(255, 215, 0, 0.82),
-      0 0 120px rgba(255, 180, 0, 0.5),
-      0 0 180px rgba(220, 140, 0, 0.34),
-      inset 0 0 80px rgba(255, 215, 0, 0.42);
   }
   50% {
     transform: scale(1.08);
-    box-shadow:
-      0 0 82px rgba(255, 228, 110, 0.94),
-      0 0 152px rgba(255, 190, 20, 0.68),
-      0 0 220px rgba(220, 150, 0, 0.46),
-      inset 0 0 104px rgba(255, 215, 0, 0.6);
   }
 }
 
@@ -531,17 +511,9 @@ const dodecaFaces = [
   0%,
   100% {
     transform: scale(1);
-    box-shadow:
-      0 0 68px rgba(0, 255, 255, 0.95),
-      0 0 132px rgba(0, 200, 255, 0.68),
-      inset 0 0 82px rgba(0, 255, 255, 0.55);
   }
   50% {
     transform: scale(1.1);
-    box-shadow:
-      0 0 96px rgba(0, 255, 255, 1),
-      0 0 170px rgba(0, 200, 255, 0.86),
-      inset 0 0 108px rgba(0, 255, 255, 0.76);
   }
 }
 
@@ -549,17 +521,9 @@ const dodecaFaces = [
   0%,
   100% {
     transform: scale(1);
-    box-shadow:
-      0 0 68px rgba(255, 80, 80, 0.95),
-      0 0 132px rgba(220, 60, 60, 0.68),
-      inset 0 0 82px rgba(255, 80, 80, 0.55);
   }
   50% {
     transform: scale(1.1);
-    box-shadow:
-      0 0 96px rgba(255, 80, 80, 1),
-      0 0 170px rgba(220, 60, 60, 0.86),
-      inset 0 0 108px rgba(255, 80, 80, 0.76);
   }
 }
 
@@ -567,45 +531,74 @@ const dodecaFaces = [
   0%,
   100% {
     transform: scale(1);
-    box-shadow:
-      0 0 68px rgba(255, 215, 0, 0.9),
-      0 0 132px rgba(255, 180, 0, 0.62),
-      inset 0 0 82px rgba(255, 215, 0, 0.5);
   }
   50% {
     transform: scale(1.1);
-    box-shadow:
-      0 0 96px rgba(255, 228, 110, 1),
-      0 0 170px rgba(255, 190, 20, 0.8),
-      inset 0 0 108px rgba(255, 215, 0, 0.72);
   }
 }
 
+/* reduce-effects（idle）：简化构图 + 球体慢呼吸；扩散半径保持适中以兼顾观感与合成开销 */
 .jarvis-core--reduce-effects::before {
-  animation-duration: 56s;
-  opacity: 0.55;
-  box-shadow: 0 0 14px rgba(0, 220, 255, 0.1);
+  animation: jarvisHaloDrift 120s linear infinite;
+  opacity: 0.52;
+  box-shadow:
+    0 0 16px rgba(0, 220, 255, 0.12),
+    inset 0 0 22px rgba(0, 220, 255, 0.06);
+  will-change: transform;
 }
 
 .jarvis-core--reduce-effects .jarvis-sphere {
-  animation: jarvisIdleBreathScale 5.5s ease-in-out infinite;
+  animation: jarvisIdleBreathScale 6s ease-in-out infinite;
+  /* 待机：干净玻璃球体感，避免多层廉价霓虹；扩散仍控制在 ~80px 内 */
+  background: radial-gradient(
+    circle at 32% 30%,
+    rgba(235, 255, 255, 0.95) 0%,
+    rgba(120, 248, 255, 0.55) 18%,
+    rgba(0, 210, 230, 0.35) 42%,
+    rgba(0, 90, 140, 0.18) 68%,
+    rgba(0, 35, 70, 0.06) 88%,
+    transparent 100%
+  );
   box-shadow:
-    0 0 36px rgba(0, 255, 255, 0.55),
-    0 0 72px rgba(0, 200, 255, 0.32),
-    inset 0 0 48px rgba(0, 255, 255, 0.38);
+    0 0 28px rgba(0, 245, 255, 0.42),
+    0 0 52px rgba(0, 170, 220, 0.22),
+    inset 0 0 44px rgba(180, 255, 255, 0.38),
+    inset -12px -18px 36px rgba(0, 80, 120, 0.25);
+}
+
+.jarvis-core--reduce-effects .jarvis-sphere::before {
+  inset: 10%;
+  border-color: rgba(200, 255, 255, 0.35);
+  box-shadow:
+    inset 0 0 22px rgba(0, 220, 255, 0.18),
+    0 0 18px rgba(0, 230, 255, 0.15);
 }
 
 .jarvis-core--reduce-effects .jarvis-sphere::after {
-  animation-duration: 5s;
+  inset: 26%;
+  background: radial-gradient(circle at 40% 38%, rgba(255, 255, 255, 0.55), rgba(0, 230, 255, 0.12) 52%, transparent 72%);
+  animation: jarvisIdleCoreGlint 5.5s ease-in-out infinite;
 }
 
+@keyframes jarvisIdleCoreGlint {
+  0%,
+  100% {
+    opacity: 0.44;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 0.68;
+    transform: scale(1);
+  }
+}
+
+/* 待机减负时去掉中心二十面体线框，避免与静止轨道叠成「铁丝球」 */
 .jarvis-core--reduce-effects .icosa-core {
-  animation-duration: 40s;
-  filter: none;
+  display: none;
 }
 
 .jarvis-core--reduce-effects .icosa-core-face {
-  box-shadow: 0 0 6px rgba(40, 225, 255, 0.22);
+  box-shadow: none;
 }
 
 @keyframes jarvisIdleBreathScale {

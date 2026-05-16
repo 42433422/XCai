@@ -159,7 +159,23 @@ import { useRouter } from 'vue-router'
 import { api } from '../api'
 
 const router = useRouter()
-const mods = ref([])
+interface ModRow {
+  id: string
+  name?: string
+  version?: string
+  artifact?: string
+  ok?: boolean
+  primary?: boolean
+  warnings?: string[]
+  error?: string
+  workflow_employees?: Array<Record<string, any>>
+  path?: string
+  description?: string
+  library_blurb?: string
+  [key: string]: any
+}
+
+const mods = ref<ModRow[]>([])
 const loading = ref(true)
 const message = ref('')
 const messageOk = ref(true)
@@ -202,14 +218,14 @@ function isCreateModConflictError(e: unknown): boolean {
   return msg.includes('已存在') || msg.includes('409') || /FileExistsError/i.test(msg)
 }
 
-function flash(msg, ok = true) {
+function flash(msg: string, ok = true) {
   message.value = msg
   messageOk.value = ok
   setTimeout(() => { message.value = '' }, 5000)
 }
 
 /** 磁盘目录末段名（仅用于提示文案；删除 API 须用 manifest id） */
-function libraryFolderForDeleteApi(m) {
+function libraryFolderForDeleteApi(m: ModRow | null | undefined): string {
   if (!m || typeof m !== 'object') return ''
   const rawPath = typeof m.path === 'string' ? m.path.trim() : ''
   if (rawPath) {
@@ -221,7 +237,7 @@ function libraryFolderForDeleteApi(m) {
 }
 
 /** DELETE /api/mods/:id 须传 manifest.id（与账号 user_mod 一致）；服务端再解析真实目录 */
-function modIdForDeleteApi(m) {
+function modIdForDeleteApi(m: ModRow | null | undefined): string {
   if (!m || typeof m !== 'object') return ''
   const mid = String(m.id || '').trim()
   if (mid) return mid
@@ -284,7 +300,7 @@ async function purgeRepoLibraryAndLocalState() {
   }
 }
 
-async function deleteModFromLibrary(m) {
+async function deleteModFromLibrary(m: ModRow) {
   const folder = m && typeof m === 'object' ? modIdForDeleteApi(m) : ''
   const folderSeg = m && typeof m === 'object' ? libraryFolderForDeleteApi(m) : ''
   const displayId = m && typeof m === 'object' ? String(m.id || '').trim() : ''
@@ -317,13 +333,13 @@ async function deleteModFromLibrary(m) {
       flash(`删除已返回成功，但列表仍包含「${folder}」；请强制刷新或检查 GET /api/mods 是否被缓存。`, false)
     }
   } catch (e) {
-    flash(e?.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     deleteModBusy.value = ''
   }
 }
 
-function getBlurb(m) {
+function getBlurb(m: ModRow): string {
   if (!m || typeof m !== 'object') return ''
   const b = typeof m.library_blurb === 'string' ? m.library_blurb.trim() : ''
   if (b) return b
@@ -333,22 +349,22 @@ function getBlurb(m) {
   return one.length > 120 ? `${one.slice(0, 117)}…` : one
 }
 
-function artifactLabel(a) {
+function artifactLabel(a: string | undefined): string {
   const x = (a || 'mod').toLowerCase()
   if (x === 'employee_pack') return '员工包'
   if (x === 'bundle') return '组合包'
   return 'Mod'
 }
 
-function isBundle(m) {
+function isBundle(m: ModRow): boolean {
   return (m?.artifact || 'mod').toLowerCase() === 'bundle'
 }
 
-function viewMod(id) {
+function viewMod(id: string) {
   router.push({ name: 'mod-authoring', params: { modId: id } })
 }
 
-function testModInSandbox(id) {
+function testModInSandbox(id: string) {
   const modId = String(id || '').trim()
   if (!modId) {
     flash('该 Mod 缺少 id，无法带入沙箱测试', false)
@@ -357,11 +373,11 @@ function testModInSandbox(id) {
   router.push({ name: 'sandbox', query: { modId, host: '/sandbox', autoPush: '1' } })
 }
 
-function registerKey(modId, workflowIndex) {
+function registerKey(modId: string, workflowIndex: number): string {
   return `${modId}:${workflowIndex}`
 }
 
-async function registerWorkflowToCatalog(modId, workflowIndex) {
+async function registerWorkflowToCatalog(modId: string, workflowIndex: number) {
   if (!localStorage.getItem('modstore_token')) {
     flash('请先登录工作台后再一键登记到本地仓库', false)
     return
@@ -380,13 +396,13 @@ async function registerWorkflowToCatalog(modId, workflowIndex) {
       true,
     )
   } catch (err) {
-    flash(err?.message || String(err), false)
+    flash((err as Error)?.message || String(err), false)
   } finally {
     registerBusy.value = ''
   }
 }
 
-function goEmployeePrefill(modId, emp, workflowIndex = 0) {
+function goEmployeePrefill(modId: string, emp: Record<string, any>, workflowIndex = 0) {
   const label = (emp && (emp.label || emp.id)) || '员工'
   const sum = typeof emp?.panel_summary === 'string' ? emp.panel_summary.trim() : ''
   const desc = sum
@@ -425,7 +441,7 @@ async function submitScaffold() {
     await load()
     router.push({ name: 'mod-authoring', params: { modId: res.id } })
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   } finally {
     scaffoldBusy.value = false
   }
@@ -437,7 +453,7 @@ async function load(opts?: { cacheBust?: boolean }) {
     const res = await api.listMods(!!opts?.cacheBust)
     mods.value = Array.isArray(res?.data) ? res.data : []
   } catch (e) {
-    flash('加载 Mod 库失败: ' + (e.message || String(e)), false)
+    flash('加载 Mod 库失败: ' + ((e as Error)?.message || String(e)), false)
     mods.value = []
   } finally {
     loading.value = false
@@ -471,16 +487,17 @@ async function submitCreate() {
   flash('无法生成可用目录名（重试次数过多）', false)
 }
 
-async function onImport(ev) {
-  const f = ev.target.files?.[0]
-  ev.target.value = ''
+async function onImport(ev: Event) {
+  const input = ev.target as HTMLInputElement | null
+  const f = input?.files?.[0]
+  if (input) input.value = ''
   if (!f) return
   try {
     const res = await api.importZIP(f, true)
     flash(`已导入 ${res.id}`)
     await load()
   } catch (e) {
-    flash(e.message || String(e), false)
+    flash((e as Error)?.message || String(e), false)
   }
 }
 

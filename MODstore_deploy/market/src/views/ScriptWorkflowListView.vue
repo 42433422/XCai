@@ -74,11 +74,11 @@ const visible = computed(() => {
 })
 
 function goNew() {
-  router.push({ path: '/script-workflows/new' })
+  router.push({ name: 'workbench-script-workflow-new' })
 }
 
 function goDetail(id: number) {
-  router.push({ path: `/script-workflows/${id}` })
+  router.push({ name: 'workbench-script-workflow-detail', params: { id } })
 }
 
 function statusLabel(status: string) {

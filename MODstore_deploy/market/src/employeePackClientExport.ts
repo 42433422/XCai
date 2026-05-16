@@ -6,7 +6,7 @@ import { strToU8, zipSync } from 'fflate'
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]*$/
 
-export function normalizeModId(s) {
+export function normalizeModId(s: unknown): string | null {
   const x = String(s || '')
     .trim()
     .toLowerCase()
@@ -14,7 +14,7 @@ export function normalizeModId(s) {
   return x
 }
 
-function slugId(raw, fallback) {
+function slugId(raw: unknown, fallback: string): string {
   let x = String(raw || '')
     .trim()
     .toLowerCase()
@@ -26,8 +26,8 @@ function slugId(raw, fallback) {
   return x.slice(0, 48)
 }
 
-function validateEmployeePackManifest(data) {
-  const errors = []
+function validateEmployeePackManifest(data: any): string[] {
+  const errors: string[] = []
   const mid = data?.id
   if (!mid || typeof mid !== 'string' || !mid.trim()) errors.push('缺少非空字符串字段 id')
   else if (!ID_RE.test(mid.trim())) errors.push('id 建议使用小写字母、数字、点、下划线、连字符，且不以连字符开头')
@@ -47,7 +47,12 @@ function validateEmployeePackManifest(data) {
   return errors
 }
 
-export function buildEmployeePackManifestFromWorkflow(modId, modManifest, wfEntry, workflowIndex = 0) {
+export function buildEmployeePackManifestFromWorkflow(
+  modId: unknown,
+  modManifest: any,
+  wfEntry: any,
+  workflowIndex = 0,
+): { manifest: Record<string, unknown> | null; error: string } {
   const mid = normalizeModId(modId)
   if (!mid) return { manifest: null, error: 'Mod id 无效' }
 
@@ -107,7 +112,17 @@ export function buildEmployeePackManifestFromWorkflow(modId, modManifest, wfEntr
 /**
  * @returns {{ blob: Blob, packId: string }}
  */
-export function buildEmployeePackZipFromPanel({ modId, workflowIndex, modManifest, workflowJsonText }) {
+export function buildEmployeePackZipFromPanel({
+  modId,
+  workflowIndex,
+  modManifest,
+  workflowJsonText,
+}: {
+  modId: string
+  workflowIndex: number | string
+  modManifest: any
+  workflowJsonText: string
+}) {
   if (!String(modId || '').trim()) throw new Error('缺少 Mod id')
   let wfEntry
   try {
@@ -143,13 +158,21 @@ function sanitizePackId(raw = '') {
 /**
  * V2 配置转 employee_pack manifest（浏览器端兜底导出专用）
  */
+export interface BuildEmployeePackV2Args {
+  config: any
+  packId?: string
+  industry?: string
+  price?: number
+  author?: string
+}
+
 export function buildEmployeePackManifestFromV2({
   config,
   packId = '',
   industry = '',
   price = 0,
   author = '',
-}) {
+}: BuildEmployeePackV2Args) {
   const c = config && typeof config === 'object' ? config : {}
   const identity = c.identity && typeof c.identity === 'object' ? c.identity : {}
   const collaboration = c.collaboration && typeof c.collaboration === 'object' ? c.collaboration : {}
@@ -489,7 +512,7 @@ export function buildEmployeePackZipFromV2({
   price = 0,
   author = '',
   files = {},
-}) {
+}: BuildEmployeePackV2Args & { files?: Record<string, string | Uint8Array> }) {
   const { manifest, packId: finalPackId } = buildEmployeePackManifestFromV2({
     config,
     packId,

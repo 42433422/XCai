@@ -43,7 +43,7 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
+import { api } from '@/api'
 
 const router = useRouter()
 const step = ref(1)
@@ -56,7 +56,7 @@ const msg = ref('')
 const sending = ref(false)
 const resetting = ref(false)
 const countdown = ref(0)
-let timer = null
+let timer: ReturnType<typeof setInterval> | null = null
 
 const canReset = computed(
   () =>
@@ -69,13 +69,13 @@ onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
 })
 
-function startCooldown(sec) {
+function startCooldown(sec: number) {
   countdown.value = sec
   if (timer) clearInterval(timer)
   timer = setInterval(() => {
     countdown.value -= 1
     if (countdown.value <= 0) {
-      clearInterval(timer)
+      if (timer) clearInterval(timer)
       timer = null
     }
   }, 1000)
@@ -96,7 +96,7 @@ async function sendCode() {
     step.value = 2
     startCooldown(60)
   } catch (e) {
-    err.value = e.message
+    err.value = (e as Error)?.message || String(e)
   } finally {
     sending.value = false
   }
@@ -112,7 +112,7 @@ async function resetPw() {
     msg.value = '密码已重置，请使用新密码登录'
     setTimeout(() => router.replace('/login'), 1200)
   } catch (e) {
-    err.value = e.message
+    err.value = (e as Error)?.message || String(e)
   } finally {
     resetting.value = false
   }

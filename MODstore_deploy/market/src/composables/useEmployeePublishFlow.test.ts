@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import { useEmployeePublishFlow } from './useEmployeePublishFlow'
 import { api } from '../api'
+import type { WorkflowSandboxResponse } from '../types/api'
 
 vi.mock('../api', () => ({
   api: {
@@ -9,6 +10,18 @@ vi.mock('../api', () => ({
     workflowSandboxRun: vi.fn(),
   },
 }))
+
+function sandboxStub(ok: boolean, phase: string): WorkflowSandboxResponse {
+  return {
+    ok,
+    validate_only: phase === 'validate',
+    errors: [],
+    warnings: [],
+    steps: [],
+    output: {},
+    phase,
+  }
+}
 
 function createFlow(overrides: Record<string, any> = {}) {
   return useEmployeePublishFlow({
@@ -25,8 +38,8 @@ function createFlow(overrides: Record<string, any> = {}) {
 describe('useEmployeePublishFlow', () => {
   it('runs validate and execution sandbox before opening the audit gate', async () => {
     vi.mocked(api.workflowSandboxRun)
-      .mockResolvedValueOnce({ ok: true, phase: 'validate' })
-      .mockResolvedValueOnce({ ok: true, phase: 'execute' })
+      .mockResolvedValueOnce(sandboxStub(true, 'validate'))
+      .mockResolvedValueOnce(sandboxStub(true, 'execute'))
     const flow = createFlow()
 
     await flow.runEmployeeWorkflowSandbox()
@@ -48,7 +61,7 @@ describe('useEmployeePublishFlow', () => {
       artifact: 'employee_pack',
       probe_mod_id: 'mod-1',
     })
-    expect(flow.auditReport.value?.summary.pass).toBe(true)
+    expect(flow.auditReport.value?.summary?.pass).toBe(true)
   })
 
   it('applies listing defaults when entering listing step', () => {

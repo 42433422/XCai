@@ -25,11 +25,11 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
-import { pickRedirectFromRoute } from '../authPaths'
+import { useAuthStore } from '@/stores/auth'
+import { pickRedirectFromRoute } from '@/authPaths'
 
 const router = useRouter()
 const route = useRoute()

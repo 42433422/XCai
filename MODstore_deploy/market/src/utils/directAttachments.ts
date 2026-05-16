@@ -1,10 +1,31 @@
 export const DIRECT_KB_SUPPORTED_EXTENSIONS = ['txt', 'md', 'json', 'csv', 'pdf', 'docx', 'xlsx'] as const
+export const EMPLOYEE_SPREADSHEET_EXTRA_EXTENSIONS = ['xlsm', 'xls'] as const
+/** 一档/二档附件可选的文档扩展名（含仅「给员工处理」支持的表格类型）。 */
+export const DIRECT_ATTACH_DOC_EXTENSIONS = [...DIRECT_KB_SUPPORTED_EXTENSIONS, ...EMPLOYEE_SPREADSHEET_EXTRA_EXTENSIONS] as const
 export const DIRECT_KB_SUPPORTED_EXT = new Set<string>(DIRECT_KB_SUPPORTED_EXTENSIONS)
-export const DIRECT_ATTACHMENT_ACCEPT = DIRECT_KB_SUPPORTED_EXTENSIONS.map((ext) => `.${ext}`).join(',')
+export const DIRECT_ATTACH_DOC_EXT = new Set<string>(DIRECT_ATTACH_DOC_EXTENSIONS)
+export const DIRECT_ATTACHMENT_ACCEPT = DIRECT_ATTACH_DOC_EXTENSIONS.map((ext) => `.${ext}`).join(',')
 export const DIRECT_KB_MAX_BYTES = 20 * 1024 * 1024
+/** 与网关 / 员工 execute-file 上限对齐（默认 100MB），大表走员工通道而非知识抽取。 */
+export const DIRECT_EMPLOYEE_FILE_MAX_BYTES = 100 * 1024 * 1024
+
+/** 工作台一档附件：知识库支持的文档 + 可走视觉的多模态图片（不入向量库，压缩后以 data URL 发送）。 */
+export const VISION_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] as const
+export const DIRECT_AND_VISION_ACCEPT = [...DIRECT_ATTACH_DOC_EXTENSIONS, ...VISION_IMAGE_EXTENSIONS]
+  .map((ext) => `.${ext}`)
+  .join(',')
+
+/** .xlsx / .xlsm / .xls — 可标为「给员工处理」并由 multipart execute-file 提交。 */
+export function isEmployeeSpreadsheetExt(ext: string): boolean {
+  const e = String(ext || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\./, '')
+  return e === 'xlsx' || e === 'xlsm' || e === 'xls'
+}
 
 export type DirectAttachmentStatus = 'uploading' | 'ready' | 'inline' | 'error' | 'skipped'
-export type DirectAttachmentKind = 'excel' | 'pdf' | 'word' | 'csv' | 'json' | 'text' | 'file'
+export type DirectAttachmentKind = 'excel' | 'pdf' | 'word' | 'csv' | 'json' | 'text' | 'file' | 'vision'
 
 export interface DirectAttachmentOutcome {
   status: 'ready' | 'inline' | 'error'
@@ -31,7 +52,7 @@ export function directFileExt(filename: string): string {
 
 export function directFileKind(filename: string, mime = ''): DirectAttachmentKind {
   const ext = directFileExt(filename)
-  if (ext === 'xlsx') return 'excel'
+  if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls') return 'excel'
   if (ext === 'pdf') return 'pdf'
   if (ext === 'docx') return 'word'
   if (ext === 'csv') return 'csv'
@@ -54,6 +75,8 @@ export function directFileKindLabel(kind: DirectAttachmentKind): string {
       return 'JSON'
     case 'text':
       return 'Text'
+    case 'vision':
+      return 'Image'
     default:
       return 'File'
   }

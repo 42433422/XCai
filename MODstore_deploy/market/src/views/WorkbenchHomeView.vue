@@ -1,74 +1,47 @@
 <template>
   <div class="wb-home">
-    <div
-      class="wb-home-inner"
-      :class="{
-        'wb-home-inner--no-workflow': !hasWorkflow,
-        'wb-home-inner--gears': hasWorkflow,
-        'wb-home-inner--make': hasWorkflow && activeGear === 'make',
-      }"
-    >
+  <header class="wb-scene-header">
+    <div class="wb-scene-toolbar" :class="{ 'wb-scene-toolbar--left': wbSidebar.activeMode === 'make' }">
+      <div v-if="wbSidebar.activeMode === 'direct'" class="wb-toolbar-group" :class="{ 'wb-toolbar-group--enter': hasWorkflow }">
+        <button v-if="hasWorkflow" type="button" class="wb-scene-toolbar-btn" :class="{ 'wb-scene-toolbar-btn--active': tierPanelOpen }" title="消费档位" @click="tierPanelOpen = !tierPanelOpen; empPanelOpen = false">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 12h12M2 8h12M2 4h12" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="10" cy="8" r="1.2" fill="currentColor" /><circle cx="7" cy="4" r="1.2" fill="currentColor" /></svg>
+          <span>档位 {{ consumptionTier }}</span>
+        </button>
+        <button v-if="hasWorkflow" type="button" class="wb-scene-toolbar-btn" :class="{ 'wb-scene-toolbar-btn--active': empPanelOpen }" title="选择员工" @click="empPanelOpen = !empPanelOpen; tierPanelOpen = false">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="8" cy="5" r="2.5" /><path d="M3 14c0-2.76 2.24-5 5-5s5 2.24 5 5" /></svg>
+          <span>员工</span>
+        </button>
+      </div>
+      <div v-if="wbSidebar.activeMode === 'make'" class="wb-toolbar-group" :class="{ 'wb-toolbar-group--enter': hasWorkflow }">
+        <div class="wb-scene-toolbar__group">
+          <button v-if="hasModRepo" type="button" class="wb-scene-toolbar-btn" :class="{ 'wb-scene-toolbar-btn--active': composerIntent === 'mod' }" title="做 Mod" @click="switchMakeIntent('mod')">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="2" y="2" width="5" height="5" rx="1" /><rect x="9" y="2" width="5" height="5" rx="1" /><rect x="2" y="9" width="5" height="5" rx="1" /><rect x="9" y="9" width="5" height="5" rx="1" /></svg>
+            <span>做 Mod</span>
+          </button>
+          <button v-if="hasEmployeeIntent" type="button" class="wb-scene-toolbar-btn" :class="{ 'wb-scene-toolbar-btn--active': hasWorkflow && composerIntent === 'employee' }" title="做员工" @click="switchMakeIntent('employee')">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="8" cy="5" r="2.5" /><path d="M3 14c0-2.76 2.24-5 5-5s5 2.24 5 5" /></svg>
+            <span>做员工</span>
+          </button>
+          <button v-if="hasWorkflow" type="button" class="wb-scene-toolbar-btn" :class="{ 'wb-scene-toolbar-btn--active': hasWorkflow && composerIntent === CANVAS_SKILL_INTENT }" title="生成 Skill 组" @click="switchMakeIntent(CANVAS_SKILL_INTENT)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 12h12M2 8h12M2 4h12" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="10" cy="8" r="1.2" fill="currentColor" /><circle cx="7" cy="4" r="1.2" fill="currentColor" /></svg>
+            <span>生成 Skill 组</span>
+          </button>
+        </div>
+        <button v-if="hasWorkflow" type="button" class="wb-scene-toolbar-btn" :class="{ 'wb-scene-toolbar-btn--active': tierPanelOpen }" title="消费档位" @click="tierPanelOpen = !tierPanelOpen">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 12h12M2 8h12M2 4h12" /><circle cx="5" cy="12" r="1.2" fill="currentColor" /><circle cx="10" cy="8" r="1.2" fill="currentColor" /><circle cx="7" cy="4" r="1.2" fill="currentColor" /></svg>
+          <span>档位 {{ consumptionTier }}</span>
+        </button>
+      </div>
+    </div>
+  </header>
+    <main class="wb-main-area">
+      <div class="wb-mode-content">
       <header v-if="!hasWorkflow" class="wb-hero">
         <p v-if="greetingLine" class="wb-hero-kicker">{{ greetingLine }}</p>
         <h1 class="wb-hero-title">今天有什么安排？</h1>
       </header>
 
-      <div
-        v-if="hasWorkflow"
-        class="wb-gear-layout"
-        :class="{
-          'wb-gear-layout--make': activeGear === 'make',
-          'wb-gear-layout--nav-locked': gearNavHardLocked,
-        }"
-        @wheel="onGearWheel"
-      >
-        <nav class="wb-gear-rail" aria-label="工作台挡位">
-          <div
-            class="wb-gear-slider"
-            :class="{ 'wb-gear-slider--dragging': gearDragging }"
-            @pointerdown="onGearPointerDown"
-            @pointermove="onGearPointerMove"
-            @pointerup="onGearPointerUp"
-            @pointercancel="onGearPointerCancel"
-          >
-            <span class="wb-gear-slider__track" aria-hidden="true">
-              <span class="wb-gear-slider__fill" :style="{ height: `${gearThumbPercent}%` }"></span>
-            </span>
-            <button
-              v-for="(scene, i) in gearScenes"
-              :key="scene.key"
-              type="button"
-              class="wb-gear-stop"
-              :class="{ 'wb-gear-stop--active': activeGear === scene.key }"
-              :style="{ top: `${gearStopPercent(i)}%` }"
-              :aria-current="activeGear === scene.key ? 'true' : undefined"
-              @click.stop="setGear(scene.key)"
-            >
-              <span class="wb-gear-stop__num">{{ scene.num }}</span>
-              <span class="wb-gear-stop__label">{{ scene.label }}</span>
-            </button>
-            <span
-              class="wb-gear-thumb"
-              :style="{ top: `${gearThumbPercent}%` }"
-              aria-hidden="true"
-            >
-              <span class="wb-gear-thumb__num">{{ activeGearScene.num }}</span>
-              <span class="wb-gear-thumb__label">{{ activeGearScene.label }}</span>
-            </span>
-          </div>
-        </nav>
-        <div class="wb-gear-viewport">
-          <div
-            v-if="gearNavHardLocked"
-            class="wb-gear-nav-lock"
-            role="status"
-            aria-live="polite"
-          >
-            <span class="wb-gear-nav-lock__text">一档已有聊天记录，挡位已锁定，避免滚轮误切。</span>
-            <button type="button" class="wb-gear-nav-lock__btn" @click="unlockGearNav">解锁挡位</button>
-          </div>
-          <div class="wb-gear-track" :style="{ transform: `translateY(-${gearIndex * (100 / gearScenes.length)}%)` }">
-            <section class="wb-gear-scene wb-direct-scene" aria-label="一档直接聊天" :style="directFontPxStyle">
+        <section v-if="wbSidebar.activeMode !== 'voice'" class="wb-mode-scene" :style="directFontPxStyle">
               <div v-if="!directMessages.length" class="wb-direct-empty-title">
                 <h1 class="wb-direct-title">{{ activeBot ? activeBot.name : '有什么想问的？' }}</h1>
                 <p class="wb-direct-sub">{{ activeBot?.desc || '像聊天一样提问，我直接帮你分析、总结和给出可执行答案。' }}</p>
@@ -235,126 +208,145 @@
                           <path d="M21.44 11.05l-8.49 8.48a5.66 5.66 0 01-8-8l9.19-9.2a3.77 3.77 0 015.33 5.33L8.95 19.07a2.36 2.36 0 01-3.33-3.33l8.49-8.48" />
                         </svg>
                       </button>
-                      <textarea
-                        v-model="directDraft"
-                        class="wb-direct-input"
-                        rows="3"
-                        placeholder="直接问问题，例如：帮我写一份门店日报自动化方案…粘贴/拖拽图片或文件也可以"
-                        spellcheck="false"
-                        @keydown="onDirectKeydown"
-                      />
-                      <div class="wb-llm-inline wb-direct-llm-inline" aria-label="一档模型">
-                        <div class="wb-mode-segment" role="radiogroup" aria-label="一档模型模式">
-                          <button
-                            type="button"
-                            class="wb-mode-segment__btn"
-                            :class="{ 'wb-mode-segment__btn--on': modelMode === 'auto' }"
-                            role="radio"
-                            :aria-checked="modelMode === 'auto'"
-                            @click="modelMode = 'auto'"
-                          >Auto</button>
-                          <button
-                            type="button"
-                            class="wb-mode-segment__btn"
-                            :class="{ 'wb-mode-segment__btn--on': modelMode === 'manual' }"
-                            role="radio"
-                            :aria-checked="modelMode === 'manual'"
-                            @click="modelMode = 'manual'"
-                          >自选</button>
-                        </div>
-                        <template v-if="modelMode === 'manual' && llmCatalog && llmCatalog.providers?.length && !llmCatalogError">
-                          <div class="wb-llm-dd">
-                            <span class="wb-sr-only" id="wb-direct-provider-lbl">厂商</span>
+                      <div class="wb-direct-input-row">
+                        <div class="wb-llm-inline wb-direct-llm-inline" aria-label="一档模型">
+                          <div class="wb-mode-segment" role="radiogroup" aria-label="一档模型模式">
                             <button
                               type="button"
-                              class="wb-dd-trigger wb-dd-trigger--compact"
-                              :class="{ 'wb-dd-trigger--open': llmDdOpen === 'directProvider' }"
-                              aria-haspopup="listbox"
-                              :aria-expanded="llmDdOpen === 'directProvider'"
-                              aria-labelledby="wb-direct-provider-lbl"
-                              title="厂商"
-                              @click.stop="toggleLlmDd('directProvider')"
-                            >
-                              <span class="wb-dd-trigger__text">{{ currentProviderLabel }}</span>
-                              <svg class="wb-dd-trigger__icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                              </svg>
-                            </button>
-                            <ul
-                              v-show="llmDdOpen === 'directProvider'"
-                              class="wb-dd-panel"
-                              role="listbox"
-                              aria-labelledby="wb-direct-provider-lbl"
-                            >
-                              <li
-                                v-for="b in llmCatalog.providers"
-                                :key="`direct-${b.provider}`"
-                                role="option"
-                                class="wb-dd-item"
-                                :class="{ 'wb-dd-item--on': selectedProvider === b.provider }"
-                                :aria-selected="selectedProvider === b.provider"
-                                @click.stop="pickProvider(b.provider)"
+                              class="wb-mode-segment__btn"
+                              :class="{ 'wb-mode-segment__btn--on': modelMode === 'auto' }"
+                              role="radio"
+                              :aria-checked="modelMode === 'auto'"
+                              @click="modelMode = 'auto'"
+                            >Auto</button>
+                            <button
+                              type="button"
+                              class="wb-mode-segment__btn"
+                              :class="{ 'wb-mode-segment__btn--on': modelMode === 'manual' }"
+                              role="radio"
+                              :aria-checked="modelMode === 'manual'"
+                              @click="modelMode = 'manual'"
+                            >自选</button>
+                          </div>
+                          <template v-if="modelMode === 'manual' && llmCatalog && llmCatalog.providers?.length && !llmCatalogError">
+                            <div class="wb-llm-dd">
+                              <span class="wb-sr-only" id="wb-direct-provider-lbl">厂商</span>
+                              <button
+                                type="button"
+                                class="wb-dd-trigger wb-dd-trigger--compact"
+                                :class="{ 'wb-dd-trigger--open': llmDdOpen === 'directProvider' }"
+                                aria-haspopup="listbox"
+                                :aria-expanded="llmDdOpen === 'directProvider'"
+                                aria-labelledby="wb-direct-provider-lbl"
+                                title="厂商"
+                                @click.stop="toggleLlmDd('directProvider')"
                               >
-                                {{ b.label || b.provider }}
-                              </li>
-                            </ul>
-                          </div>
-                          <div class="wb-llm-dd wb-llm-dd--model">
-                            <span class="wb-sr-only" id="wb-direct-model-lbl">模型</span>
-                            <button
-                              type="button"
-                              class="wb-dd-trigger wb-dd-trigger--model wb-dd-trigger--compact"
-                              :class="{ 'wb-dd-trigger--open': llmDdOpen === 'directModel' }"
-                              :disabled="!modelPickerEnabled"
-                              aria-haspopup="listbox"
-                              :aria-expanded="llmDdOpen === 'directModel'"
-                              aria-labelledby="wb-direct-model-lbl"
-                              title="模型"
-                              @click.stop="modelPickerEnabled && toggleLlmDd('directModel')"
-                            >
-                              <span class="wb-dd-trigger__text">{{ selectedModel || '选择模型' }}</span>
-                              <svg class="wb-dd-trigger__icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                              </svg>
-                            </button>
-                            <ul
-                              v-show="llmDdOpen === 'directModel' && modelPickerEnabled"
-                              class="wb-dd-panel wb-dd-panel--tall"
-                              role="listbox"
-                              aria-labelledby="wb-direct-model-lbl"
-                            >
-                              <template v-for="cat in LLM_CATEGORY_ORDER" :key="`direct-${cat}`">
-                                <template v-if="modelsForWorkbenchCategory(cat).length">
-                                  <li class="wb-dd-cat" role="presentation">{{ categoryLabel(cat) }}</li>
-                                  <li
-                                    v-for="row in modelsForWorkbenchCategory(cat)"
-                                    :key="`direct-${row.id}`"
-                                    role="option"
-                                    class="wb-dd-item"
-                                    :class="{ 'wb-dd-item--on': selectedModel === row.id }"
-                                    :aria-selected="selectedModel === row.id"
-                                    @click.stop="pickModel(row.id)"
-                                  >
-                                    {{ row.id }}
-                                  </li>
+                                <span class="wb-dd-trigger__text">{{ currentProviderLabel }}</span>
+                                <svg class="wb-dd-trigger__icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                  <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                              </button>
+                              <ul
+                                v-show="llmDdOpen === 'directProvider'"
+                                class="wb-dd-panel"
+                                role="listbox"
+                                aria-labelledby="wb-direct-provider-lbl"
+                              >
+                                <li
+                                  v-for="b in llmCatalog.providers"
+                                  :key="`direct-${b.provider}`"
+                                  role="option"
+                                  class="wb-dd-item"
+                                  :class="{ 'wb-dd-item--on': selectedProvider === b.provider }"
+                                  :aria-selected="selectedProvider === b.provider"
+                                  @click.stop="pickProvider(b.provider)"
+                                >
+                                  {{ b.label || b.provider }}
+                                </li>
+                              </ul>
+                            </div>
+                            <div class="wb-llm-dd wb-llm-dd--model">
+                              <span class="wb-sr-only" id="wb-direct-model-lbl">模型</span>
+                              <button
+                                type="button"
+                                class="wb-dd-trigger wb-dd-trigger--model wb-dd-trigger--compact"
+                                :class="{ 'wb-dd-trigger--open': llmDdOpen === 'directModel' }"
+                                :disabled="!modelPickerEnabled"
+                                aria-haspopup="listbox"
+                                :aria-expanded="llmDdOpen === 'directModel'"
+                                aria-labelledby="wb-direct-model-lbl"
+                                title="模型"
+                                @click.stop="modelPickerEnabled && toggleLlmDd('directModel')"
+                              >
+                                <span class="wb-dd-trigger__text">{{ selectedModel || '选择模型' }}</span>
+                                <svg class="wb-dd-trigger__icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                  <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                              </button>
+                              <ul
+                                v-show="llmDdOpen === 'directModel' && modelPickerEnabled"
+                                class="wb-dd-panel wb-dd-panel--tall"
+                                role="listbox"
+                                aria-labelledby="wb-direct-model-lbl"
+                              >
+                                <template v-for="cat in LLM_CATEGORY_ORDER" :key="`direct-${cat}`">
+                                  <template v-if="modelsForWorkbenchCategory(cat).length">
+                                    <li class="wb-dd-cat" role="presentation">{{ categoryLabel(cat) }}</li>
+                                    <li
+                                      v-for="row in modelsForWorkbenchCategory(cat)"
+                                      :key="`direct-${row.id}`"
+                                      role="option"
+                                      class="wb-dd-item"
+                                      :class="{ 'wb-dd-item--on': selectedModel === row.id }"
+                                      :aria-selected="selectedModel === row.id"
+                                      @click.stop="pickModel(row.id)"
+                                    >
+                                      {{ row.id }}
+                                    </li>
+                                  </template>
                                 </template>
-                              </template>
-                            </ul>
-                          </div>
-                        </template>
-                        <span
-                          v-else-if="modelMode === 'manual' && (llmCatalogLoading || llmCatalogError || !llmCatalog?.providers?.length)"
-                          class="wb-llm-inline__note"
-                          :title="llmCatalogError || ''"
-                        >{{ llmCatalogLoading ? '目录…' : '登录配置' }}</span>
+                              </ul>
+                            </div>
+                          </template>
+                          <span
+                            v-else-if="modelMode === 'manual' && (llmCatalogLoading || llmCatalogError || !llmCatalog?.providers?.length)"
+                            class="wb-llm-inline__note"
+                            :title="llmCatalogError || ''"
+                          >{{ llmCatalogLoading ? '目录…' : '登录配置' }}</span>
+                        </div>
+                        <textarea
+                          v-model="directDraft"
+                          class="wb-direct-input"
+                          rows="3"
+                          placeholder="直接问问题，例如：帮我写一份门店日报自动化方案…粘贴/拖拽图片或文件也可以"
+                          spellcheck="false"
+                          @keydown="onDirectKeydown"
+                        />
                       </div>
+                      <button
+                        type="button"
+                        class="wb-direct-voice-btn"
+                        :class="{ 'wb-direct-voice-btn--on': directVoiceListening }"
+                        aria-label="语音输入"
+                        title="语音输入"
+                        @click="toggleDirectVoice"
+                      >
+                        <svg class="wb-direct-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                          <line x1="12" y1="19" x2="12" y2="23" />
+                          <line x1="8" y1="23" x2="16" y2="23" />
+                        </svg>
+                      </button>
                       <button
                         v-if="directLoading"
                         type="button"
-                        class="wb-direct-send wb-direct-send--stop"
+                        class="wb-direct-send-stop"
                         title="停止生成"
                         @click="stopGeneration"
-                      >停止</button>
+                      >
+                        <svg class="wb-direct-send-stop-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                      </button>
                       <button
                         v-else
                         type="button"
@@ -428,38 +420,8 @@
                       {{ directAttachHint }}
                     </p>
                   </div>
-                  <div class="wb-direct-new-row">
-                    <button
-                      type="button"
-                      class="wb-direct-new-btn"
-                      title="新开一档对话：清空输入与附件，并回到初始会话"
-                      @click="newConversationHandler"
-                    >新建</button>
-                  </div>
                   <p v-if="directError" class="wb-direct-error" role="alert">{{ directError }}</p>
-                  <p class="wb-direct-prefs-row">
-                    <button type="button" class="wb-direct-prefs-btn" @click="personalSettingsOpen = true">
-                      个性化与朗读设置
-                    </button>
-                  </p>
-                  <div v-if="hasWorkflow" class="wb-direct-employee-row">
-                    <label class="wb-direct-employee-label" for="wb-direct-employee-select">测试员工（一档单选）</label>
-                    <select
-                      id="wb-direct-employee-select"
-                      v-model="directChatEmployeeId"
-                      class="wb-direct-employee-select"
-                      :disabled="directLoading"
-                      aria-describedby="wb-direct-employee-hint"
-                    >
-                      <option value="">不绑定（通用检索）</option>
-                      <option v-for="opt in directEmployeeOptions" :key="opt.id" :value="opt.id">
-                        {{ opt.name }} · {{ opt.id }}（{{ opt.sourceLabel }}）
-                      </option>
-                    </select>
-                    <p id="wb-direct-employee-hint" class="wb-direct-employee-hint">
-                      仅选一个员工：知识检索优先使用该 id；与人设并存时仍以本选择为准。
-                    </p>
-                  </div>
+
                 </div>
               </div>
 
@@ -491,7 +453,7 @@
               />
             </section>
 
-            <section class="wb-gear-scene wb-make-scene" aria-label="二档制作流程">
+            <section v-if="wbSidebar.activeMode === 'make'" class="wb-mode-scene wb-make-scene">
       <header class="wb-make-hero">
         <p v-if="greetingLine" class="wb-hero-kicker">{{ greetingLine }}</p>
         <h1 class="wb-hero-title">{{ makeHeroTitle }}</h1>
@@ -1019,7 +981,7 @@
       </section>
 
       <div
-        v-if="hasWorkflow"
+        v-if="hasWorkflow && wbSidebar.activeMode === 'make'"
         class="wb-composer-column"
         :class="{ 'wb-composer-column--task-slim': makeHasActiveTask }"
       >
@@ -1366,6 +1328,21 @@
               </button>
               <button
                 type="button"
+                class="wb-direct-voice-btn"
+                :class="{ 'wb-direct-voice-btn--on': makeVoiceListening }"
+                aria-label="语音输入"
+                title="语音输入"
+                @click="toggleMakeVoice"
+              >
+                <svg class="wb-direct-voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              </button>
+              <button
+                type="button"
                 class="wb-input-send"
                 :disabled="composerSendDisabled"
                 :aria-label="planSession?.phase === 'chat' ? '发送追问' : '发送'"
@@ -1447,7 +1424,7 @@
       </footer>
             </section>
 
-            <section class="wb-gear-scene wb-voice-scene" aria-label="三档语音规划">
+            <section v-if="wbSidebar.activeMode === 'voice'" class="wb-mode-scene wb-voice-scene">
               <div class="wb-voice-orb-wrap">
                 <!-- 轨道旋转时一、二档仍在视窗外挂载会导致大量 CSS 动画持续跑 GPU；仅在三档展示时再挂载 -->
                 <template v-if="activeGear === 'voice'">
@@ -1523,23 +1500,13 @@
                 class="wb-voice-fallback"
                 rows="2"
                 placeholder="语音不可用时，可以在这里打字补充…"
+                @keydown.enter.prevent="() => void submitVoiceTurn()"
               />
               <p v-if="voiceError" class="wb-voice-error" role="alert">{{ voiceError }}</p>
             </section>
-          </div>
-        </div>
       </div>
-    </div>
-    <Teleport to="body">
-      <div
-        v-if="showDirectTierFab"
-        class="wb-direct-tier-fab"
-        role="region"
-        aria-label="消费档位悬浮控件"
-      >
-        <ConsumptionTierControl v-model="consumptionTier" />
-      </div>
-    </Teleport>
+    </main>
+
     <Teleport to="body">
       <div
         v-if="planDiagramPreviewIdx !== null"
@@ -1597,6 +1564,7 @@ import {
   reactive,
   onMounted,
   onActivated,
+  onDeactivated,
   onUnmounted,
   onBeforeUnmount,
   nextTick,
@@ -1644,6 +1612,7 @@ import {
 } from '../utils/conversationStore'
 import { streamLLMChat } from '../utils/llmStream'
 import type { StreamHandle } from '../utils/llmStream'
+import { useWorkbenchSidebarStore } from '../stores/workbenchSidebar'
 import { stripInternalMarkers } from '../utils/lightMarkdown'
 import {
   DIRECT_ATTACHMENT_ACCEPT,
@@ -1683,6 +1652,7 @@ const LLM_CATEGORY_ORDER = ['llm', 'vlm', 'image', 'video', 'other']
 
 const router = useRouter()
 const route = useRoute()
+const wbSidebar = useWorkbenchSidebarStore()
 const draft = ref('')
 const displayName = ref('')
 const inputRef = ref(null)
@@ -1781,13 +1751,13 @@ function isCanvasSkillIntent(k: string | undefined | null): boolean {
 const composerIntent = ref(CANVAS_SKILL_INTENT)
 const modFrontendEnabled = ref(true)
 const activeGear = ref('make')
-const gearScenes = [
-  { key: 'direct', num: '1', label: '聊' },
-  { key: 'make', num: '2', label: '做' },
-  { key: 'voice', num: '3', label: '说' },
-]
-const gearIndex = computed(() => Math.max(0, gearScenes.findIndex((it) => it.key === activeGear.value)))
-const activeGearScene = computed(() => gearScenes[gearIndex.value] || gearScenes[1])
+
+const hasModRepo = computed(() => hasWorkflow.value)
+const hasEmployeeIntent = computed(() => hasWorkflow.value)
+
+function switchMakeIntent(intent: string) {
+  composerIntent.value = intent
+}
 const gearDragging = ref(false)
 const gearDragOffset = ref(0)
 let gearDragStartY = 0
@@ -1812,6 +1782,10 @@ const directThreadRef = ref<HTMLElement | null>(null)
 const directAttachedFiles = ref([])
 const directLoading = ref(false)
 const directError = ref('')
+const directVoiceListening = ref(false)
+const makeVoiceListening = ref(false)
+let directVoiceRecognition: any = null
+let makeVoiceRecognition: any = null
 
 /** 一档直接聊天：单选绑定员工 id（优先于人设 id 参与知识检索）；sessionStorage 持久化 */
 const WB_DIRECT_CHAT_EMPLOYEE_ID_KEY = 'wb_direct_chat_employee_id'
@@ -1939,6 +1913,8 @@ function readStoredConsumptionTier(): number {
 
 /** 直接聊天右上角「消费档位」1–10：占位；与右侧工作台 1/2/3 挡位无关 */
 const consumptionTier = ref(readStoredConsumptionTier())
+const tierPanelOpen = ref(false)
+const empPanelOpen = ref(false)
 
 watch(consumptionTier, (v) => {
   try {
@@ -2710,7 +2686,24 @@ async function speakMessage(messageId: string) {
   stopDirectTtsPlayback()
   getPhoneSynth()?.cancel()
 
-  const text = stripInternalMarkers(m.content).slice(0, 1500)
+  const raw = stripInternalMarkers(m.content).slice(0, 1500)
+  const text = raw
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`[^`]+`/g, '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[[^\]]*\]\([^)]*\)/g, (m) => m.replace(/\[([^\]]*)\]\([^)]*\)/, '$1'))
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^[-*+]\s+/gm, '')
+    .replace(/^\d+\.\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
+    .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '')
+    .replace(/[^\p{L}\p{N}\p{P}\p{S}\p{Z}\n]/gu, '')
+    .replace(/\n{2,}/g, '\n')
+    .replace(/\s+/g, ' ')
+    .trim()
 
   if (personalSettings.value.ttsEngine === 'edge-online') {
     speakingMessageId.value = messageId
@@ -4251,12 +4244,68 @@ watch(
   () => directMessages.value.map((m) => `${m.id}:${m.content.length}:${m.pending ? 1 : 0}`).join('|'),
   async () => {
     await nextTick()
-    const raw = directThreadRef.value as any
-    const el: HTMLElement | null = raw?.$el || raw
+    const el = document.querySelector('.wb-direct-thread') as HTMLElement | null
     if (!el) return
-    el.scrollTop = el.scrollHeight
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   },
 )
+
+function createVoiceRecognition(onResult: (t: string) => void, onEnd: () => void) {
+  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+  if (!SR) return null
+  const rec = new SR()
+  rec.lang = 'zh-CN'
+  rec.interimResults = true
+  rec.continuous = false
+  rec.onresult = (e: any) => {
+    let t = ''
+    for (let i = e.resultIndex; i < e.results.length; i++) t += e.results[i][0].transcript
+    if (t) onResult(t)
+  }
+  rec.onend = onEnd
+  rec.onerror = onEnd
+  return rec
+}
+
+function startDirectVoice() {
+  if (directVoiceListening.value) return
+  directVoiceRecognition = createVoiceRecognition(
+    (t) => { draft.value = draft.value ? draft.value + t : t },
+    () => { directVoiceListening.value = false },
+  )
+  if (!directVoiceRecognition) return
+  directVoiceListening.value = true
+  directVoiceRecognition.start()
+}
+
+function stopDirectVoice() {
+  try { directVoiceRecognition?.stop() } catch {}
+  directVoiceListening.value = false
+}
+
+function toggleDirectVoice() {
+  directVoiceListening.value ? stopDirectVoice() : startDirectVoice()
+}
+
+function startMakeVoice() {
+  if (makeVoiceListening.value) return
+  makeVoiceRecognition = createVoiceRecognition(
+    (t) => { makeComposerInput.value = makeComposerInput.value ? makeComposerInput.value + t : t },
+    () => { makeVoiceListening.value = false },
+  )
+  if (!makeVoiceRecognition) return
+  makeVoiceListening.value = true
+  makeVoiceRecognition.start()
+}
+
+function stopMakeVoice() {
+  try { makeVoiceRecognition?.stop() } catch {}
+  makeVoiceListening.value = false
+}
+
+function toggleMakeVoice() {
+  makeVoiceListening.value ? stopMakeVoice() : startMakeVoice()
+}
 
 onMounted(async () => {
   document.addEventListener('pointerdown', onLlmDocPointerDown, true)
@@ -4334,6 +4383,24 @@ onActivated(() => {
   }
 })
 
+function handleModeSwitchFromSidebar(e: Event) {
+  const mode = (e as CustomEvent).detail as 'direct' | 'make' | 'voice'
+  if (!mode) return
+  if (planSession.value) planSession.value = null
+  if (pendingHandoff.value) pendingHandoff.value = null
+  composerIntent.value = CANVAS_SKILL_INTENT
+  wbSidebar.setActiveMode(mode)
+  activeGear.value = mode
+}
+
+onMounted(() => {
+  window.addEventListener('wb-mode-switch', handleModeSwitchFromSidebar)
+})
+
+onDeactivated(() => {
+  window.removeEventListener('wb-mode-switch', handleModeSwitchFromSidebar)
+})
+
 watch(directChatEmployeeId, (v) => {
   try {
     const s = String(v || '').trim()
@@ -4406,6 +4473,9 @@ onBeforeUnmount(() => {
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onLlmDocPointerDown, true)
   window.removeEventListener('keydown', onLlmEscape)
+  window.removeEventListener('wb-mode-switch', handleModeSwitchFromSidebar)
+  stopDirectVoice()
+  stopMakeVoice()
   stopDirectTtsPlayback()
 })
 
@@ -5797,17 +5867,18 @@ async function summarizePlanSession() {
 
 async function openPlanSession(input) {
   planSurfaceKey.value += 1
-  const meta = INTENT_META[composerIntent.value] || INTENT_META.workflow
+  const effectiveIntent = composerIntent.value || CANVAS_SKILL_INTENT
+  const meta = INTENT_META[effectiveIntent] || INTENT_META.workflow
   const fullBrief = typeof input === 'object' && input ? String(input.fullBrief || '') : String(input || '')
   const displayBrief = typeof input === 'object' && input ? String(input.displayBrief || '') : compactPlanVisibleText(fullBrief)
   planSession.value = {
-    intentKey: composerIntent.value,
+    intentKey: effectiveIntent,
     intentTitle: meta.title,
     phase: 'summary',
     initialBrief: displayBrief,
     fullBrief,
     displayBrief,
-    generateFrontend: composerIntent.value === 'mod' ? input?.generateFrontend !== false : false,
+    generateFrontend: effectiveIntent === 'mod' ? input?.generateFrontend !== false : false,
     summaryTitle: '',
     summaryText: '',
     files: Array.isArray(input?.files) ? input.files : [],
@@ -6127,8 +6198,9 @@ async function submitDraft() {
     }
   }
   const payloadParts = [text]
-  const wantsModFrontend = composerIntent.value === 'mod' && modFrontendEnabled.value
-  if (composerIntent.value === 'mod') {
+  const intent = composerIntent.value || CANVAS_SKILL_INTENT
+  const wantsModFrontend = intent === 'mod' && modFrontendEnabled.value
+  if (intent === 'mod') {
     payloadParts.push(
       wantsModFrontend
         ? '【制作选项】本次需要为 Mod 生成可路由的定制 Vue 前端页面，并在 manifest.frontend.menu 中暴露入口。'
@@ -6187,16 +6259,15 @@ function onComposerKeydown(e) {
 
 /* 与主布局窗口等高、不产生页面级滚动；纵向仅在三联场景内滚动 */
 .wb-home {
-  flex: 1 1 0%;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   min-height: 0;
   max-height: 100%;
-  height: 100%;
   width: 100%;
   max-width: 100%;
   padding: clamp(0.5rem, 1.5vw, 1rem) var(--layout-pad-x, 1rem) clamp(0.5rem, 1.2vw, 0.9rem);
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: flex-start;
   overflow: hidden;
@@ -6204,9 +6275,9 @@ function onComposerKeydown(e) {
 
 .wb-home-inner {
   width: 100%;
+  flex: 1 1 0%;
   min-height: 0;
   max-height: 100%;
-  /* 窄屏贴边留白、宽屏随屏变宽，上限约 56rem 避免一行过长 */
   max-width: min(56rem, calc(100vw - 2 * var(--layout-pad-x, 16px)));
   display: flex;
   flex-direction: column;
@@ -6234,6 +6305,108 @@ function onComposerKeydown(e) {
   gap: 1.25rem;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+.wb-mode-content {
+  flex: 1 1 0%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wb-scene-nav {
+  display: flex;
+  gap: 0;
+  padding: 0 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  background: #121212;
+}
+
+.wb-scene-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  flex-shrink: 0;
+  background: #121212;
+}
+
+.wb-scene-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.wb-scene-employee-select {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.7);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.3rem 1.5rem 0.3rem 0.5rem;
+  cursor: pointer;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='1.5' stroke-linecap='round'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.4rem center;
+}
+
+.wb-scene-header-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.wb-scene-nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.55rem 0.85rem;
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.45);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.wb-scene-nav-item:hover {
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.wb-scene-nav-item--active {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 -2px 0 #6366f1;
+}
+
+.wb-scene-nav-item svg {
+  opacity: 0.7;
+}
+
+.wb-scene-nav-item--active svg {
+  opacity: 1;
+}
+
+.wb-mode-scene {
+  flex: 1 1 0%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .wb-hero {
@@ -6400,12 +6573,11 @@ function onComposerKeydown(e) {
     0 0 0 3px rgba(129, 140, 248, 0.065),
     0 10px 22px rgba(0, 0, 0, 0.3);
   transform: translate(-50%, -50%);
-  transition: top 0.3s cubic-bezier(0.22, 1, 0.36, 1), transform 0.18s ease;
+  transition: top 0.3s cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
 
 .wb-gear-slider--dragging .wb-gear-thumb {
-  transition: transform 0.18s ease;
   transform: translate(-50%, -50%) scale(1.06);
 }
 
@@ -6470,7 +6642,6 @@ function onComposerKeydown(e) {
 
 .wb-gear-track {
   height: 300%;
-  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
 }
 
@@ -6873,44 +7044,32 @@ function onComposerKeydown(e) {
   background: rgba(99, 102, 241, 0.1);
 }
 
-.wb-direct-send--stop {
-  background: rgba(248, 113, 113, 0.32) !important;
-  color: #fff !important;
-  border: 1px solid rgba(248, 113, 113, 0.45) !important;
-}
-
-.wb-direct-tier-fab {
-  position: fixed;
-  left: clamp(0.85rem, 2.2vw, 1.35rem);
-  bottom: clamp(0.85rem, 2.2vw, 1.35rem);
-  z-index: 50;
-  width: min(22rem, calc(100vw - 2rem));
-  background: transparent;
-  border: 0;
-  box-shadow: none;
+.wb-direct-send-stop {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
-  animation: wb-direct-tier-fab-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: background 150ms ease, border-color 150ms ease;
 }
 
-@keyframes wb-direct-tier-fab-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.wb-direct-send-stop:hover {
+  background: rgba(248, 113, 113, 0.3);
+  border-color: rgba(248, 113, 113, 0.7);
 }
 
-@media (max-width: 720px) {
-  .wb-direct-tier-fab {
-    left: 0.75rem;
-    right: auto;
-    bottom: 0.75rem;
-    width: min(21rem, calc(100vw - 1.5rem));
-  }
+.wb-direct-send-stop-icon {
+  width: 14px;
+  height: 14px;
 }
+
+
 
 .wb-make-scene {
   display: flex;
@@ -7073,65 +7232,57 @@ function onComposerKeydown(e) {
 
 .wb-direct-box {
   position: relative;
-  width: min(50rem, 100%);
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border-radius: 1.35rem;
-  background: rgba(255, 255, 255, 0.075);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  transition:
-    width 0.46s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.46s cubic-bezier(0.22, 1, 0.36, 1),
-    margin 0.46s cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 0.32s ease,
-    background 0.32s ease,
-    box-shadow 0.32s ease;
-  animation: wb-direct-composer-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  gap: 0;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  border: none;
 }
 
 .wb-direct-main--empty .wb-direct-box {
-  margin-top: 0.55rem;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  margin-top: 0;
+  box-shadow: none;
 }
 
 .wb-direct-main--chatting .wb-direct-box {
-  width: min(54rem, 100%);
+  width: 100%;
   margin-top: auto;
-  transform: translateY(0);
-  border-radius: 1.1rem;
-  background: rgba(255, 255, 255, 0.062);
-  animation: wb-direct-composer-drop 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+  border-radius: 0;
+  background: none;
 }
 
 @keyframes wb-direct-composer-enter {
   from {
     opacity: 0;
-    transform: translateY(14px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 
 @keyframes wb-direct-composer-drop {
   from {
-    transform: translateY(-18px) scale(1.015);
     opacity: 0.82;
   }
   to {
-    transform: translateY(0) scale(1);
     opacity: 1;
   }
 }
 
 .wb-direct-box-main {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: end;
-  gap: 0.55rem 0.65rem;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: #212121;
+  border: none;
+}
+
+.wb-direct-box-main:focus-within {
+  box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.15);
 }
 
 .wb-file-mention-row {
@@ -7306,7 +7457,7 @@ function onComposerKeydown(e) {
   border-radius: 0.54rem;
   background: linear-gradient(145deg, #30333d, #22252d);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
-  transition: transform 0.22s ease, background 0.22s ease, border-color 0.22s ease;
+  transition: background 0.22s ease, border-color 0.22s ease;
 }
 
 .wb-direct-file-card__deck-card--back {
@@ -7457,17 +7608,15 @@ function onComposerKeydown(e) {
 
 .wb-direct-file-card-enter-active,
 .wb-direct-file-card-leave-active {
-  transition: opacity 0.24s ease, transform 0.34s cubic-bezier(0.18, 1.05, 0.28, 1);
+  transition: opacity 150ms ease;
 }
 
 .wb-direct-file-card-enter-from,
 .wb-direct-file-card-leave-to {
   opacity: 0;
-  transform: translateY(-1.8rem) rotate(-14deg) scale(0.9);
 }
 
 .wb-direct-file-card-move {
-  transition: transform 0.28s cubic-bezier(0.18, 1.05, 0.28, 1);
 }
 
 .wb-direct-attach-hint {
@@ -7512,13 +7661,23 @@ function onComposerKeydown(e) {
   margin: 0.45rem 0 0.2rem;
 }
 
+.wb-direct-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.4rem;
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
 .wb-direct-input {
+  flex: 1 1 0%;
   width: 100%;
-  min-height: 4.5rem;
+  min-height: 2.4rem;
   border: none;
   outline: none;
   resize: none;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 0.6rem;
   color: #f8fafc;
   font: inherit;
   font-size: 1rem;
@@ -7527,6 +7686,40 @@ function onComposerKeydown(e) {
 
 .wb-direct-input::placeholder {
   color: rgba(255, 255, 255, 0.34);
+}
+
+.wb-direct-voice-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(240, 240, 245, 0.45);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: color 180ms ease, background 180ms ease, box-shadow 200ms ease;
+}
+.wb-direct-voice-btn:hover {
+  color: rgba(240, 240, 245, 0.85);
+  background: rgba(129, 140, 248, 0.08);
+}
+.wb-direct-voice-btn--on {
+  color: #818cf8;
+  background: rgba(129, 140, 248, 0.15);
+  box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.25);
+  animation: wb-voice-pulse 1.5s ease-in-out infinite;
+}
+.wb-direct-voice-icon {
+  width: 18px;
+  height: 18px;
+}
+@keyframes wb-voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.25); }
+  50% { box-shadow: 0 0 0 4px rgba(129, 140, 248, 0.15); }
 }
 
 .wb-direct-send,
@@ -7638,40 +7831,21 @@ function onComposerKeydown(e) {
 
 .wb-direct-msg {
   position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 0.78rem;
-  padding: 0;
+  padding: 0.75rem 0;
   color: rgba(248, 250, 252, 0.92);
   max-width: 100%;
-  transform-origin: left top;
 }
 
 .wb-direct-msg--user,
 .wb-voice-msg--user {
-  justify-self: end;
-  grid-template-columns: minmax(0, 1fr) auto;
-  max-width: min(84%, 42rem);
   transform-origin: right top;
 }
 
 .wb-direct-msg--assistant {
-  justify-self: start;
-  max-width: min(90%, 49rem);
 }
 
 .wb-direct-msg__persona {
-  display: grid;
-  justify-items: center;
-  gap: 0.34rem;
-  min-width: 3.25rem;
-  padding-top: 0.04rem;
-}
-
-.wb-direct-msg--user .wb-direct-msg__persona {
-  grid-column: 2;
-  grid-row: 1;
+  display: none;
 }
 
 .wb-direct-msg__avatar {
@@ -7705,82 +7879,61 @@ function onComposerKeydown(e) {
 }
 
 .wb-direct-msg__stack {
-  display: grid;
-  justify-items: start;
+  display: flex;
+  flex-direction: column;
   gap: 0.38rem;
   min-width: 0;
 }
 
 .wb-direct-msg--user .wb-direct-msg__stack {
-  grid-column: 1;
-  grid-row: 1;
-  justify-items: end;
+  align-items: flex-end;
+}
+
+.wb-direct-msg:hover :deep(.msg-act) {
+  opacity: 1;
 }
 
 .wb-direct-msg__bubble {
   position: relative;
-  min-width: min(8rem, 100%);
-  padding: 0.86rem 1rem;
-  border-radius: 0.54rem 1.22rem 1.22rem;
-  background:
-    linear-gradient(150deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.68)),
-    rgba(2, 6, 23, 0.42);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.09),
-    0 18px 44px rgba(2, 6, 23, 0.22);
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
   overflow: hidden;
-  backdrop-filter: blur(16px) saturate(126%);
+  backdrop-filter: none;
 }
 
 .wb-direct-msg__bubble::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 38%);
-  pointer-events: none;
+  display: none;
 }
 
 .wb-direct-msg--user .wb-direct-msg__bubble {
-  border-radius: 1.22rem 0.54rem 1.22rem 1.22rem;
-  background:
-    linear-gradient(150deg, rgba(99, 102, 241, 0.5), rgba(37, 99, 235, 0.26)),
-    rgba(30, 41, 59, 0.72);
-  border-color: rgba(199, 210, 254, 0.28);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    0 18px 44px rgba(37, 99, 235, 0.18);
-}
-
-.wb-direct-msg--user .wb-direct-msg__bubble::before {
-  background:
-    radial-gradient(circle at 88% 0%, rgba(255, 255, 255, 0.14), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 44%);
+  border-radius: 0;
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .wb-direct-msg-flow-enter-active,
 .wb-direct-msg-flow-leave-active {
   transition:
-    opacity 0.36s ease,
-    transform 0.42s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 150ms ease,
     filter 0.32s ease;
 }
 
 .wb-direct-msg-flow-enter-from {
   opacity: 0;
-  transform: translateY(16px) scale(0.985);
   filter: blur(4px);
 }
 
 .wb-direct-msg-flow-leave-to {
   opacity: 0;
-  transform: translateY(-8px) scale(0.99);
   filter: blur(3px);
 }
 
 .wb-direct-msg-flow-move {
-  transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .wb-direct-msg--assistant:first-child,
@@ -7792,16 +7945,13 @@ function onComposerKeydown(e) {
   from {
     opacity: 0;
     transform: translateY(18px) scale(0.98);
-    box-shadow: 0 0 0 rgba(99, 102, 241, 0);
   }
   45% {
     opacity: 1;
-    box-shadow: 0 0 34px rgba(99, 102, 241, 0.18);
   }
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
-    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.12);
   }
 }
 
@@ -7823,7 +7973,6 @@ function onComposerKeydown(e) {
   height: 0.34rem;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.8);
-  box-shadow: 0 0 12px rgba(148, 163, 184, 0.35);
 }
 
 .wb-direct-msg--user .wb-direct-msg__role {
@@ -7832,12 +7981,10 @@ function onComposerKeydown(e) {
 
 .wb-direct-msg--user .wb-direct-msg__role::before {
   background: #c7d2fe;
-  box-shadow: 0 0 14px rgba(199, 210, 254, 0.55);
 }
 
 .wb-direct-msg--assistant .wb-direct-msg__role::before {
   background: #5eead4;
-  box-shadow: 0 0 14px rgba(94, 234, 212, 0.45);
 }
 
 .wb-direct-msg__body {
@@ -7854,101 +8001,7 @@ function onComposerKeydown(e) {
   font-size: 0.82rem;
 }
 
-.wb-direct-new-row {
-  margin: 0.35rem 0 0;
-  display: flex;
-  justify-content: flex-start;
-}
 
-.wb-direct-new-btn {
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(15, 23, 42, 0.4);
-  color: rgba(226, 232, 240, 0.9);
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background 140ms ease,
-    color 140ms ease,
-    border-color 140ms ease;
-}
-
-.wb-direct-new-btn:hover {
-  background: rgba(51, 65, 85, 0.45);
-  color: #f8fafc;
-  border-color: rgba(148, 163, 184, 0.35);
-}
-
-.wb-direct-prefs-row {
-  margin: 0.4rem 0 0;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.wb-direct-prefs-btn {
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(15, 23, 42, 0.35);
-  color: rgba(165, 180, 252, 0.88);
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background 140ms ease,
-    color 140ms ease,
-    border-color 140ms ease;
-}
-
-.wb-direct-prefs-btn:hover {
-  background: rgba(99, 102, 241, 0.2);
-  color: #e0e7ff;
-  border-color: rgba(165, 180, 252, 0.35);
-}
-
-.wb-direct-employee-row {
-  margin: 0.55rem 0 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.45rem 0.65rem;
-}
-
-.wb-direct-employee-label {
-  margin: 0;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: rgba(226, 232, 240, 0.82);
-  flex: 0 0 auto;
-}
-
-.wb-direct-employee-select {
-  min-width: 12rem;
-  max-width: 100%;
-  flex: 1 1 14rem;
-  padding: 0.28rem 0.5rem;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(15, 23, 42, 0.55);
-  color: rgba(248, 250, 252, 0.92);
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-.wb-direct-employee-select:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.wb-direct-employee-hint {
-  margin: 0;
-  flex: 1 0 100%;
-  font-size: 0.65rem;
-  line-height: 1.45;
-  color: rgba(148, 163, 184, 0.88);
-}
 
 .wb-voice-orb-wrap {
   position: relative;
@@ -8364,7 +8417,7 @@ function onComposerKeydown(e) {
   font-size: 1.35rem;
   line-height: 1;
   cursor: pointer;
-  transition: background 0.15s ease, transform 0.15s ease;
+  transition: background 0.15s ease;
 }
 
 .wb-plan-diagram-preview-close:hover,
@@ -9015,44 +9068,35 @@ function onComposerKeydown(e) {
 
 /* 面板入场 */
 .wb-plan-shell-enter-active {
-  transition:
-    opacity 0.35s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 150ms ease;
 }
 
 .wb-plan-shell-enter-from {
   opacity: 0;
-  transform: translateY(10px) scale(0.99);
 }
 
 .wb-plan-shell-enter-to {
   opacity: 1;
-  transform: translateY(0) scale(1);
 }
 
 .wb-plan-shell-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition: opacity 150ms ease;
 }
 
 .wb-plan-shell-leave-to {
   opacity: 0;
-  transform: translateY(6px);
 }
 
 /* 消息列表 */
 .wb-plan-msg-enter-active {
-  transition:
-    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 150ms ease;
 }
 
 .wb-plan-msg-enter-from {
   opacity: 0;
-  transform: translateY(8px);
 }
 
 .wb-plan-msg-move {
-  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -9609,7 +9653,7 @@ function onComposerKeydown(e) {
   color: #121212;
   background: #fff;
   cursor: pointer;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 150ms ease;
 }
 
 .wb-handoff-primary:hover:not(:disabled) {
@@ -9670,13 +9714,13 @@ function onComposerKeydown(e) {
 /* 主输入：近似 ChatGPT 输入条 — 深底、大圆角、轻边 */
 .wb-composer-panel {
   border-radius: 1.625rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #2f2f2f;
+  border: none;
+  background: #212121;
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.2),
     0 10px 40px rgba(0, 0, 0, 0.35);
-  /* visible：自选厂商/模型下拉在 footer 内向上展开，hidden 会裁切面板 */
   overflow: visible;
+  transition: box-shadow 200ms ease, opacity 150ms ease;
 }
 
 .wb-composer-body {
@@ -9973,7 +10017,7 @@ function onComposerKeydown(e) {
   font-weight: 700;
   line-height: 1;
   transform: translateZ(0);
-  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
 
 .wb-kb-add-btn:hover:not(:disabled),
@@ -10299,7 +10343,6 @@ function onComposerKeydown(e) {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
-  transition: transform 0.16s ease;
 }
 
 .wb-frontend-toggle--on .wb-frontend-toggle__knob {
@@ -10408,7 +10451,6 @@ function onComposerKeydown(e) {
 .wb-dd-trigger__icon {
   flex-shrink: 0;
   color: rgba(255, 255, 255, 0.45);
-  transition: transform 0.15s ease;
 }
 
 .wb-dd-trigger--open .wb-dd-trigger__icon {
@@ -10555,7 +10597,7 @@ function onComposerKeydown(e) {
   color: #121212;
   background: #fff;
   transform: translateZ(0);
-  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  transition: opacity 150ms ease, background 0.15s ease;
 }
 
 .wb-input-send:hover:not(:disabled) {
