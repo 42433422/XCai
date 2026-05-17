@@ -15,6 +15,11 @@ class ConfigDTO(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool = True
+    deploy_tier: str = "local"
+    git_sha: str = ""
+    hostname: str = ""
+    tavily_configured: bool = False
+    scheduler_running: Optional[bool] = None
 
 
 class CreateModDTO(BaseModel):
@@ -28,6 +33,7 @@ class ModAiScaffoldDTO(BaseModel):
     replace: bool = True
     provider: Optional[str] = Field(None, max_length=64)
     model: Optional[str] = Field(None, max_length=128)
+    manifest_override: Optional[Dict[str, Any]] = Field(None, alias="_manifest_override")
 
 
 class FrontendRegenerateDTO(BaseModel):
