@@ -17,14 +17,17 @@ try:
 
     _deploy_root = Path(__file__).resolve().parents[2]
     load_dotenv(_deploy_root / ".env", override=False)
-    # 本机覆盖（.gitignore）；不存在则忽略。后加载以便覆盖 .env 中同名键。
     _shared_secret_env = {
         key: os.environ.get(key)
         for key in ("MODSTORE_JWT_SECRET",)
         if os.environ.get(key)
     }
+    _preserved_db_path = (os.environ.get("MODSTORE_DB_PATH") or "").strip()
     load_dotenv(_deploy_root / ".env.local", override=True)
-    # JWT 必须与 Java 支付服务一致；systemd/生产 .env 已有值时禁止 .env.local 覆盖。
+    if _preserved_db_path:
+        os.environ["MODSTORE_DB_PATH"] = _preserved_db_path
+    if os.environ.get("MODSTORE_PYTEST_USE_SQLITE") == "1":
+        os.environ.pop("DATABASE_URL", None)
     os.environ.update(_shared_secret_env)
 except ImportError:
     pass
@@ -41,11 +44,62 @@ _OPENAPI_TAGS = [
     {"name": "debug", "description": "沙箱目录、primary 批量标记、XCAGI 状态代理"},
     {"name": "authoring", "description": "扩展面文档、蓝图路由静态扫描、宿主 OpenAPI 合并"},
     {"name": "payment", "description": "支付、订单与会员计划"},
-    {"name": "workflow", "description": "工作流编排与执行"},
+    {
+        "name": "workflow",
+        "description": "工作流编排、执行、自然语言生成与沙箱（见 workflow_api / workflow_nl_graph）",
+    },
+    {"name": "workflow-hooks", "description": "工作流 Webhook 触发入口（/api/workflow-hooks）"},
     {"name": "webhooks", "description": "业务 Webhook 投递与重放"},
+    {"name": "inbound-webhooks", "description": "入站 Webhook 接收"},
     {"name": "refunds", "description": "退款申请与审核"},
     {"name": "catalog", "description": "公开目录与市场检索"},
     {"name": "catalog-mod-sync", "description": "公网机器令牌：库与 XCAGI/mods 推送/拉回（/v1/mod-sync）"},
+    {"name": "market", "description": "市场展示、目录与匿名公开接口（如落地页联系表单）"},
+    {"name": "auth", "description": "注册、登录、JWT、个人资料；与 Java 支付侧用户叠加信息"},
+    {"name": "admin", "description": "需管理员权限的账户与运维辅助入口（与 /api/admin/* 部分重叠）"},
+    {"name": "employees", "description": "AI 员工执行、配置与打包（领域边界见 SERVICE_BOUNDARIES.md）"},
+    {"name": "llm", "description": "大模型目录、BYOK、聊天/多模态代理与计费"},
+    {
+        "name": "openai-gateway",
+        "description": "OpenAI 兼容聚合网关（/v1/chat/completions，账户默认路由 + 平台计费）",
+    },
+    {"name": "knowledge", "description": "知识库与向量检索（v1 API）"},
+    {"name": "knowledge-v2", "description": "知识库 v2 扩展接口"},
+    {"name": "workbench", "description": "工作台与制作向导相关 API"},
+    {"name": "eskills", "description": "ESkill 定义与版本"},
+    {"name": "script-workflow", "description": "脚本化工作流"},
+    {"name": "realtime", "description": "WebSocket 实时通知通道（/api/realtime/ws）"},
+    {"name": "notifications", "description": "站内通知 REST 与持久化"},
+    {"name": "openapi-connectors", "description": "第三方 OpenAPI 连接器导入与调用"},
+    {"name": "customer-service", "description": "客服编排与工具链"},
+    {"name": "butler", "description": "数字管家（Butler）编排 API"},
+    {"name": "butler-qq", "description": "Butler ↔ QQ 官方机器人 HTTP 桥"},
+    {"name": "butler-qqbot", "description": "Butler QQ botpy 网关与 Webhook"},
+    {"name": "developer", "description": "开发者门户与密钥"},
+    {"name": "key-export", "description": "开发者密钥导出"},
+    {"name": "sandbox", "description": "沙箱执行与校验"},
+    {"name": "ops", "description": "运维状态、编排开关与员工健康"},
+    {"name": "analytics", "description": "埋点与分析"},
+    {"name": "templates", "description": "模板资源"},
+    {"name": "csp", "description": "CSP 违规上报"},
+    {"name": "runtime-allowlist", "description": "运行时允许名单（管理）"},
+    {"name": "admin-events", "description": "管理端领域事件查询"},
+    {"name": "admin-email", "description": "管理端邮件测试与配置"},
+    {"name": "admin-employees", "description": "管理端员工执行指标与干预"},
+    {"name": "admin-change-requests", "description": "员工变更请求审批"},
+    {"name": "admin-ai-accounts", "description": "AI 员工账户与凭据（管理）"},
+    {"name": "admin-yuangon-onboard", "description": "元工（Yuangon）入驻配置"},
+    {"name": "admin-employee-autonomy", "description": "员工自主度策略"},
+    {"name": "admin-ops", "description": "运维审计与操作记录"},
+    {"name": "admin-duty-graph", "description": "值班员工关系图（管理）"},
+    {"name": "author-earnings", "description": "作者分成与结算相关"},
+    {"name": "invoices", "description": "发票"},
+    {"name": "reconciliation", "description": "对账"},
+    {"name": "subscription", "description": "订阅续费与计划"},
+    {
+        "name": "xcmax-admin",
+        "description": "XCmax 服务器后台与双向同步（/api/xcmax/admin、/api/xcmax/sync）",
+    },
 ]
 
 
@@ -76,30 +130,33 @@ def _include_optional(app: FastAPI, module_path: str) -> None:
     if router is None:
         return
     app.include_router(router)
+    extra_router = getattr(mod, "open_router", None)
+    if extra_router is not None:
+        app.include_router(extra_router)
 
 
-def create_app(config: AppConfig | None = None) -> FastAPI:
-    cfg = config or load_default_config()
-    app = FastAPI(
-        title="XC AGI",
-        version="0.2.0",
-        description=(
-            "XCAGI Mod 本地库与调试辅助 API。"
-            f"\n\n**交互式文档**：本页同源的 [`/docs`](./docs)（Swagger UI）、[`/redoc`](./redoc)。"
-            f"\n**机器可读**：[`/openapi.json`](./openapi.json)。"
-            f"\n\n默认假设 XCAGI HTTP 后端在 `{DEFAULT_XCAGI_BACKEND_URL}`（可在配置中覆盖）。"
-            f"\n开发时 API 默认监听 `127.0.0.1:{DEFAULT_API_PORT}`。"
-        ),
-        openapi_tags=_OPENAPI_TAGS,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
-    )
+def _init_database() -> None:
+    try:
+        from modstore_server.models import init_db
 
-    from modstore_server.metrics import install_metrics
+        try:
+            import modstore_server.models_project_context  # noqa: F401
+        except Exception:
+            logger.debug("models_project_context not registered", exc_info=True)
+        init_db()
+    except Exception:
+        logger.exception("startup: init_db failed")
 
-    install_metrics(app)
+    try:
+        from modstore_server.sync_employee_triggers import sync_all_employee_triggers
 
+        n = sync_all_employee_triggers()
+        logger.info("startup: synced %d employee trigger bindings", n)
+    except Exception:
+        logger.exception("startup: sync_employee_triggers failed")
+
+
+def _init_event_subscribers() -> None:
     try:
         from modstore_server.eventing.subscribers import install_default_subscribers
 
@@ -107,35 +164,49 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     except Exception:
         logger.exception("domain event subscribers failed to install")
 
-    # Background jobs (outbox drainer + subscription scheduler) must only run in ONE
-    # process when multiple uvicorn workers or instances are active. Set
-    # MODSTORE_RUN_BACKGROUND_JOBS=1 only on the dedicated scheduler unit
-    # (modstore-scheduler.service) or on a single-worker development process.
-    if os.environ.get("MODSTORE_RUN_BACKGROUND_JOBS", "0") == "1":
-        try:
-            from modstore_server.eventing.db_outbox import start_default_worker
 
-            start_default_worker()
-        except Exception:
-            logger.exception("outbox dispatcher worker failed to start")
-
-        try:
-            from modstore_server.subscription_renewer import start_subscription_scheduler
-
-            start_subscription_scheduler()
-        except Exception:
-            logger.exception("subscription auto-renew scheduler failed to start")
-    else:
+def _init_background_jobs() -> None:
+    if os.environ.get("MODSTORE_RUN_BACKGROUND_JOBS", "0") != "1":
         logger.info(
             "Background jobs (outbox/scheduler) SKIPPED "
             "(MODSTORE_RUN_BACKGROUND_JOBS != 1). "
             "Ensure modstore-scheduler.service is running separately."
         )
+        print("[bg-jobs] SKIPPED: MODSTORE_RUN_BACKGROUND_JOBS != 1", flush=True)
+        return
 
-    from modstore_server.middleware_registry import register_all_middleware
+    print("[bg-jobs] MODSTORE_RUN_BACKGROUND_JOBS=1, starting background jobs...", flush=True)
+    try:
+        from modstore_server.eventing.db_outbox import start_default_worker
 
-    register_all_middleware(app)
+        start_default_worker()
+        print("[bg-jobs] outbox worker started OK", flush=True)
+    except Exception:
+        logger.exception("outbox dispatcher worker failed to start")
+        print("[bg-jobs] outbox worker FAILED", flush=True)
 
+    try:
+        from modstore_server.subscription_renewer import start_subscription_scheduler
+
+        start_subscription_scheduler()
+        print("[bg-jobs] subscription scheduler started OK", flush=True)
+    except Exception:
+        logger.exception("subscription auto-renew scheduler failed to start")
+        print("[bg-jobs] subscription scheduler FAILED", flush=True)
+
+    try:
+        from modstore_server.workflow_scheduler import start_scheduler as start_workflow_scheduler
+
+        start_workflow_scheduler()
+        print("[bg-jobs] workflow scheduler started OK", flush=True)
+    except Exception:
+        logger.exception(
+            "workflow scheduler failed to start (daily digest / inbox poll / workflow cron)"
+        )
+        print("[bg-jobs] workflow scheduler FAILED", flush=True)
+
+
+def _register_core_routes(app: FastAPI, cfg: AppConfig) -> None:
     from modstore_server.api import csp_report, ui_mount
 
     app.include_router(csp_report.router)
@@ -147,17 +218,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         app.include_router(market_router)
         app.include_router(payment_router)
 
-        # 联系表单、手机短信登录等补充认证路由（前缀 /api，路由中已带完整 path）
         try:
             from modstore_server.market_auth_api import router as market_auth_router
             app.include_router(market_auth_router, prefix="/api")
         except Exception:
             logger.exception("market_auth_api 加载失败，跳过")
 
-        # 投诉、合规、material_category/license_scope 增强目录路由。
-        # 注意：此 router 注册在 market_router 之后，但 market_api.py 已删除同名
-        # GET /market/catalog* 路由，不再存在 shadow 问题。
-        # 若 market_api.py 未来重新添加同名路由，须将此 include_router 提前。
+        try:
+            from modstore_server.digest_identity_peer_api import router as digest_peer_router
+
+            app.include_router(digest_peer_router, prefix="/api")
+        except Exception:
+            logger.exception("digest_identity_peer_api 加载失败，跳过")
+
         try:
             from modstore_server.market_catalog_api import router as market_catalog_router
             app.include_router(market_catalog_router, prefix="/api")
@@ -180,50 +253,80 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         app.include_router(catalog_public_router)
         app.include_router(mod_sync_catalog_router)
 
-    _optional = (
-        "modstore_server.llm_api",
-        "modstore_server.agent_butler_api",
-        "modstore_server.notification_api",
-        "modstore_server.knowledge_vector_api",
-        "modstore_server.knowledge_v2_api",
-        "modstore_server.realtime_ws",
-        "modstore_server.workflow_api",
-        "modstore_server.eskill_api",
-        "modstore_server.script_workflow_api",
-        "modstore_server.runtime_allowlist_api",
-        "modstore_server.email_admin_api",
-        "modstore_server.workbench_api",
-        "modstore_server.employee_api",
-        "modstore_server.analytics_api",
-        "modstore_server.refund_api",
-        "modstore_server.ops_api",
-        "modstore_server.webhook_api",
-        "modstore_server.health_api",
-        "modstore_server.openapi_connector_api",
-        "modstore_server.customer_service_api",
-        "modstore_server.developer_api",
-        "modstore_server.developer_key_export_api",
-        "modstore_server.webhook_subscription_api",
-        "modstore_server.templates_api",
-        "modstore_server.sandbox_api",
-        # 支付系统补全模块
-        "modstore_server.author_earnings",
-        "modstore_server.invoice_api",
-        "modstore_server.reconciliation",
-        "modstore_server.subscription_renewer",
-    )
+
+_FULL_OPTIONAL_MODULES = (
+    "modstore_server.llm_api",
+    "modstore_server.openai_llm_gateway_api",
+    "modstore_server.agent_butler_api",
+    "modstore_server.account_api",
+    "modstore_server.butler_qq_bridge",
+    "modstore_server.butler_qq_botpy",
+    "modstore_server.notification_api",
+    "modstore_server.knowledge_vector_api",
+    "modstore_server.knowledge_v2_api",
+    "modstore_server.realtime_ws",
+    "modstore_server.workflow_api",
+    "modstore_server.eskill_api",
+    "modstore_server.script_workflow_api",
+    "modstore_server.runtime_allowlist_api",
+    "modstore_server.email_admin_api",
+    "modstore_server.workbench_api",
+    "modstore_server.workbench_studio_assets_api",
+    "modstore_server.employee_api",
+    "modstore_server.analytics_api",
+    "modstore_server.refund_api",
+    "modstore_server.ops_api",
+    "modstore_server.admin_ops_audit_api",
+    "modstore_server.admin_employee_execution_api",
+    "modstore_server.admin_employee_autonomy_api",
+    "modstore_server.admin_duty_graph_api",
+    "modstore_server.ai_employee_account_api",
+    "modstore_server.employee_change_request_api",
+    "modstore_server.yuangon_onboard_admin_api",
+    "modstore_server.webhook_api",
+    "modstore_server.health_api",
+    "modstore_server.openapi_connector_api",
+    "modstore_server.customer_service_api",
+    "modstore_server.developer_api",
+    "modstore_server.developer_key_export_api",
+    "modstore_server.webhook_subscription_api",
+    "modstore_server.templates_api",
+    "modstore_server.sandbox_api",
+    "modstore_server.employee_status_api",
+    "modstore_server.on_demand_orchestrate_api",
+    "modstore_server.inbound_webhook_api",
+    "modstore_server.author_earnings",
+    "modstore_server.invoice_api",
+    "modstore_server.reconciliation",
+    "modstore_server.subscription_renewer",
+    "modstore_server.xcmax_admin_api",
+)
+
+_LLM_ONLY_OPTIONAL_MODULES = (
+    "modstore_server.llm_api",
+    "modstore_server.openai_llm_gateway_api",
+    "modstore_server.health_api",
+)
+
+
+def _register_optional_routes(app: FastAPI, cfg: AppConfig) -> None:
     if cfg.profile == "llm-only":
         from modstore_server.api import health as health_routes
 
         app.include_router(health_routes.router)
-        _optional = ("modstore_server.llm_api", "modstore_server.health_api")
+        modules = _LLM_ONLY_OPTIONAL_MODULES
+    else:
+        modules = _FULL_OPTIONAL_MODULES
 
-    for _m in _optional:
+    for _m in modules:
         _include_optional(app, _m)
 
-    # workflow_api 暴露两个路由器：主 router（已由 _include_optional 挂载）
-    # 和 workflow_hooks_router（公开 Webhook 触发端点）。
-    # _include_optional 只挂载名为 "router" 的属性，因此需单独挂载 hooks 路由器。
+    try:
+        from modstore_server.butler_qq_botpy import start_botpy_background
+        start_botpy_background(app)
+    except Exception:
+        logger.exception("butler_qq_botpy start_botpy_background failed, skipping")
+
     try:
         from modstore_server.workflow_api import workflow_hooks_router
 
@@ -232,30 +335,74 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     except Exception:
         logger.exception("workflow_hooks_router 挂载失败，跳过")
 
+
+def _register_diagnostics(app: FastAPI) -> None:
     _maybe_mount_vibe_subapp(app)
+    _register_neurobus_diagnostics(app)
+
+    try:
+        from modstore_server.security import ensure_secure_config
+
+        ensure_secure_config()
+    except Exception:
+        logger.debug("secure config check skipped", exc_info=True)
+
+    from modstore_server.api import ui_mount
 
     ui_mount.maybe_mount_dev_docs(app)
     ui_mount.maybe_mount_ui(app)
+
+
+def create_app(config: AppConfig | None = None) -> FastAPI:
+    cfg = config or load_default_config()
+    app = FastAPI(
+        title="XC AGI",
+        version="0.2.0",
+        description=(
+            "XCAGI Mod 本地库与调试辅助 API。"
+            f"\n\n**交互式文档**：本页同源的 [`/docs`](./docs)（Swagger UI）、[`/redoc`](./redoc)。"
+            f"\n**机器可读**：[`/openapi.json`](./openapi.json)。"
+            f"\n\n默认假设 XCAGI HTTP 后端在 `{DEFAULT_XCAGI_BACKEND_URL}`（可在配置中覆盖）。"
+            f"\n开发时 API 默认监听 `127.0.0.1:{DEFAULT_API_PORT}`。"
+        ),
+        openapi_tags=_OPENAPI_TAGS,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
+
+    from modstore_server.metrics import install_metrics
+    install_metrics(app)
+
+    _init_database()
+    _init_event_subscribers()
+    _init_background_jobs()
+
+    from modstore_server.middleware_registry import register_all_middleware
+    register_all_middleware(app)
+
+    _register_core_routes(app, cfg)
+    _register_optional_routes(app, cfg)
+    _register_diagnostics(app)
 
     @app.on_event("shutdown")
     async def _close_shared_http_clients() -> None:
         try:
             from modstore_server.infrastructure.http_clients import close_all
-
             await close_all()
         except Exception:
             logger.exception("error closing shared http clients on shutdown")
+        if os.environ.get("MODSTORE_RUN_BACKGROUND_JOBS", "0") == "1":
+            try:
+                from modstore_server.workflow_scheduler import stop_scheduler
+                stop_scheduler()
+            except Exception:
+                logger.exception("workflow scheduler shutdown failed")
 
     return app
 
 
 def _maybe_mount_vibe_subapp(app: FastAPI) -> None:
-    """挂载 vibe-coding 自带的 Web UI / JSON API 到 ``/api/vibe``。
-
-    默认关闭(避免在没装 vibe-coding 时报错)。设置 ``MODSTORE_ENABLE_VIBE_WEB=1``
-    才挂载。挂载只是把 vibe-coding 暴露给前端 / IDE / LSP,实际业务流仍然走
-    in-process import(:mod:`modstore_server.integrations.vibe_adapter`)。
-    """
     if (os.environ.get("MODSTORE_ENABLE_VIBE_WEB") or "").strip() not in ("1", "true", "yes"):
         return
     try:
@@ -276,6 +423,29 @@ def _maybe_mount_vibe_subapp(app: FastAPI) -> None:
         logger.info("已挂载 vibe-coding sub-app 到 /api/vibe")
     except Exception:
         logger.exception("挂载 /api/vibe 失败")
+
+
+def _register_neurobus_diagnostics(app: FastAPI) -> None:
+    try:
+        from modstore_server.eventing.global_bus import neuro_bus
+
+        @app.get("/api/neurobus/stats", tags=["ops"])
+        async def neurobus_stats():
+            if hasattr(neuro_bus, "get_stats"):
+                return neuro_bus.get_stats()
+            return {"status": "basic", "type": type(neuro_bus).__name__}
+
+        @app.get("/api/neurobus/health", tags=["ops"])
+        async def neurobus_health():
+            return {
+                "status": "ok",
+                "bus_type": type(neuro_bus).__name__,
+                "has_stats": hasattr(neuro_bus, "get_stats"),
+            }
+
+        logger.info("Registered NeuroBus diagnostics (/api/neurobus/stats, /api/neurobus/health)")
+    except Exception:
+        logger.debug("NeuroBus diagnostics skipped", exc_info=True)
 
 
 __all__ = ["AppConfig", "create_app", "load_default_config"]
